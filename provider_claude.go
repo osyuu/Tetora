@@ -336,9 +336,9 @@ func buildClaudeArgs(req ProviderRequest, streaming bool) []string {
 		}
 	}
 
-	if req.Budget > 0 {
-		args = append(args, "--max-budget-usd", fmt.Sprintf("%.2f", req.Budget))
-	}
+	// NOTE: --max-budget-usd is intentionally NOT passed.
+	// Tetora uses a soft-limit approach: log when budget is exceeded, but don't hard-stop.
+	// This allows channel sessions and large tasks to complete naturally.
 
 	for _, dir := range req.AddDirs {
 		args = append(args, "--add-dir", dir)
