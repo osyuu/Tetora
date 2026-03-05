@@ -8,17 +8,18 @@ import (
 	"time"
 )
 
-// TmuxProvider executes tasks by launching interactive Claude Code sessions in tmux.
-// Unlike ClaudeProvider (--print mode), this runs Claude Code interactively, enabling
-// approval routing and real-time monitoring via Discord.
+// TmuxProvider executes tasks by launching interactive CLI tool sessions in tmux.
+// The tool-specific behavior (command construction, state detection, approval keys)
+// is delegated to a tmuxCLIProfile, making this provider generic across CLI tools.
 type TmuxProvider struct {
 	binaryPath string
 	cfg        *Config
 	provCfg    ProviderConfig
 	supervisor *tmuxSupervisor
+	profile    tmuxCLIProfile
 }
 
-func (p *TmuxProvider) Name() string { return "claude-tmux" }
+func (p *TmuxProvider) Name() string { return p.profile.Name() + "-tmux" }
 
 func (p *TmuxProvider) Execute(ctx context.Context, req ProviderRequest) (*ProviderResult, error) {
 	start := time.Now()
@@ -39,9 +40,8 @@ func (p *TmuxProvider) Execute(ctx context.Context, req ProviderRequest) (*Provi
 	}
 	tmuxName := "tetora-worker-" + taskShort
 
-	// Build the claude command (interactive, not --print).
-	claudeArgs := p.buildInteractiveArgs(req)
-	command := p.binaryPath + " " + strings.Join(claudeArgs, " ")
+	// Build the CLI command via profile.
+	command := p.profile.BuildCommand(p.binaryPath, req)
 
 	// Step 1: Create tmux session.
 	workdir := req.Workdir
@@ -83,9 +83,9 @@ func (p *TmuxProvider) Execute(ctx context.Context, req ProviderRequest) (*Provi
 		}
 	}()
 
-	// Step 2: Wait for Claude Code to become ready (input prompt).
+	// Step 2: Wait for CLI tool to become ready (input prompt).
 	if err := p.waitForReady(ctx, tmuxName, 60*time.Second); err != nil {
-		return errResult("claude-tmux startup failed: %v", err), nil
+		return errResult("%s startup failed: %v", p.Name(), err), nil
 	}
 
 	// Step 3: Send prompt.
@@ -107,36 +107,11 @@ func (p *TmuxProvider) Execute(ctx context.Context, req ProviderRequest) (*Provi
 	return &ProviderResult{
 		Output:     output,
 		DurationMs: elapsed.Milliseconds(),
-		Provider:   "claude-tmux",
+		Provider:   p.Name(),
 	}, nil
 }
 
-// buildInteractiveArgs constructs claude CLI args for interactive mode (no --print).
-func (p *TmuxProvider) buildInteractiveArgs(req ProviderRequest) []string {
-	args := []string{
-		"--model", req.Model,
-		"--permission-mode", cmp.Or(req.PermissionMode, "acceptEdits"),
-	}
-
-	if req.SystemPrompt != "" {
-		args = append(args, "--append-system-prompt", shellQuote(req.SystemPrompt))
-	}
-
-	// NOTE: --max-budget-usd is intentionally NOT passed.
-	// Tetora uses a soft-limit approach: log when budget is exceeded, but don't hard-stop.
-
-	for _, dir := range req.AddDirs {
-		args = append(args, "--add-dir", dir)
-	}
-
-	if req.MCPPath != "" {
-		args = append(args, "--mcp-config", req.MCPPath)
-	}
-
-	return args
-}
-
-// waitForReady polls the tmux session until Claude Code shows its input prompt.
+// waitForReady polls the tmux session until the CLI tool shows its input prompt.
 func (p *TmuxProvider) waitForReady(ctx context.Context, tmuxName string, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -147,7 +122,7 @@ func (p *TmuxProvider) waitForReady(ctx context.Context, tmuxName string, timeou
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("timeout waiting for Claude Code to start (%v)", timeout)
+			return fmt.Errorf("timeout waiting for CLI tool to start (%v)", timeout)
 		case <-ticker.C:
 			if !tmuxHasSession(tmuxName) {
 				return fmt.Errorf("tmux session disappeared during startup")
@@ -156,18 +131,18 @@ func (p *TmuxProvider) waitForReady(ctx context.Context, tmuxName string, timeou
 			if err != nil {
 				continue
 			}
-			state := detectScreenState(capture)
+			state := p.profile.DetectState(capture)
 			if state == tmuxStateWaiting {
 				return nil
 			}
 			if state == tmuxStateDone {
-				return fmt.Errorf("claude exited during startup")
+				return fmt.Errorf("CLI tool exited during startup")
 			}
 		}
 	}
 }
 
-// sendPrompt sends the task prompt to the Claude Code interactive session.
+// sendPrompt sends the task prompt to the interactive CLI session.
 // Uses tmuxLoadAndPaste for long prompts, tmuxSendText for short ones.
 func (p *TmuxProvider) sendPrompt(tmuxName, prompt string) error {
 	const shortThreshold = 4096
@@ -217,7 +192,7 @@ func (p *TmuxProvider) pollUntilDone(ctx context.Context, tmuxName string, worke
 				continue
 			}
 
-			state := detectScreenState(capture)
+			state := p.profile.DetectState(capture)
 			changed := capture != lastCapture
 			lastCapture = capture
 
@@ -235,9 +210,9 @@ func (p *TmuxProvider) pollUntilDone(ctx context.Context, tmuxName string, worke
 					stableCount = 0
 					approved := p.requestApproval(ctx, tmuxName, capture, approvalTimeout)
 					if approved {
-						tmuxSendKeys(tmuxName, "y", "Enter")
+						tmuxSendKeys(tmuxName, p.profile.ApproveKeys()...)
 					} else {
-						tmuxSendKeys(tmuxName, "n", "Enter")
+						tmuxSendKeys(tmuxName, p.profile.RejectKeys()...)
 					}
 					inApproval = false
 				}
@@ -248,7 +223,7 @@ func (p *TmuxProvider) pollUntilDone(ctx context.Context, tmuxName string, worke
 				} else {
 					stableCount++
 				}
-				// Completion: Claude returned to prompt after processing.
+				// Completion: CLI tool returned to prompt after processing.
 				// Need stability to avoid false positives during startup.
 				if stableCount >= stabilityNeeded {
 					worker.State = tmuxStateDone
@@ -379,7 +354,7 @@ func (p *TmuxProvider) collectOutput(tmuxName, lastCapture string) string {
 	return strings.TrimSpace(lastCapture)
 }
 
-// collectOutputFromHistory gets the full scrollback and extracts Claude's response.
+// collectOutputFromHistory gets the full scrollback and extracts the CLI tool's response.
 func (p *TmuxProvider) collectOutputFromHistory(tmuxName string) string {
 	history, err := tmuxCaptureHistory(tmuxName)
 	if err != nil {
@@ -389,12 +364,12 @@ func (p *TmuxProvider) collectOutputFromHistory(tmuxName string) string {
 
 	// The full scrollback contains the entire session. Try to extract
 	// the portion after the prompt was sent.
-	return extractClaudeResponse(history)
+	return extractScrollbackOutput(history)
 }
 
-// extractClaudeResponse parses tmux scrollback to extract Claude's response text.
-// It looks for the last substantial block of text, skipping the initial prompt.
-func extractClaudeResponse(history string) string {
+// extractScrollbackOutput parses tmux scrollback to extract the CLI tool's response text.
+// It returns the last substantial block of text, skipping the initial prompt.
+func extractScrollbackOutput(history string) string {
 	lines := strings.Split(history, "\n")
 
 	// Trim trailing empty lines.

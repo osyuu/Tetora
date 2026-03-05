@@ -472,13 +472,19 @@ type AgentConfig struct {
 }
 
 type ProviderConfig struct {
-	Type               string `json:"type"`                         // "claude-cli" | "openai-compatible" | "claude-api"
+	Type               string `json:"type"`                         // "claude-cli" | "openai-compatible" | "claude-api" | "claude-tmux" | "codex-tmux"
 	Path               string `json:"path,omitempty"`               // binary path for CLI providers
 	BaseURL            string `json:"baseUrl,omitempty"`            // API endpoint for API providers
 	APIKey             string `json:"apiKey,omitempty"`             // $ENV_VAR supported
 	Model              string `json:"model,omitempty"`              // default model for this provider
 	MaxTokens          int    `json:"maxTokens,omitempty"`          // max output tokens (default 8192 for claude-api)
 	FirstTokenTimeout  string `json:"firstTokenTimeout,omitempty"` // e.g. "30s"; how long to wait for first SSE event (default "60s")
+	// claude-tmux specific fields
+	TmuxCols            int    `json:"tmuxCols,omitempty"`            // default 160
+	TmuxRows            int    `json:"tmuxRows,omitempty"`            // default 50
+	TmuxPollInterval    string `json:"tmuxPollInterval,omitempty"`    // default "2s"
+	TmuxKeepSessions    bool   `json:"tmuxKeepSessions,omitempty"`    // debug: don't kill on done
+	TmuxApprovalTimeout string `json:"tmuxApprovalTimeout,omitempty"` // default "5m"
 }
 
 type CostAlertConfig struct {

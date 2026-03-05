@@ -40,6 +40,8 @@ type ProviderRequest struct {
 	MCPPath        string
 	AddDirs        []string
 	SessionID      string
+	Resume         bool // use --continue to resume existing CLI session
+	PersistSession bool // don't add --no-session-persistence (channel sessions)
 
 	// Docker sandbox override (nil=use config default).
 	Docker *bool
@@ -131,7 +133,7 @@ func (r *providerRegistry) get(name string) (Provider, error) {
 // Tetora should NOT inject conversation history as text — the provider
 // already resumes the session natively, and double-injection causes confusion.
 func providerHasNativeSession(providerName string) bool {
-	return providerName == "claude-code"
+	return providerName == "claude-code" || providerName == "claude-tmux" || providerName == "codex-tmux"
 }
 
 // resolveProviderName determines which provider to use for a task.
@@ -216,6 +218,32 @@ func initProviders(cfg *Config) *providerRegistry {
 				path = "/usr/local/bin/claude"
 			}
 			reg.register(name, &ClaudeCodeProvider{binaryPath: path, cfg: cfg})
+
+		case "claude-tmux":
+			path := pc.Path
+			if path == "" {
+				path = "/usr/local/bin/claude"
+			}
+			reg.register(name, &TmuxProvider{
+				binaryPath: path,
+				cfg:        cfg,
+				provCfg:    pc,
+				supervisor: cfg.tmuxSupervisor,
+				profile:    &claudeTmuxProfile{},
+			})
+
+		case "codex-tmux":
+			path := pc.Path
+			if path == "" {
+				path = "codex"
+			}
+			reg.register(name, &TmuxProvider{
+				binaryPath: path,
+				cfg:        cfg,
+				provCfg:    pc,
+				supervisor: cfg.tmuxSupervisor,
+				profile:    &codexTmuxProfile{},
+			})
 		}
 	}
 
@@ -318,6 +346,8 @@ func buildProviderRequest(cfg *Config, task Task, agentName, providerName string
 		MCP:            task.MCP,
 		AddDirs:        task.AddDirs,
 		SessionID:      task.SessionID,
+		Resume:         task.Resume,
+		PersistSession: task.PersistSession,
 		Docker:         docker,
 		EventCh:        eventCh,
 	}
