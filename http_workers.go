@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -92,5 +93,137 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 			"agent":   worker.Agent,
 			"capture": cleaned,
 		})
+	})
+
+	// POST /api/workers/terminal — enable/disable terminal mode for an agent.
+	// Body: {"agent": "ruri", "enabled": true}
+	mux.HandleFunc("/api/workers/terminal", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		var req struct {
+			Agent   string `json:"agent"`
+			Enabled bool   `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+			return
+		}
+		if req.Agent == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "agent name required"})
+			return
+		}
+
+		cfg := s.cfg
+		rc, ok := cfg.Agents[req.Agent]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("agent %q not found", req.Agent)})
+			return
+		}
+
+		configPath := findConfigPath()
+
+		if req.Enabled {
+			// Ensure tmux is installed.
+			if err := ensureTmux(); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("tmux install failed: %v", err)})
+				return
+			}
+
+			// Add claude-tmux provider if not present.
+			if _, exists := cfg.Providers["claude-tmux"]; !exists {
+				claudePath := "/usr/local/bin/claude"
+				if cfg.ClaudePath != "" {
+					claudePath = cfg.ClaudePath
+				}
+				updateConfigField(configPath, func(raw map[string]any) {
+					providers, _ := raw["providers"].(map[string]any)
+					if providers == nil {
+						providers = make(map[string]any)
+						raw["providers"] = providers
+					}
+					providers["claude-tmux"] = map[string]any{
+						"type": "claude-tmux",
+						"path": claudePath,
+					}
+				})
+				if cfg.Providers == nil {
+					cfg.Providers = make(map[string]ProviderConfig)
+				}
+				cfg.Providers["claude-tmux"] = ProviderConfig{Type: "claude-tmux", Path: claudePath}
+				if cfg.registry != nil {
+					cfg.registry.register("claude-tmux", &TmuxProvider{
+						binaryPath: claudePath,
+						cfg:        cfg,
+						provCfg:    ProviderConfig{Type: "claude-tmux", Path: claudePath},
+						supervisor: cfg.tmuxSupervisor,
+						profile:    &claudeTmuxProfile{},
+					})
+				}
+			}
+
+			// Switch agent provider.
+			oldProvider := rc.Provider
+			rc.Provider = "claude-tmux"
+			cfg.Agents[req.Agent] = rc
+			updateConfigAgents(configPath, req.Agent, &rc)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok": true, "agent": req.Agent, "provider": "claude-tmux", "previous": oldProvider,
+			})
+		} else {
+			// Switch back to default.
+			oldProvider := rc.Provider
+			fallback := cfg.DefaultProvider
+			if fallback == "" || strings.HasSuffix(fallback, "-tmux") {
+				fallback = "claude"
+			}
+			rc.Provider = fallback
+			cfg.Agents[req.Agent] = rc
+			updateConfigAgents(configPath, req.Agent, &rc)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok": true, "agent": req.Agent, "provider": fallback, "previous": oldProvider,
+			})
+		}
+	})
+
+	// GET /api/workers/agents — list agents with their terminal (tmux) status.
+	mux.HandleFunc("/api/workers/agents", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		type agentTerminalInfo struct {
+			Name     string `json:"name"`
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+			Terminal bool   `json:"terminal"`
+		}
+		cfg := s.cfg
+		agents := make([]agentTerminalInfo, 0, len(cfg.Agents))
+		for name, rc := range cfg.Agents {
+			p := rc.Provider
+			if p == "" {
+				p = cfg.DefaultProvider
+			}
+			if p == "" {
+				p = "claude"
+			}
+			agents = append(agents, agentTerminalInfo{
+				Name:     name,
+				Provider: p,
+				Model:    rc.Model,
+				Terminal: strings.HasSuffix(p, "-tmux"),
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"agents": agents})
 	})
 }
