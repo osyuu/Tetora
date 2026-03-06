@@ -52,7 +52,8 @@ func (p *claudeTmuxProfile) BuildCommand(binaryPath string, req ProviderRequest)
 }
 
 func (p *claudeTmuxProfile) DetectState(capture string) tmuxScreenState {
-	lastLines := lastNonEmptyLines(capture, 5)
+	// Use a larger window — Claude Code has status bars below the prompt.
+	lastLines := lastNonEmptyLines(capture, 12)
 	if len(lastLines) == 0 {
 		return tmuxStateUnknown
 	}
@@ -78,16 +79,17 @@ func (p *claudeTmuxProfile) DetectState(capture string) tmuxScreenState {
 	}
 
 	// Waiting detection: Claude Code input prompt.
-	// Claude Code uses "❯" (U+276F) as the prompt character, or "> " in older versions.
-	trimmedLast := strings.TrimSpace(lastLine)
-	waitingPatterns := []string{
-		"> ", "what would you like", "how can i help",
-	}
-	if trimmedLast == "❯" || strings.HasPrefix(trimmedLast, "❯ ") {
-		return tmuxStateWaiting
-	}
-	for _, pat := range waitingPatterns {
-		if strings.Contains(strings.ToLower(lastLine), pat) {
+	// Claude Code v2+ shows "❯" prompt with status bars BELOW it,
+	// so we must scan all bottom lines, not just the last one.
+	for _, line := range lastLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "❯" || strings.HasPrefix(trimmed, "❯ ") {
+			return tmuxStateWaiting
+		}
+		lineLower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lineLower, "> ") ||
+			strings.Contains(lineLower, "what would you like") ||
+			strings.Contains(lineLower, "how can i help") {
 			return tmuxStateWaiting
 		}
 	}

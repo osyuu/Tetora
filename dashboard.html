@@ -1780,7 +1780,6 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     <button id="tab-integrations" onclick="switchTab('integrations')">Integrations</button>
     <button id="tab-settings" onclick="switchTab('settings')">Settings</button>
     <button id="tab-workspace" onclick="switchTab('workspace')">Workspace</button>
-    <button id="tab-workers" onclick="switchTab('workers')">Workers</button>
   </div>
 
   <div id="dashboard-content">
@@ -1911,6 +1910,24 @@ body:not([class*="theme-"])::after, body.theme-default::after {
         <div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Waiting for events...</div>
       </div>
     </div>
+  </div>
+
+  <!-- Workers (inline in dashboard) -->
+  <div class="section" id="workers-section" style="display:none">
+    <div class="section-header">
+      <span class="section-title">Workers</span>
+      <span class="section-meta" id="workers-count-inline">0</span>
+    </div>
+    <div id="terminal-agents-inline" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px"></div>
+    <div id="workers-grid-inline" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px"></div>
+  </div>
+  <div id="terminal-viewer-inline" style="display:none" class="section">
+    <div class="section-header">
+      <span class="section-title" id="tv-title-inline">Terminal</span>
+      <span class="section-meta" id="tv-state-inline"></span>
+      <button class="btn" onclick="closeTerminalViewer()" style="margin-left:auto;font-size:12px;padding:3px 10px">Close</button>
+    </div>
+    <pre id="tv-output-inline" style="background:#0a0a0f;border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'SF Mono','Fira Code','VT323',monospace;font-size:13px;line-height:1.4;color:#e0e0e0;overflow:auto;max-height:500px;white-space:pre;tab-size:8"></pre>
   </div>
 
   <!-- Running Tasks -->
@@ -2468,34 +2485,6 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     </div>
   </div><!-- /workspace-content -->
 
-  <div id="workers-content" style="display:none">
-    <!-- Terminal Mode per Agent -->
-    <div class="section">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-        <h3 style="font-family:var(--font-heading);font-size:14px;color:var(--accent)">Terminal Mode</h3>
-        <span style="font-size:11px;color:var(--muted)">Enable to see agent's live terminal</span>
-      </div>
-      <div id="terminal-agents" style="display:flex;flex-wrap:wrap;gap:10px"></div>
-    </div>
-    <!-- Active Workers -->
-    <div class="section">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-        <h3 style="font-family:var(--font-heading);font-size:14px;color:var(--accent)">Active Workers</h3>
-        <span id="workers-count" style="font-size:12px;color:var(--muted)">0 active</span>
-        <button class="btn" onclick="refreshWorkers()" style="margin-left:auto;font-size:12px">Refresh</button>
-      </div>
-      <div id="workers-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
-      <div id="workers-empty" style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No active workers</div>
-    </div>
-    <div id="terminal-viewer" style="display:none" class="section">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-        <h3 id="terminal-viewer-title" style="font-family:var(--font-heading);font-size:14px;color:var(--accent)">Terminal</h3>
-        <span id="terminal-viewer-state" style="font-size:12px;padding:2px 8px;border-radius:4px;background:var(--surface);color:var(--muted)"></span>
-        <button class="btn" onclick="closeTerminalViewer()" style="margin-left:auto;font-size:12px">Close</button>
-      </div>
-      <pre id="terminal-viewer-output" style="background:#0a0a0f;border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'SF Mono','Fira Code','VT323',monospace;font-size:13px;line-height:1.4;color:#e0e0e0;overflow:auto;max-height:600px;white-space:pre;tab-size:8"></pre>
-    </div>
-  </div><!-- /workers-content -->
 
 <!-- Project Modal -->
 <div class="modal-overlay" id="project-modal">
@@ -3421,7 +3410,7 @@ function handleActivityEvent(type, ev) {
       refreshBoard();
       return;
     case 'worker_update':
-      if (currentTab === 'workers') refreshWorkers();
+      if (currentTab === 'dashboard') refreshWorkers();
       if (data.action === 'unregistered' && _terminalViewerName === data.name) closeTerminalViewer();
       return;
     default:
@@ -6661,7 +6650,7 @@ function onJobProjectChange() {
 
 function switchTab(tab) {
   currentTab = tab;
-  ['dashboard','chat','workflows','integrations','settings','workspace','workers'].forEach(function(t) {
+  ['dashboard','chat','workflows','integrations','settings','workspace'].forEach(function(t) {
     document.getElementById('tab-' + t).classList.toggle('active', tab === t);
     document.getElementById(t + '-content').style.display = tab === t ? '' : 'none';
   });
@@ -6681,9 +6670,6 @@ function switchTab(tab) {
   if (tab === 'workspace') {
     refreshBoard();
     loadMemoryBrowser();
-  }
-  if (tab === 'workers') {
-    refreshWorkers();
   }
 }
 
@@ -7590,6 +7576,7 @@ async function loadCostDashboard(period) {
 // Init
 loadCostDashboard('today');
 refresh();
+refreshWorkers();
 refreshPrompts();
 refreshMCP();
 refreshMemory();
@@ -9211,6 +9198,7 @@ document.addEventListener('visibilitychange', function() {
     if (dashboardSSE) { dashboardSSE.close(); dashboardSSE = null; sseConnected = false; updateSSEBadge(); }
   } else {
     refresh();
+    if (currentTab === 'dashboard') refreshWorkers();
     pollTimer = setInterval(refresh, sseConnected ? 15000 : 5000);
     connectDashboardSSE();
   }
@@ -9886,22 +9874,23 @@ var _terminalPollTimer = null;
 
 function refreshTerminalAgents() {
   fetch(API + '/api/workers/agents').then(function(r){return r.json()}).then(function(d) {
-    var container = document.getElementById('terminal-agents');
+    var container = document.getElementById('terminal-agents-inline');
+    if (!container) return;
     container.innerHTML = '';
     (d.agents || []).forEach(function(a) {
       var el = document.createElement('label');
-      el.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;background:var(--surface);border:1px solid var(--border);cursor:pointer;font-size:13px;color:var(--text);min-width:140px';
+      el.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;background:var(--surface);border:1px solid var(--border);cursor:pointer;font-size:12px;color:var(--text)';
       var cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = a.terminal;
       cb.onchange = function() { toggleTerminal(a.name, cb.checked, cb); };
       el.appendChild(cb);
       var txt = document.createElement('span');
-      txt.innerHTML = '<b>' + esc(a.name) + '</b> <span style="font-size:11px;color:var(--muted)">' + esc(a.model || '') + '</span>';
+      txt.textContent = a.name;
       el.appendChild(txt);
       if (a.terminal) {
         var badge = document.createElement('span');
-        badge.style.cssText = 'margin-left:auto;font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(52,211,153,0.15);color:var(--green)';
+        badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(52,211,153,0.15);color:var(--green)';
         badge.textContent = 'tmux';
         el.appendChild(badge);
       }
@@ -9923,7 +9912,7 @@ function toggleTerminal(agentName, enabled, cb) {
       cb.checked = !enabled;
       return;
     }
-    refreshTerminalAgents();
+    refreshWorkers();
   }).catch(function(err) {
     cb.disabled = false;
     cb.checked = !enabled;
@@ -9935,45 +9924,38 @@ function refreshWorkers() {
   refreshTerminalAgents();
   fetch(API + '/api/workers').then(function(r){return r.json()}).then(function(d) {
     var workers = d.workers || [];
-    var grid = document.getElementById('workers-grid');
-    var empty = document.getElementById('workers-empty');
-    document.getElementById('workers-count').textContent = workers.length + ' active';
-    if (workers.length === 0) {
-      grid.innerHTML = '';
-      empty.style.display = '';
-      return;
-    }
-    empty.style.display = 'none';
+    var section = document.getElementById('workers-section');
+    var grid = document.getElementById('workers-grid-inline');
+    // Always show section (has toggle switches), update count.
+    section.style.display = '';
+    document.getElementById('workers-count-inline').textContent = workers.length || '0';
     grid.innerHTML = '';
     workers.forEach(function(w) {
       var stateColor = w.state === 'working' ? 'var(--green)' : w.state === 'approval' ? 'var(--yellow)' : w.state === 'waiting' ? 'var(--accent)' : 'var(--muted)';
       var card = document.createElement('div');
       card.className = 'pixel-panel';
-      card.style.cssText = 'padding:14px;cursor:pointer;transition:border-color .15s';
+      card.style.cssText = 'padding:12px;cursor:pointer';
       card.onclick = function() { openTerminalViewer(w.name); };
       card.innerHTML =
-        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
           '<span style="width:8px;height:8px;border-radius:50%;background:' + stateColor + ';flex-shrink:0"></span>' +
-          '<b style="font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(w.name) + '</b>' +
+          '<b style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(w.name) + '</b>' +
           '<span style="margin-left:auto;font-size:11px;color:var(--muted)">' + esc(w.uptime) + '</span>' +
         '</div>' +
-        '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">' +
-          '<span style="display:inline-block;padding:1px 6px;border-radius:3px;background:var(--surface);border:1px solid var(--border);font-size:11px;color:' + stateColor + '">' + esc(w.state) + '</span>' +
-          (w.agent ? ' <span style="margin-left:6px">' + esc(w.agent) + '</span>' : '') +
-        '</div>' +
-        '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">' + esc(w.prompt || '') + '</div>';
+        '<div style="font-size:11px;color:var(--muted)">' +
+          '<span style="padding:1px 5px;border-radius:3px;background:var(--surface);border:1px solid var(--border);color:' + stateColor + '">' + esc(w.state) + '</span>' +
+          (w.agent ? ' ' + esc(w.agent) : '') +
+        '</div>';
       grid.appendChild(card);
     });
-  }).catch(function(err) {
-    console.error('refreshWorkers error:', err);
-  });
+  }).catch(function(){});
 }
 
 function openTerminalViewer(name) {
   _terminalViewerName = name;
-  document.getElementById('terminal-viewer').style.display = '';
-  document.getElementById('terminal-viewer-title').textContent = name;
-  document.getElementById('terminal-viewer-output').textContent = 'Loading...';
+  document.getElementById('terminal-viewer-inline').style.display = '';
+  document.getElementById('tv-title-inline').textContent = name;
+  document.getElementById('tv-output-inline').textContent = 'Loading...';
   fetchTerminalCapture();
   if (_terminalPollTimer) clearInterval(_terminalPollTimer);
   _terminalPollTimer = setInterval(fetchTerminalCapture, 2000);
@@ -9985,15 +9967,15 @@ function fetchTerminalCapture() {
     .then(function(r){return r.json()})
     .then(function(d) {
       if (d.error) {
-        document.getElementById('terminal-viewer-output').textContent = 'Error: ' + d.error;
+        document.getElementById('tv-output-inline').textContent = 'Error: ' + d.error;
         closeTerminalViewer();
         return;
       }
-      var pre = document.getElementById('terminal-viewer-output');
+      var pre = document.getElementById('tv-output-inline');
       var wasAtBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 30;
       pre.textContent = d.capture || '(empty)';
       if (wasAtBottom) pre.scrollTop = pre.scrollHeight;
-      var stateEl = document.getElementById('terminal-viewer-state');
+      var stateEl = document.getElementById('tv-state-inline');
       stateEl.textContent = d.state || '';
       var sc = d.state === 'working' ? 'var(--green)' : d.state === 'approval' ? 'var(--yellow)' : d.state === 'waiting' ? 'var(--accent)' : 'var(--muted)';
       stateEl.style.color = sc;
@@ -10004,7 +9986,7 @@ function fetchTerminalCapture() {
 function closeTerminalViewer() {
   _terminalViewerName = '';
   if (_terminalPollTimer) { clearInterval(_terminalPollTimer); _terminalPollTimer = null; }
-  document.getElementById('terminal-viewer').style.display = 'none';
+  document.getElementById('terminal-viewer-inline').style.display = 'none';
 }
 </script>
 <div class="search-overlay" id="search-overlay" onclick="if(event.target===this)closeSearch()">
