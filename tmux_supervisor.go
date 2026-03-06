@@ -106,6 +106,38 @@ func (s *tmuxSupervisor) getWorker(name string) *tmuxWorker {
 	return s.workers[name]
 }
 
+// recoverWorkers scans for existing tetora-worker-* tmux sessions and
+// re-registers them in the supervisor. This handles daemon restarts where
+// tmux sessions survive but the in-memory supervisor state is lost.
+func (s *tmuxSupervisor) recoverWorkers(profile tmuxCLIProfile) {
+	sessions := tmuxListSessions()
+	recovered := 0
+	for _, name := range sessions {
+		if !strings.HasPrefix(name, "tetora-worker-") {
+			continue
+		}
+		if s.getWorker(name) != nil {
+			continue // already tracked
+		}
+		// Detect current state from capture.
+		state := tmuxStateUnknown
+		if capture, err := tmuxCapture(name); err == nil && profile != nil {
+			state = profile.DetectState(capture)
+		}
+		w := &tmuxWorker{
+			TmuxName:    name,
+			State:       state,
+			CreatedAt:   time.Now(), // approximate — real start time unknown
+			LastChanged: time.Now(),
+		}
+		s.register(name, w)
+		recovered++
+	}
+	if recovered > 0 {
+		logInfo("recovered orphaned tmux workers", "count", recovered)
+	}
+}
+
 // isShellPrompt checks if a line looks like a shell prompt ($ or % at the end).
 // Used by tmuxCLIProfile implementations for done-state detection.
 func isShellPrompt(line string) bool {

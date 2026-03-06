@@ -255,6 +255,8 @@ func main() {
 				logWarn("tmux auto-install failed", "error", err)
 				degradedServices = append(degradedServices, "tmux")
 			}
+			// Recover orphaned tmux workers from previous daemon run.
+			tmuxSup.recoverWorkers(&claudeTmuxProfile{})
 		}
 
 		// Init history DB.

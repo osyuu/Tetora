@@ -84,6 +84,13 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 			return
 		}
 
+		// Update worker state from capture (covers recovered workers with no polling goroutine).
+		profile := &claudeTmuxProfile{}
+		if newState := profile.DetectState(capture); newState != worker.State {
+			worker.State = newState
+			worker.LastChanged = time.Now()
+		}
+
 		// Strip ANSI escape sequences.
 		cleaned := ansiEscapeRe.ReplaceAllString(capture, "")
 

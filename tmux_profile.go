@@ -83,7 +83,7 @@ func (p *claudeTmuxProfile) DetectState(capture string) tmuxScreenState {
 	// so we must scan all bottom lines, not just the last one.
 	for _, line := range lastLines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "❯" || strings.HasPrefix(trimmed, "❯ ") {
+		if trimmed == "❯" || strings.HasPrefix(trimmed, "❯ ") || strings.HasPrefix(trimmed, "❯\u00a0") || strings.HasPrefix(trimmed, "❯\t") {
 			return tmuxStateWaiting
 		}
 		lineLower := strings.ToLower(trimmed)

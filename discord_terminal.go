@@ -160,6 +160,22 @@ func tmuxKill(name string) error {
 	return nil
 }
 
+// tmuxListSessions returns the names of all active tmux sessions.
+func tmuxListSessions() []string {
+	cmd := exec.Command(tmuxBin(), "list-sessions", "-F", "#{session_name}")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names = append(names, line)
+		}
+	}
+	return names
+}
+
 // tmuxHasSession checks if a tmux session exists.
 func tmuxHasSession(name string) bool {
 	cmd := exec.Command(tmuxBin(), "has-session", "-t", name)
