@@ -139,6 +139,16 @@ func (b *sseBroker) PublishMulti(keys []string, event SSEEvent) {
 }
 
 // HasSubscribers returns true if the given key has any active subscribers.
+func (b *sseBroker) ClientCount() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	n := 0
+	for _, subs := range b.subscribers {
+		n += len(subs)
+	}
+	return n
+}
+
 func (b *sseBroker) HasSubscribers(key string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

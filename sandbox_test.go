@@ -241,6 +241,8 @@ func TestBuildClaudeArgs_Basic(t *testing.T) {
 }
 
 func TestBuildClaudeArgs_WithBudget(t *testing.T) {
+	// --max-budget-usd is intentionally NOT passed to Claude CLI.
+	// Tetora uses a soft-limit approach instead.
 	req := ProviderRequest{
 		Model:          "opus",
 		SessionID:      "s",
@@ -249,7 +251,11 @@ func TestBuildClaudeArgs_WithBudget(t *testing.T) {
 		Prompt:         "hi",
 	}
 	args := buildClaudeArgs(req, false)
-	assertContainsSequence(t, args, "--max-budget-usd", "5.50")
+	for _, a := range args {
+		if a == "--max-budget-usd" {
+			t.Error("--max-budget-usd should NOT be passed (soft-limit approach)")
+		}
+	}
 }
 
 func TestBuildClaudeArgs_WithAddDirs(t *testing.T) {

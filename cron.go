@@ -121,6 +121,18 @@ type CronEngine struct {
 	idleCacheLast time.Time
 }
 
+func (c *CronEngine) LastRunTime() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var latest time.Time
+	for _, j := range c.jobs {
+		if j.lastRun.After(latest) {
+			latest = j.lastRun
+		}
+	}
+	return latest
+}
+
 func newCronEngine(cfg *Config, sem, childSem chan struct{}, notifyFn func(string)) *CronEngine {
 	return &CronEngine{
 		cfg:      cfg,

@@ -4,9 +4,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
+
+func formatDurationShort(d time.Duration) string {
+	d = d.Round(time.Second)
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
+}
 
 func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
 	cfg := s.cfg
@@ -50,6 +65,47 @@ func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
 			"active":   count,
 			"draining": draining,
 			"agents":   agents,
+		})
+	})
+
+	// --- Dashboard Health Summary ---
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		uptime := time.Since(s.startTime)
+		uptimeStr := formatDurationShort(uptime)
+		dbSize := "-"
+		if cfg.HistoryDB != "" {
+			if fi, err := os.Stat(cfg.HistoryDB); err == nil {
+				mb := float64(fi.Size()) / (1024 * 1024)
+				dbSize = fmt.Sprintf("%.1f MB", mb)
+			}
+		}
+		sseClients := 0
+		if s.state != nil && s.state.broker != nil {
+			sseClients = s.state.broker.ClientCount()
+		}
+		lastCron := "-"
+		if s.cron != nil {
+			if last := s.cron.LastRunTime(); !last.IsZero() {
+				ago := time.Since(last)
+				lastCron = formatDurationShort(ago) + " ago"
+			}
+		}
+		provider := cfg.DefaultProvider
+		if provider == "" && len(cfg.Agents) > 0 {
+			for _, a := range cfg.Agents {
+				if a.Model != "" {
+					provider = a.Model
+					break
+				}
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"uptime":     uptimeStr,
+			"dbSize":     dbSize,
+			"sseClients": sseClients,
+			"lastCron":   lastCron,
+			"provider":   provider,
 		})
 	})
 

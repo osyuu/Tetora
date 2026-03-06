@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
@@ -937,5 +938,103 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			"active":   active,
 			"message":  "daemon will stop accepting new tasks and exit after current tasks complete",
 		})
+	})
+
+	// --- Workspace File Browser ---
+	mux.HandleFunc("GET /api/workspace/files", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		wsDir := cfg.WorkspaceDir
+		if wsDir == "" {
+			json.NewEncoder(w).Encode(map[string]any{"files": []any{}})
+			return
+		}
+		type wsFile struct {
+			Path    string `json:"path"`
+			Folder  string `json:"folder"`
+			Name    string `json:"name"`
+			Size    int64  `json:"size"`
+			ModTime string `json:"modTime"`
+		}
+		var files []wsFile
+		for _, dir := range []string{"rules", "memory", "knowledge", "skills"} {
+			dirPath := filepath.Join(wsDir, dir)
+			entries, err := os.ReadDir(dirPath)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				info, _ := e.Info()
+				files = append(files, wsFile{
+					Path:    dir + "/" + e.Name(),
+					Folder:  dir,
+					Name:    e.Name(),
+					Size:    info.Size(),
+					ModTime: info.ModTime().Format(time.RFC3339),
+				})
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"files": files})
+	})
+
+	mux.HandleFunc("GET /api/workspace/file", func(w http.ResponseWriter, r *http.Request) {
+		wsDir := cfg.WorkspaceDir
+		p := r.URL.Query().Get("path")
+		if wsDir == "" || p == "" {
+			http.Error(w, `{"error":"missing path"}`, http.StatusBadRequest)
+			return
+		}
+		// Security: prevent path traversal
+		clean := filepath.Clean(p)
+		if strings.Contains(clean, "..") {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(wsDir, clean)
+		if !strings.HasPrefix(full, wsDir) {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"path": p, "content": string(data)})
+	})
+
+	mux.HandleFunc("PUT /api/workspace/file", func(w http.ResponseWriter, r *http.Request) {
+		wsDir := cfg.WorkspaceDir
+		if wsDir == "" {
+			http.Error(w, `{"error":"no workspace"}`, http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+		clean := filepath.Clean(req.Path)
+		if strings.Contains(clean, "..") {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(wsDir, clean)
+		if !strings.HasPrefix(full, wsDir) {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.WriteFile(full, []byte(req.Content), 0644); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 }
