@@ -4,12 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="manifest" href="/dashboard/manifest.json">
-<meta name="theme-color" content="#a78bfa">
+<meta name="theme-color" content="#0078f8">
 <link rel="icon" href="/dashboard/icon.svg" type="image/svg+xml">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Tetora">
 <link rel="apple-touch-icon" href="/dashboard/icon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
 <title>Tetora</title>
 <style>
 :root {
@@ -18,15 +19,82 @@
   --border: #1e1e2e;
   --text: #e0e0e8;
   --muted: #6b6b80;
-  --accent: #a78bfa;
-  --accent2: #60a5fa;
-  --green: #34d399;
-  --red: #f87171;
-  --yellow: #fbbf24;
+  --accent: #0078f8;
+  --accent2: #00b800;
+  --green: #00b800;
+  --red: #f83800;
+  --yellow: #fce0a8;
+  --pixel-border: #e0e0e8;
+  --font-pixel: 'Press Start 2P', monospace;
+  --font-terminal: 'VT323', monospace;
+  --font-mono: 'SF Mono', 'Fira Code', monospace;
+}
+/* Themes */
+body.theme-gameboy {
+  --bg: #0f380f; --surface: #306230; --border: #8bac0f; --text: #9bbc0f; --muted: #6b8b0f;
+  --accent: #9bbc0f; --accent2: #8bac0f; --green: #9bbc0f; --red: #8bac0f; --yellow: #9bbc0f; --pixel-border: #9bbc0f;
+}
+body.theme-amber {
+  --bg: #0a0800; --surface: #1a1200; --border: #3a2800; --text: #ffa500; --muted: #8b5e00;
+  --accent: #ffa500; --accent2: #cc8400; --green: #ffa500; --red: #ff6600; --yellow: #ffa500; --pixel-border: #ffa500;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* 8-Bit Pixel Borders */
+.pixel-panel {
+  border: none;
+  border-radius: 0;
+  box-shadow:
+    inset -2px -2px 0 0 #4a4a5a,
+    inset 2px 2px 0 0 var(--pixel-border),
+    inset -4px -4px 0 0 #2a2a3a,
+    inset 4px 4px 0 0 #8a8a9a;
+}
+
+/* Pixel Window Chrome */
+.pixel-window {
+  border: none;
+  border-radius: 0;
+  box-shadow:
+    inset -2px -2px 0 0 #4a4a5a,
+    inset 2px 2px 0 0 var(--pixel-border),
+    inset -4px -4px 0 0 #2a2a3a,
+    inset 4px 4px 0 0 #8a8a9a;
+  overflow: hidden;
+}
+.pixel-window-title {
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  -webkit-font-smoothing: none;
+}
+.pixel-window-title .window-controls {
+  display: flex;
+  gap: 6px;
+}
+.pixel-window-title .window-controls span {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #fff;
+  font-size: 8px;
+  text-align: center;
+  line-height: 8px;
+  cursor: default;
+}
+.pixel-window-content {
+  padding: 12px;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-family: var(--font-terminal), -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 18px;
+  -webkit-font-smoothing: none;
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
@@ -41,12 +109,14 @@ header {
   align-items: center;
   margin-bottom: 28px;
   padding-bottom: 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 4px solid var(--pixel-border);
 }
 .logo {
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 700;
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  font-family: var(--font-pixel);
+  -webkit-font-smoothing: none;
+  background: linear-gradient(135deg, var(--accent), #fcbcb0);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -54,9 +124,10 @@ header {
 .header-right { display: flex; align-items: center; gap: 12px; }
 .badge {
   padding: 4px 14px;
-  border-radius: 20px;
-  font-size: 12px;
+  border-radius: 0;
+  font-size: 10px;
   font-weight: 600;
+  font-family: var(--font-pixel);
 }
 .badge-ok { background: #064e3b; color: var(--green); }
 .badge-err { background: #450a0a; color: var(--red); }
@@ -66,11 +137,16 @@ header {
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 28px; }
 .stat {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  border: none;
+  border-radius: 0;
   padding: 16px 18px;
+  box-shadow:
+    inset -2px -2px 0 0 #4a4a5a,
+    inset 2px 2px 0 0 var(--pixel-border),
+    inset -4px -4px 0 0 #2a2a3a,
+    inset 4px 4px 0 0 #8a8a9a;
 }
-.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+.stat-label { font-size: 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; font-family: var(--font-pixel); }
 .stat-value { font-size: 26px; font-weight: 700; margin-top: 2px; }
 .stat-value.cost { font-family: 'SF Mono', 'Fira Code', monospace; }
 
@@ -79,7 +155,7 @@ header {
 .project-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 0;
   padding: 16px;
   transition: border-color 0.2s;
 }
@@ -88,7 +164,7 @@ header {
 .project-card-name { font-size: 15px; font-weight: 600; color: var(--text); }
 .project-card-desc { font-size: 12px; color: var(--muted); margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-card-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.project-badge { padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+.project-badge { padding: 2px 8px; border-radius: 0; font-size: 10px; font-weight: 600; }
 .project-badge-category { background: rgba(96,165,250,0.15); color: var(--accent2); }
 .project-badge-status { background: rgba(52,211,153,0.15); color: var(--green); }
 .project-badge-status.archived { background: rgba(107,107,128,0.15); color: var(--muted); }
@@ -102,7 +178,7 @@ header {
 .kanban-stats-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .kanban-stat-chip {
   display: flex; flex-direction: column; gap: 2px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 0;
   padding: 10px 16px; cursor: pointer; transition: border-color 0.2s, background 0.2s;
   min-width: 120px;
 }
@@ -134,14 +210,15 @@ header {
 }
 .kanban-column {
   min-width: 260px; max-width: 260px; flex-shrink: 0;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 0;
   display: flex; flex-direction: column; max-height: 65vh;
 }
 .kanban-column-header {
   padding: 10px 12px; font-size: 12px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.6px; border-bottom: 1px solid var(--border);
   display: flex; justify-content: space-between; align-items: center;
-  border-top: 3px solid var(--border); border-radius: 10px 10px 0 0;
+  border-top: 3px solid var(--border); border-radius: 0;
+  font-family: var(--font-pixel);
 }
 .kanban-column-header .count {
   background: var(--surface); padding: 1px 8px; border-radius: 10px; font-size: 11px;
@@ -157,7 +234,7 @@ header {
 .kanban-column[data-status="failed"] .kanban-column-header { border-top-color: #f87171; }
 .kanban-column-body { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 .kanban-card {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 0;
   padding: 10px 12px; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
 }
 .kanban-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
@@ -167,7 +244,7 @@ header {
 .kanban-card-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; line-height: 1.3; }
 .kanban-card-badges { display: flex; flex-wrap: wrap; gap: 4px; }
 .kanban-badge {
-  padding: 1px 7px; border-radius: 4px; font-size: 10px; font-weight: 600;
+  padding: 1px 7px; border-radius: 0; font-size: 10px; font-weight: 600;
 }
 .kanban-badge-project { background: rgba(96,165,250,0.15); color: var(--accent2); }
 .kanban-badge-assignee { background: rgba(167,139,250,0.15); color: var(--accent); }
@@ -223,7 +300,7 @@ header {
   align-items: center;
   margin-bottom: 10px;
 }
-.section-title { font-size: 15px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.section-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; font-family: var(--font-pixel); -webkit-font-smoothing: none; }
 .section-meta { font-size: 12px; color: var(--muted); }
 
 /* Table */
@@ -282,14 +359,16 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .btn {
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
+  font-family: var(--font-pixel);
+  -webkit-font-smoothing: none;
   transition: .15s;
 }
-.btn:hover { background: var(--border); color: var(--text); }
+.btn:hover { background: var(--border); color: var(--text); filter: brightness(1.3); }
 .btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .btn-run { border-color: var(--accent); color: var(--accent); }
@@ -462,8 +541,8 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .modal-overlay.open { display: flex; }
 .modal {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: none;
+  border-radius: 0;
   padding: 24px;
   min-width: 460px;
   position: relative;
@@ -471,11 +550,17 @@ tr:hover { background: rgba(255,255,255,0.02); }
   max-height: 85vh;
   overflow-y: auto;
   position: relative;
+  box-shadow:
+    inset -2px -2px 0 0 #4a4a5a,
+    inset 2px 2px 0 0 var(--pixel-border),
+    inset -4px -4px 0 0 #2a2a3a,
+    inset 4px 4px 0 0 #8a8a9a;
 }
 .modal h3 {
-  font-size: 16px;
+  font-size: 12px;
   margin-bottom: 16px;
   font-weight: 600;
+  font-family: var(--font-pixel);
 }
 .modal-close {
   position: absolute;
@@ -890,9 +975,12 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .tab-nav button {
   background: none;
   border: none;
+  border-radius: 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 10px;
   font-weight: 600;
+  font-family: var(--font-pixel);
+  -webkit-font-smoothing: none;
   padding: 10px 20px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
@@ -1300,6 +1388,32 @@ tr:hover { background: rgba(255,255,255,0.02); }
   z-index: 2;
 }
 .agent-world-close:hover { color: var(--text); }
+.aw-minimap {
+  width: 120px; height: 40px; border: 1px solid var(--border);
+  border-radius: 4px; background: #0a0a12; cursor: pointer;
+  image-rendering: pixelated; image-rendering: crisp-edges;
+  flex-shrink: 0;
+}
+.agent-world-edit {
+  position: absolute; top: 6px; left: 8px;
+  background: rgba(0,0,0,0.5); border: 1px solid var(--border); color: var(--muted);
+  font-size: 11px; cursor: pointer; border-radius: 4px; padding: 2px 8px;
+  font-family: 'Press Start 2P', monospace; z-index: 2;
+}
+.agent-world-edit:hover { color: var(--text); border-color: var(--text); }
+.agent-world-edit.active { color: #fbbf24; border-color: #fbbf24; }
+.decor-palette {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  display: flex; gap: 4px; padding: 4px 8px;
+  background: rgba(0,0,0,0.8); border-top: 1px solid var(--border);
+  overflow-x: auto; z-index: 2;
+}
+.decor-palette-item {
+  width: 32px; height: 32px; flex-shrink: 0;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer; image-rendering: pixelated;
+}
+.decor-palette-item:hover { border-color: #fbbf24; background: rgba(251,191,36,0.1); }
 
 /* Pixel Team */
 .pixel-team {
@@ -1323,6 +1437,40 @@ tr:hover { background: rgba(255,255,255,0.02); }
   display: flex; align-items: center; gap: 3px; font-size: 9px; color: var(--muted);
 }
 .pixel-agent-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+/* Quick Search */
+.search-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:10000; justify-content:center; padding-top:15vh; }
+.search-overlay.open { display:flex; }
+.search-box { width:560px; max-width:90vw; background:var(--surface); border:2px solid var(--accent); max-height:60vh; display:flex; flex-direction:column; }
+.search-input { width:100%; padding:14px 16px; background:transparent; border:none; border-bottom:1px solid var(--border); color:var(--text); font-size:16px; font-family:var(--font-terminal); outline:none; }
+.search-results { overflow-y:auto; max-height:45vh; }
+.search-result { padding:10px 16px; cursor:pointer; display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--border); }
+.search-result:hover,.search-result.active { background:rgba(96,165,250,0.1); }
+.search-result-type { font-family:var(--font-pixel); font-size:8px; padding:2px 6px; background:var(--bg); color:var(--muted); flex-shrink:0; }
+.search-result-title { font-size:14px; color:var(--text); }
+.search-result-snippet { font-size:12px; color:var(--muted); margin-left:auto; flex-shrink:0; }
+.search-empty { padding:20px; text-align:center; color:var(--muted); font-size:14px; }
+/* Notification Center */
+.notif-bell { position:relative; cursor:pointer; font-size:18px; padding:4px 8px; color:var(--muted); transition:color 0.2s; }
+.notif-bell:hover { color:var(--text); }
+.notif-badge-count { position:absolute; top:-2px; right:0; background:var(--red); color:#fff; font-family:var(--font-pixel); font-size:8px; padding:1px 4px; min-width:14px; text-align:center; }
+.notif-dropdown { display:none; position:absolute; top:100%; right:0; width:320px; max-height:400px; overflow-y:auto; background:var(--surface); border:2px solid var(--border); z-index:9000; box-shadow:0 8px 24px rgba(0,0,0,0.4); }
+.notif-dropdown.open { display:block; }
+.notif-item { padding:10px 12px; border-bottom:1px solid var(--border); font-size:13px; cursor:pointer; }
+.notif-item:hover { background:rgba(96,165,250,0.08); }
+.notif-item-time { font-size:10px; color:var(--muted); }
+.notif-item-msg { color:var(--text); margin-top:2px; }
+.notif-empty { padding:20px; text-align:center; color:var(--muted); font-size:13px; }
+/* Memory Browser */
+.memory-browser { display:grid; grid-template-columns:220px 1fr; gap:12px; min-height:400px; }
+.memory-tree { border-right:1px solid var(--border); padding-right:12px; overflow-y:auto; max-height:500px; }
+.memory-tree-item { padding:6px 10px; cursor:pointer; font-size:13px; color:var(--muted); border-bottom:1px solid rgba(255,255,255,0.03); }
+.memory-tree-item:hover { color:var(--text); background:rgba(96,165,250,0.05); }
+.memory-tree-item.active { color:var(--accent); background:rgba(96,165,250,0.08); }
+.memory-tree-folder { font-family:var(--font-pixel); font-size:9px; color:var(--accent); padding:8px 10px 4px; text-transform:uppercase; letter-spacing:0.5px; }
+.memory-editor textarea { width:100%; min-height:350px; background:var(--bg); border:1px solid var(--border); color:var(--text); font-family:var(--font-mono); font-size:13px; padding:12px; resize:vertical; outline:none; }
+.memory-editor textarea:focus { border-color:var(--accent); }
+.memory-meta { font-size:11px; color:var(--muted); padding:6px 0; }
+@media (max-width:768px) { .memory-browser { grid-template-columns:1fr; } .memory-tree { max-height:200px; border-right:none; border-bottom:1px solid var(--border); padding-right:0; padding-bottom:8px; } }
 </style>
 </head>
 <body>
@@ -1333,6 +1481,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
     <div class="header-right">
       <button class="btn btn-add" id="pwa-install-btn" onclick="pwaInstall()" style="display:none;padding:6px 14px;font-size:12px">Install App</button>
       <button class="btn btn-run" onclick="openDispatchModal()" style="padding:6px 14px;font-size:12px">Quick Dispatch</button>
+      <div class="notif-bell" onclick="toggleNotifDropdown()" id="notif-bell-container">&#x1F514;<span class="notif-badge-count" id="notif-badge" style="display:none">0</span><div class="notif-dropdown" id="notif-dropdown"><div class="notif-empty">No notifications</div></div></div>
       <span class="updated" id="updated"></span>
       <span class="badge badge-ok" id="conn-badge">Connected</span>
     </div>
@@ -1363,12 +1512,15 @@ tr:hover { background: rgba(255,255,255,0.02); }
   </div>
   <!-- Agent World -->
   <div class="agent-world-toggle" id="agent-world-toggle" style="display:none" onclick="toggleAgentWorld()">
+    <canvas id="aw-minimap" class="aw-minimap" width="120" height="40"></canvas>
     <span class="aw-title">Agent World</span>
     <span class="aw-status" id="aw-status"></span>
   </div>
   <div class="agent-world-canvas" id="agent-world-container" style="display:none">
     <canvas id="agent-world-cv"></canvas>
     <button class="agent-world-close" onclick="toggleAgentWorld()">&times;</button>
+    <button class="agent-world-edit" id="aw-edit-btn" onclick="toggleDecorEditMode()">Edit</button>
+    <div class="decor-palette" id="decor-palette" style="display:none"></div>
   </div>
 
   <!-- Cost + Stats -->
@@ -1790,6 +1942,10 @@ tr:hover { background: rgba(255,255,255,0.02); }
     </div>
     <div class="task-stats" id="task-stats"></div>
   </div>
+  <div class="section" id="health-section">
+    <div class="section-header"><span class="section-title">System Health</span></div>
+    <div class="stats" id="health-stats"></div>
+  </div>
   </div><!-- /dashboard-content -->
 
   <div id="chat-content" style="display:none">
@@ -1905,6 +2061,19 @@ tr:hover { background: rgba(255,255,255,0.02); }
   <div id="settings-content" style="display:none">
     <div id="settings-loading" style="text-align:center;color:var(--muted);padding:2rem">Loading settings...</div>
     <div id="settings-container" style="display:none">
+      <!-- Theme -->
+      <div class="section">
+        <div class="section-header"><span class="section-title">Theme</span></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;padding:8px 0">
+          <button class="btn" onclick="setTheme('default')" id="theme-btn-default">Classic</button>
+          <button class="btn" onclick="setTheme('nes')" id="theme-btn-nes">NES Dark</button>
+          <button class="btn" onclick="setTheme('gameboy')" id="theme-btn-gameboy">Game Boy</button>
+          <button class="btn" onclick="setTheme('amber')" id="theme-btn-amber">Amber</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-left:16px;cursor:pointer">
+            <input type="checkbox" id="sound-toggle" onchange="_soundEnabled=this.checked;localStorage.setItem('tetora-sound',this.checked)"> 8-bit sounds
+          </label>
+        </div>
+      </div>
       <!-- General -->
       <div class="section">
         <div class="section-header"><span class="section-title">General</span></div>
@@ -1995,6 +2164,14 @@ tr:hover { background: rgba(255,255,255,0.02); }
     </div>
     <!-- Hidden projects grid for project modal functions -->
     <div id="projects-grid" style="display:none"></div>
+    <!-- Memory Browser -->
+    <div class="section" id="memory-browser-section">
+      <div class="section-header"><span class="section-title">Workspace Files</span></div>
+      <div class="memory-browser">
+        <div class="memory-tree" id="memory-tree"><div class="search-empty">Loading...</div></div>
+        <div class="memory-editor" id="memory-editor"><div class="search-empty">Select a file to view</div></div>
+      </div>
+    </div>
   </div><!-- /workspace-content -->
 
 <!-- Project Modal -->
@@ -2752,12 +2929,16 @@ function handleActivityEvent(type, ev) {
       if (data.durationMs) detail += ' in ' + formatDuration(data.durationMs);
       if (data.costUsd) detail += ' &middot; $' + Number(data.costUsd).toFixed(4);
       if (ev.taskId) removeLiveTaskItem(ev.taskId);
+      addNotification('Completed: ' + (data.name || ev.taskId || 'task'), 'success');
+      play8BitSound('complete');
       break;
     case 'error':
       badge = 'error';
       detail = esc(data.error || data.status || 'error');
       if (data.durationMs) detail += ' <span class="muted">(' + formatDuration(data.durationMs) + ')</span>';
       if (ev.taskId) removeLiveTaskItem(ev.taskId);
+      addNotification('Error: ' + (data.error || data.name || 'task'), 'error');
+      play8BitSound('error');
       break;
     case 'task_queued':
       badge = 'queued';
@@ -2973,6 +3154,9 @@ async function refresh() {
       fetchJSON('/api/tasks?status=doing').catch(() => []),
     ]);
 
+    // Cache for search
+    window._latestAgents = Array.isArray(roles) ? roles : [];
+
     // Connection badge
     const badge = document.getElementById('conn-badge');
     badge.textContent = 'Connected';
@@ -3069,6 +3253,9 @@ async function refresh() {
 
     // History Trends
     await refreshHistoryTrends();
+
+    // System Health
+    refreshHealth();
 
     // Cache jobs for edit modal
     cachedJobs = Array.isArray(jobs) ? jobs : [];
@@ -4695,6 +4882,7 @@ async function refreshSessions() {
     const data = await fetchJSON(url).catch(() => ({ sessions: [], total: 0 }));
     const sessions = data.sessions || [];
     const total = data.total || 0;
+    window._latestSessions = sessions;
 
     const section = document.getElementById('sessions-section');
     section.style.display = (total > 0 || roleFilter) ? '' : 'none';
@@ -5296,6 +5484,15 @@ async function refreshBoard() {
     // Task board might not be enabled — show empty state.
     cachedBoardData = { columns: {idea:[],backlog:[],'needs-thought':[],todo:[],doing:[],review:[],done:[],failed:[]}, stats: {total:0,byStatus:{},totalCost:0}, projects: [], agents: [] };
   }
+
+  // Cache all tasks for search
+  var allTasks = [];
+  if (cachedBoardData && cachedBoardData.columns) {
+    ['idea','backlog','needs-thought','todo','doing','review','done','failed'].forEach(function(s) {
+      (cachedBoardData.columns[s] || []).forEach(function(t) { allTasks.push(t); });
+    });
+  }
+  window._kanbanTasks = allTasks;
 
   renderProjectStatsBar();
   populateBoardFilters();
@@ -6018,6 +6215,7 @@ function switchTab(tab) {
   }
   if (tab === 'workspace') {
     refreshBoard();
+    loadMemoryBrowser();
   }
 }
 
@@ -7306,7 +7504,89 @@ function updateAgentWorldToggle(sprites) {
   if (working > 0) parts.push(working + ' working');
   if (idle > 0) parts.push(idle + ' idle');
   document.getElementById('aw-status').textContent = parts.length > 0 ? parts.join(' · ') : 'all idle';
+  renderMinimap(sprites);
 }
+
+// --- Mini-map ---
+function renderMinimap(sprites) {
+  var cv = document.getElementById('aw-minimap');
+  if (!cv) return;
+  var ctx = cv.getContext('2d');
+  var W = 120, H = 40;
+  var scaleX = W / 600, scaleY = H / 200;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0a0a12';
+  ctx.fillRect(0, 0, W, H);
+  // Draw room outlines
+  var rooms = typeof OFFICE !== 'undefined' ? OFFICE.rooms : null;
+  if (rooms) {
+    ctx.strokeStyle = '#333355';
+    ctx.lineWidth = 0.5;
+    for (var rk in rooms) {
+      var r = rooms[rk];
+      ctx.strokeRect(Math.round(r.x * scaleX), Math.round(r.y * scaleY),
+        Math.round(r.w * scaleX), Math.round(r.h * scaleY));
+    }
+  }
+  // Draw agent dots
+  if (spriteEngine && spriteEngine.agents) {
+    for (var name in spriteEngine.agents) {
+      var a = spriteEngine.agents[name];
+      var color = (typeof AGENT_COLORS !== 'undefined' && AGENT_COLORS[name]) || '#a78bfa';
+      var ax = Math.round(a.x * scaleX);
+      var ay = Math.round(a.y * scaleY);
+      ctx.fillStyle = color;
+      ctx.fillRect(ax - 1, ay - 1, 3, 3);
+      // Pulse ring for working agents
+      if (a.spriteState && a.spriteState !== 'idle') {
+        var pulse = 0.4 + 0.6 * Math.abs(Math.sin(Date.now() / 400));
+        ctx.globalAlpha = pulse;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(ax - 3, ay - 3, 7, 7);
+        ctx.globalAlpha = 1;
+      }
+    }
+  } else if (sprites) {
+    // Fallback: no engine, place dots in room centers
+    var idx = 0;
+    for (var sn in sprites) {
+      var c2 = (typeof AGENT_COLORS !== 'undefined' && AGENT_COLORS[sn]) || '#a78bfa';
+      var fx = 30 + idx * 25, fy = 20;
+      ctx.fillStyle = c2;
+      ctx.fillRect(Math.round(fx * scaleX), Math.round(fy * scaleY), 3, 3);
+      idx++;
+    }
+  }
+}
+
+// Mini-map click handler
+(function() {
+  var cv = document.getElementById('aw-minimap');
+  if (!cv) return;
+  cv.addEventListener('click', function(e) {
+    e.stopPropagation();
+    if (!spriteEngine || !spriteEngine.agents) return;
+    var rect = cv.getBoundingClientRect();
+    var scaleX = 600 / rect.width;
+    var scaleY = 200 / rect.height;
+    var mx = (e.clientX - rect.left) * scaleX;
+    var my = (e.clientY - rect.top) * scaleY;
+    // Find nearest agent
+    var best = null, bestDist = Infinity;
+    for (var name in spriteEngine.agents) {
+      var a = spriteEngine.agents[name];
+      var d = Math.sqrt((a.x - mx) * (a.x - mx) + (a.y - my) * (a.y - my));
+      if (d < bestDist) { bestDist = d; best = a; }
+    }
+    if (best && bestDist < 80) {
+      // Open office if closed
+      if (!agentWorldOpen) toggleAgentWorld();
+      // Flash the agent
+      best._flashTimer = 1500;
+    }
+  });
+})();
 
 // Office layout constants (in canvas pixels, scaled for 600×200 logical size)
 var OFFICE = {
@@ -7542,6 +7822,9 @@ SpriteEngine.prototype.update = function(dt) {
   for (var name in this.agents) {
     var a = this.agents[name];
 
+    // Flash timer (minimap click highlight)
+    if (a._flashTimer > 0) a._flashTimer -= dt;
+
     // Celebrate timer
     if (a.celebrateTimer > 0) {
       a.celebrateTimer -= dt;
@@ -7615,6 +7898,9 @@ SpriteEngine.prototype.render = function() {
     this._drawOffice(ctx);
   }
 
+  // Draw decorations (between office and agents)
+  this._drawDecorations(ctx);
+
   // Draw agents (sorted by y for depth)
   var sorted = [];
   for (var name in this.agents) sorted.push(this.agents[name]);
@@ -7623,6 +7909,12 @@ SpriteEngine.prototype.render = function() {
   for (var i = 0; i < sorted.length; i++) {
     this._drawAgent(ctx, sorted[i]);
   }
+
+  // Draw edit overlay on top
+  this._drawDecorEditOverlay(ctx);
+
+  // Update minimap when office is rendering
+  renderMinimap(null);
 };
 
 SpriteEngine.prototype._drawOffice = function(ctx) {
@@ -7769,6 +8061,16 @@ SpriteEngine.prototype._drawDefaultAgent = function(ctx, agent) {
     }
   }
 
+  // Flash highlight ring (minimap click)
+  if (agent._flashTimer > 0) {
+    var flashAlpha = 0.3 + 0.7 * Math.abs(Math.sin(Date.now() / 150));
+    ctx.globalAlpha = flashAlpha;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(dx - 2, dy - 2, cw + 4, ch + 6);
+    ctx.globalAlpha = 1;
+  }
+
   // Name label
   ctx.fillStyle = '#8888aa';
   ctx.font = '7px monospace';
@@ -7832,6 +8134,16 @@ SpriteEngine.prototype._drawAgent = function(ctx, agent) {
   ctx.drawImage(img, sx, sy, cw, ch, dx, dy, cw, ch);
   ctx.globalAlpha = 1.0;
 
+  // Flash highlight ring (minimap click)
+  if (agent._flashTimer > 0) {
+    var flashAlpha = 0.3 + 0.7 * Math.abs(Math.sin(Date.now() / 150));
+    ctx.globalAlpha = flashAlpha;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(dx - 2, dy - 2, cw + 4, ch + 4);
+    ctx.globalAlpha = 1;
+  }
+
   // Name label
   ctx.fillStyle = '#8888aa';
   ctx.font = '7px monospace';
@@ -7840,6 +8152,342 @@ SpriteEngine.prototype._drawAgent = function(ctx, agent) {
   ctx.textAlign = 'start';
 };
 
+// --- Office Decoration System ---
+var DECOR_CATALOG = {
+  plant:     { w: 16, h: 20, label: 'Plant' },
+  bookshelf: { w: 24, h: 20, label: 'Books' },
+  lamp:      { w: 8,  h: 20, label: 'Lamp' },
+  poster:    { w: 20, h: 16, label: 'Poster' },
+  clock:     { w: 12, h: 12, label: 'Clock' },
+  cactus:    { w: 10, h: 14, label: 'Cactus' },
+  monitor:   { w: 18, h: 16, label: 'Monitor' },
+  cat:       { w: 12, h: 10, label: 'Cat' },
+  coffee:    { w: 8,  h: 8,  label: 'Coffee' },
+  rug:       { w: 32, h: 16, label: 'Rug' }
+};
+
+var _decorations = [];
+var _decorEditMode = false;
+var _decorDragging = null; // { idx, offX, offY }
+var _decorSelected = -1;
+
+// Load decorations from localStorage
+(function() {
+  try {
+    var saved = localStorage.getItem('tetora-decorations');
+    if (saved) _decorations = JSON.parse(saved);
+  } catch(e) {}
+})();
+
+function _saveDecorations() {
+  try { localStorage.setItem('tetora-decorations', JSON.stringify(_decorations)); } catch(e) {}
+}
+
+// Pixel-art draw functions for each decoration type
+var DECOR_DRAW = {
+  plant: function(ctx, x, y) {
+    ctx.fillStyle = '#5a3a1a'; ctx.fillRect(x+5, y+14, 6, 6); // pot
+    ctx.fillStyle = '#2d8a4e'; ctx.fillRect(x+4, y+6, 8, 8);  // leaves
+    ctx.fillStyle = '#1a6b3a'; ctx.fillRect(x+6, y+2, 4, 6);  // top
+    ctx.fillStyle = '#3aaa5e'; ctx.fillRect(x+2, y+8, 4, 4);  // left leaf
+    ctx.fillRect(x+10, y+8, 4, 4); // right leaf
+  },
+  bookshelf: function(ctx, x, y) {
+    ctx.fillStyle = '#4a3520'; ctx.fillRect(x, y, 24, 20);     // frame
+    ctx.fillStyle = '#3a2510'; ctx.fillRect(x+1, y+1, 22, 8);  // shelf top
+    ctx.fillRect(x+1, y+11, 22, 8); // shelf bot
+    ctx.fillStyle = '#e74c3c'; ctx.fillRect(x+2, y+2, 4, 6);   // red book
+    ctx.fillStyle = '#3498db'; ctx.fillRect(x+7, y+2, 4, 6);   // blue book
+    ctx.fillStyle = '#f1c40f'; ctx.fillRect(x+12, y+3, 3, 5);  // yellow book
+    ctx.fillStyle = '#2ecc71'; ctx.fillRect(x+16, y+2, 5, 6);  // green book
+    ctx.fillStyle = '#9b59b6'; ctx.fillRect(x+3, y+12, 4, 6);  // purple book
+    ctx.fillStyle = '#e67e22'; ctx.fillRect(x+8, y+12, 5, 6);  // orange book
+    ctx.fillStyle = '#1abc9c'; ctx.fillRect(x+14, y+13, 4, 5); // teal book
+  },
+  lamp: function(ctx, x, y) {
+    ctx.fillStyle = '#fbbf24'; ctx.fillRect(x+1, y, 6, 6);     // shade
+    ctx.fillStyle = '#e5a91a'; ctx.fillRect(x+2, y+6, 4, 2);   // rim
+    ctx.fillStyle = '#888'; ctx.fillRect(x+3, y+8, 2, 10);     // pole
+    ctx.fillStyle = '#666'; ctx.fillRect(x+1, y+18, 6, 2);     // base
+  },
+  poster: function(ctx, x, y) {
+    ctx.fillStyle = '#2a2a4a'; ctx.fillRect(x, y, 20, 16);     // frame
+    ctx.fillStyle = '#1a1a3a'; ctx.fillRect(x+1, y+1, 18, 14); // bg
+    ctx.fillStyle = '#f87171'; ctx.fillRect(x+3, y+3, 6, 4);   // art
+    ctx.fillStyle = '#60a5fa'; ctx.fillRect(x+11, y+3, 6, 4);
+    ctx.fillStyle = '#fbbf24'; ctx.fillRect(x+5, y+9, 10, 2);  // text line
+    ctx.fillStyle = '#888'; ctx.fillRect(x+7, y+12, 6, 1);
+  },
+  clock: function(ctx, x, y) {
+    ctx.fillStyle = '#3a3a5a'; ctx.fillRect(x+1, y, 10, 12);   // body
+    ctx.fillStyle = '#1a1a2a'; ctx.fillRect(x+2, y+1, 8, 8);   // face
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(x+5, y+2, 2, 4);    // hour hand
+    ctx.fillRect(x+5, y+4, 4, 2);  // minute hand
+    ctx.fillStyle = '#f87171'; ctx.fillRect(x+5, y+4, 2, 2);    // center
+    ctx.fillStyle = '#fbbf24'; ctx.fillRect(x+3, y+10, 6, 2);   // pendulum
+  },
+  cactus: function(ctx, x, y) {
+    ctx.fillStyle = '#5a3a1a'; ctx.fillRect(x+2, y+10, 6, 4);  // pot
+    ctx.fillStyle = '#2d8a4e'; ctx.fillRect(x+3, y+2, 4, 10);  // body
+    ctx.fillStyle = '#3aaa5e'; ctx.fillRect(x, y+4, 3, 4);      // left arm
+    ctx.fillRect(x+7, y+3, 3, 4);   // right arm
+    ctx.fillStyle = '#f87171'; ctx.fillRect(x+4, y, 2, 2);      // flower
+  },
+  monitor: function(ctx, x, y) {
+    ctx.fillStyle = '#333'; ctx.fillRect(x, y, 18, 12);         // frame
+    ctx.fillStyle = '#0a0a2a'; ctx.fillRect(x+1, y+1, 16, 9);  // screen
+    ctx.fillStyle = '#60a5fa'; ctx.fillRect(x+2, y+2, 8, 1);   // text
+    ctx.fillStyle = '#4ade80'; ctx.fillRect(x+2, y+4, 12, 1);
+    ctx.fillStyle = '#f87171'; ctx.fillRect(x+2, y+6, 6, 1);
+    ctx.fillStyle = '#888'; ctx.fillRect(x+7, y+12, 4, 2);     // stand
+    ctx.fillRect(x+5, y+14, 8, 2);
+  },
+  cat: function(ctx, x, y) {
+    ctx.fillStyle = '#f5a623'; ctx.fillRect(x+2, y+2, 8, 6);   // body
+    ctx.fillStyle = '#e5961a'; ctx.fillRect(x+1, y, 3, 3);      // left ear
+    ctx.fillRect(x+8, y, 3, 3);     // right ear
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(x+3, y+3, 2, 2);    // left eye
+    ctx.fillRect(x+7, y+3, 2, 2);   // right eye
+    ctx.fillStyle = '#333'; ctx.fillRect(x+4, y+3, 1, 1);       // pupil L
+    ctx.fillRect(x+8, y+3, 1, 1);   // pupil R
+    ctx.fillStyle = '#f87171'; ctx.fillRect(x+5, y+5, 2, 1);    // nose
+    ctx.fillStyle = '#e5961a'; ctx.fillRect(x+10, y+4, 2, 2);   // tail
+  },
+  coffee: function(ctx, x, y) {
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(x+1, y+2, 6, 6);    // cup
+    ctx.fillStyle = '#5a3a1a'; ctx.fillRect(x+2, y+3, 4, 4);   // coffee
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(x+6, y+3, 2, 2);    // handle
+    ctx.fillStyle = '#888'; ctx.fillRect(x, y+7, 8, 1);         // saucer
+    // Steam
+    var st = Math.floor(Date.now() / 300) % 3;
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fillRect(x+2+st, y, 1, 2);
+    ctx.fillRect(x+5-st, y+1, 1, 1);
+  },
+  rug: function(ctx, x, y) {
+    ctx.fillStyle = '#8b2252'; ctx.fillRect(x, y+2, 32, 12);    // base
+    ctx.fillStyle = '#a0305e'; ctx.fillRect(x+2, y+4, 28, 8);   // inner
+    ctx.fillStyle = '#fbbf24'; ctx.fillRect(x+4, y+6, 24, 4);   // center stripe
+    ctx.fillStyle = '#8b2252'; ctx.fillRect(x+8, y+7, 16, 2);   // pattern
+    // Fringe
+    ctx.fillStyle = '#a0305e';
+    for (var fi = 0; fi < 8; fi++) {
+      ctx.fillRect(x + 2 + fi * 4, y, 2, 2);
+      ctx.fillRect(x + 2 + fi * 4, y + 14, 2, 2);
+    }
+  }
+};
+
+function toggleDecorEditMode() {
+  _decorEditMode = !_decorEditMode;
+  _decorSelected = -1;
+  var btn = document.getElementById('aw-edit-btn');
+  var palette = document.getElementById('decor-palette');
+  if (_decorEditMode) {
+    btn.textContent = 'Done';
+    btn.classList.add('active');
+    palette.style.display = 'flex';
+    // Populate palette if empty
+    if (palette.children.length === 0) {
+      for (var type in DECOR_CATALOG) {
+        var item = document.createElement('canvas');
+        item.className = 'decor-palette-item';
+        item.width = 32; item.height = 32;
+        item.title = DECOR_CATALOG[type].label;
+        item.dataset.type = type;
+        var pctx = item.getContext('2d');
+        var cat = DECOR_CATALOG[type];
+        var ox = Math.round((32 - cat.w) / 2);
+        var oy = Math.round((32 - cat.h) / 2);
+        if (DECOR_DRAW[type]) DECOR_DRAW[type](pctx, ox, oy);
+        item.addEventListener('click', (function(t) {
+          return function(e) { e.stopPropagation(); addDecoration(t); };
+        })(type));
+        palette.appendChild(item);
+      }
+    }
+  } else {
+    btn.textContent = 'Edit';
+    btn.classList.remove('active');
+    palette.style.display = 'none';
+  }
+}
+
+function addDecoration(type) {
+  _decorations.push({ type: type, x: 300 - DECOR_CATALOG[type].w/2, y: 100 - DECOR_CATALOG[type].h/2 });
+  _saveDecorations();
+}
+
+function _canvasCoords(e) {
+  var cv = document.getElementById('agent-world-cv');
+  if (!cv) return { x: 0, y: 0 };
+  var rect = cv.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (OFFICE.W / rect.width),
+    y: (e.clientY - rect.top) * (OFFICE.H / rect.height)
+  };
+}
+
+// Draw decorations — called in render between office and agents
+SpriteEngine.prototype._drawDecorations = function(ctx) {
+  for (var i = 0; i < _decorations.length; i++) {
+    var d = _decorations[i];
+    if (DECOR_DRAW[d.type]) DECOR_DRAW[d.type](ctx, d.x, d.y);
+  }
+};
+
+// Draw edit overlay (selection highlight)
+SpriteEngine.prototype._drawDecorEditOverlay = function(ctx) {
+  if (!_decorEditMode) return;
+  for (var i = 0; i < _decorations.length; i++) {
+    var d = _decorations[i];
+    var cat = DECOR_CATALOG[d.type];
+    if (!cat) continue;
+    ctx.strokeStyle = i === _decorSelected ? '#fbbf24' : 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash(i === _decorSelected ? [] : [2, 2]);
+    ctx.strokeRect(d.x - 1, d.y - 1, cat.w + 2, cat.h + 2);
+  }
+  ctx.setLineDash([]);
+};
+
+// Decoration drag handlers
+(function() {
+  var cv = document.getElementById('agent-world-cv');
+  if (!cv) return;
+
+  cv.addEventListener('mousedown', function(e) {
+    if (!_decorEditMode) return;
+    var p = _canvasCoords(e);
+    // Hit-test decorations in reverse order (top-most first)
+    for (var i = _decorations.length - 1; i >= 0; i--) {
+      var d = _decorations[i];
+      var cat = DECOR_CATALOG[d.type];
+      if (p.x >= d.x && p.x <= d.x + cat.w && p.y >= d.y && p.y <= d.y + cat.h) {
+        _decorDragging = { idx: i, offX: p.x - d.x, offY: p.y - d.y };
+        _decorSelected = i;
+        e.preventDefault();
+        return;
+      }
+    }
+    _decorSelected = -1;
+  });
+
+  cv.addEventListener('mousemove', function(e) {
+    if (!_decorDragging) return;
+    var p = _canvasCoords(e);
+    var d = _decorations[_decorDragging.idx];
+    d.x = p.x - _decorDragging.offX;
+    d.y = p.y - _decorDragging.offY;
+  });
+
+  cv.addEventListener('mouseup', function(e) {
+    if (!_decorDragging) return;
+    var d = _decorations[_decorDragging.idx];
+    var cat = DECOR_CATALOG[d.type];
+    // Clamp to canvas bounds
+    d.x = Math.max(0, Math.min(OFFICE.W - cat.w, Math.round(d.x)));
+    d.y = Math.max(0, Math.min(OFFICE.H - cat.h, Math.round(d.y)));
+    _decorDragging = null;
+    _saveDecorations();
+  });
+
+  // Right-click to delete in edit mode
+  cv.addEventListener('contextmenu', function(e) {
+    if (!_decorEditMode) return;
+    e.preventDefault();
+    var p = _canvasCoords(e);
+    for (var i = _decorations.length - 1; i >= 0; i--) {
+      var d = _decorations[i];
+      var cat = DECOR_CATALOG[d.type];
+      if (p.x >= d.x && p.x <= d.x + cat.w && p.y >= d.y && p.y <= d.y + cat.h) {
+        _decorations.splice(i, 1);
+        _decorSelected = -1;
+        _saveDecorations();
+        return;
+      }
+    }
+  });
+})();
+
+// --- Agent Click Interaction ---
+(function() {
+  var cv = document.getElementById('agent-world-cv');
+  if (!cv) return;
+  cv.addEventListener('click', function(e) {
+    if (_decorEditMode) return; // bypass agent clicks in edit mode
+    if (!spriteEngine || !spriteEngine.agents) return;
+    var rect = cv.getBoundingClientRect();
+    var scaleX = OFFICE.W / rect.width;
+    var scaleY = OFFICE.H / rect.height;
+    var mx = (e.clientX - rect.left) * scaleX;
+    var my = (e.clientY - rect.top) * scaleY;
+    var cw = (spriteEngine.config && spriteEngine.config.cellWidth) || 32;
+    var ch = (spriteEngine.config && spriteEngine.config.cellHeight) || 32;
+    for (var name in spriteEngine.agents) {
+      var a = spriteEngine.agents[name];
+      if (mx >= a.x - cw/2 && mx <= a.x + cw/2 && my >= a.y - ch && my <= a.y + 4) {
+        showAgentInfoModal(a);
+        return;
+      }
+    }
+  });
+})();
+
+function showAgentInfoModal(agent) {
+  var name = agent.name;
+  var role = window._cachedRoles && window._cachedRoles[name];
+  var modal = document.createElement('div');
+  modal.className = 'modal-overlay open';
+  modal.onclick = function(e) { if (e.target === modal) document.body.removeChild(modal); };
+  var desc = role ? (role.description || '') : '';
+  var model = role ? (role.model || '') : '';
+  var color = AGENT_COLORS[name] || DEFAULT_AGENT_COLOR;
+  modal.innerHTML = '<div class="modal" style="min-width:320px">' +
+    '<button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button>' +
+    '<h3 style="color:' + color + '">' + name + '</h3>' +
+    '<div style="margin:12px 0;font-size:14px">' +
+    '<div><span style="color:var(--muted)">Status:</span> ' + (agent.spriteState || 'idle') + '</div>' +
+    (model ? '<div><span style="color:var(--muted)">Model:</span> ' + model + '</div>' : '') +
+    (desc ? '<div style="margin-top:8px;color:var(--muted);font-size:13px">' + desc + '</div>' : '') +
+    '</div></div>';
+  document.body.appendChild(modal);
+  play8BitSound('select');
+}
+
+// --- 8-Bit Sound Effects (Web Audio API, opt-in) ---
+var _audioCtx = null;
+var _soundEnabled = localStorage.getItem('tetora-sound') === 'true';
+function play8BitSound(type) {
+  if (!_soundEnabled) return;
+  if (!_audioCtx) { try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return; } }
+  var ctx = _audioCtx;
+  var osc = ctx.createOscillator();
+  var gain = ctx.createGain();
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  gain.gain.value = 0.08;
+  if (type === 'complete') {
+    osc.type = 'square'; osc.frequency.setValueAtTime(523, ctx.currentTime);
+    osc.frequency.setValueAtTime(659, ctx.currentTime + 0.1); osc.frequency.setValueAtTime(784, ctx.currentTime + 0.2);
+    gain.gain.setValueAtTime(0.08, ctx.currentTime + 0.25); gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.35);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.35);
+  } else if (type === 'error') {
+    osc.type = 'square'; osc.frequency.setValueAtTime(200, ctx.currentTime);
+    osc.frequency.setValueAtTime(150, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.06, ctx.currentTime + 0.25); gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
+  } else if (type === 'select') {
+    osc.type = 'square'; osc.frequency.setValueAtTime(440, ctx.currentTime);
+    gain.gain.setValueAtTime(0.05, ctx.currentTime); gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.08);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.08);
+  } else if (type === 'coin') {
+    osc.type = 'square'; osc.frequency.setValueAtTime(988, ctx.currentTime);
+    osc.frequency.setValueAtTime(1319, ctx.currentTime + 0.08);
+    gain.gain.setValueAtTime(0.06, ctx.currentTime + 0.15); gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.2);
+  }
+}
 // --- End Agent World ---
 
 pollTimer = setInterval(refresh, 5000);
@@ -8336,6 +8984,169 @@ function dcmSave() {
     });
 }
 
+// --- Theme System ---
+var THEMES = ['default', 'nes', 'gameboy', 'amber'];
+function setTheme(name) {
+  THEMES.forEach(function(t) { document.body.classList.remove('theme-' + t); });
+  if (name && name !== 'default') document.body.classList.add('theme-' + name);
+  localStorage.setItem('tetora-theme', name || 'default');
+  THEMES.forEach(function(t) {
+    var b = document.getElementById('theme-btn-' + t);
+    if (b) b.style.borderColor = (t === (name || 'default')) ? 'var(--accent)' : '';
+  });
+}
+(function() {
+  var s = localStorage.getItem('tetora-theme'); if (s && s !== 'default') setTheme(s);
+  var st = document.getElementById('sound-toggle');
+  if (st) st.checked = _soundEnabled;
+})();
+
+// --- Quick Search (Cmd+K) ---
+document.addEventListener('keydown', function(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); openSearch(); }
+  if (e.key === 'Escape' && document.getElementById('search-overlay').classList.contains('open')) { closeSearch(); e.stopPropagation(); }
+});
+var _searchItems = [];
+function openSearch() {
+  document.getElementById('search-overlay').classList.add('open');
+  var input = document.getElementById('search-input');
+  input.value = '';
+  input.focus();
+  document.getElementById('search-results').innerHTML = '<div class="search-empty">Type to search... (Cmd+K)</div>';
+}
+function closeSearch() { document.getElementById('search-overlay').classList.remove('open'); }
+function onSearchInput(q) {
+  var results = document.getElementById('search-results');
+  q = q.toLowerCase().trim();
+  if (!q) { results.innerHTML = '<div class="search-empty">Type to search...</div>'; return; }
+  var items = [];
+  if (typeof _kanbanTasks !== 'undefined' && _kanbanTasks) {
+    _kanbanTasks.forEach(function(t) {
+      if ((t.title||'').toLowerCase().indexOf(q) >= 0 || (t.project||'').toLowerCase().indexOf(q) >= 0)
+        items.push({type:'Task', title:t.title, snippet:t.status+' · '+(t.project||''), action:function(){switchTab('kanban');closeSearch();}});
+    });
+  }
+  if (typeof _latestAgents !== 'undefined' && _latestAgents) {
+    _latestAgents.forEach(function(a) {
+      if ((a.name||'').toLowerCase().indexOf(q) >= 0)
+        items.push({type:'Agent', title:a.name, snippet:a.model||'', action:function(){switchTab('dashboard');closeSearch();}});
+    });
+  }
+  if (typeof _latestSessions !== 'undefined' && _latestSessions) {
+    _latestSessions.forEach(function(s) {
+      if ((s.title||'').toLowerCase().indexOf(q) >= 0 || (s.agent||'').toLowerCase().indexOf(q) >= 0)
+        items.push({type:'Session', title:s.title||s.id, snippet:s.agent+' · '+s.status, action:function(){switchTab('sessions');closeSearch();}});
+    });
+  }
+  if (items.length === 0) { results.innerHTML = '<div class="search-empty">No results for "'+q.replace(/</g,'&lt;')+'"</div>'; return; }
+  _searchItems = items;
+  var html = '';
+  items.slice(0,20).forEach(function(it,i) {
+    html += '<div class="search-result" onclick="_searchItems['+i+'].action()"><span class="search-result-type">'+it.type+'</span><span class="search-result-title">'+(it.title||'').replace(/</g,'&lt;')+'</span><span class="search-result-snippet">'+(it.snippet||'').replace(/</g,'&lt;')+'</span></div>';
+  });
+  results.innerHTML = html;
+}
+
+// --- Notification Center ---
+var _notifications = [], _notifUnread = 0;
+function addNotification(msg, type) {
+  _notifications.unshift({msg:msg, type:type||'info', time:new Date().toLocaleTimeString(), read:false});
+  if (_notifications.length > 50) _notifications.pop();
+  _notifUnread++;
+  renderNotifications();
+}
+function renderNotifications() {
+  var badge = document.getElementById('notif-badge');
+  if (_notifUnread > 0) { badge.style.display = ''; badge.textContent = _notifUnread > 99 ? '99+' : _notifUnread; }
+  else { badge.style.display = 'none'; }
+  var dd = document.getElementById('notif-dropdown');
+  if (_notifications.length === 0) { dd.innerHTML = '<div class="notif-empty">No notifications</div>'; return; }
+  var html = '';
+  _notifications.slice(0,20).forEach(function(n) {
+    html += '<div class="notif-item"><div class="notif-item-time">'+n.time+'</div><div class="notif-item-msg">'+n.msg.replace(/</g,'&lt;')+'</div></div>';
+  });
+  dd.innerHTML = html;
+}
+function toggleNotifDropdown() {
+  var dd = document.getElementById('notif-dropdown');
+  dd.classList.toggle('open');
+  if (dd.classList.contains('open')) { _notifUnread = 0; renderNotifications(); }
+}
+document.addEventListener('click', function(e) {
+  var bell = document.getElementById('notif-bell-container');
+  if (bell && !bell.contains(e.target)) document.getElementById('notif-dropdown').classList.remove('open');
+});
+
+// --- Memory Browser ---
+var _memBrowserFiles = [], _memBrowserActive = '';
+async function loadMemoryBrowser() {
+  try {
+    var data = await fetchJSON(API + '/api/workspace/files');
+    _memBrowserFiles = data.files || [];
+    renderMemoryTree();
+  } catch(e) { console.warn('memBrowser: no workspace API'); }
+}
+function renderMemoryTree() {
+  var tree = document.getElementById('memory-tree');
+  if (!tree) return;
+  var byFolder = {};
+  _memBrowserFiles.forEach(function(f) {
+    if (!byFolder[f.folder]) byFolder[f.folder] = [];
+    byFolder[f.folder].push(f);
+  });
+  var html = '';
+  ['rules','memory','knowledge','skills'].forEach(function(folder) {
+    var files = byFolder[folder] || [];
+    if (files.length === 0) return;
+    html += '<div class="memory-tree-folder">' + folder + ' (' + files.length + ')</div>';
+    files.forEach(function(f) {
+      var active = f.path === _memBrowserActive ? ' active' : '';
+      html += '<div class="memory-tree-item' + active + '" onclick="loadMemoryFile(\'' + f.path.replace(/'/g,"\\'") + '\')">' + f.name + '</div>';
+    });
+  });
+  tree.innerHTML = html || '<div class="search-empty">No workspace files</div>';
+}
+async function loadMemoryFile(path) {
+  _memBrowserActive = path;
+  renderMemoryTree();
+  var editor = document.getElementById('memory-editor');
+  try {
+    var data = await fetchJSON(API + '/api/workspace/file?path=' + encodeURIComponent(path));
+    editor.innerHTML = '<div class="memory-meta">' + path + '</div><textarea id="memory-editor-textarea">' + (data.content||'').replace(/</g,'&lt;') + '</textarea><button class="btn btn-add memory-save-btn" onclick="saveMemoryFile()">Save</button>';
+  } catch(e) { editor.innerHTML = '<div class="search-empty">Failed to load file</div>'; }
+}
+async function saveMemoryFile() {
+  if (!_memBrowserActive) return;
+  var content = document.getElementById('memory-editor-textarea').value;
+  try {
+    await fetch(API + '/api/workspace/file', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:_memBrowserActive, content:content}) });
+  } catch(e) { console.warn('save failed', e); }
+}
+
+// --- System Health ---
+function refreshHealth() {
+  fetch(API + '/api/health').then(function(r){return r.json()}).then(function(d) {
+    var h = document.getElementById('health-stats');
+    if (!h) return;
+    var items = [
+      {label:'Uptime',value:d.uptime||'-'},{label:'DB Size',value:d.dbSize||'-'},
+      {label:'SSE Clients',value:''+(d.sseClients||0)},{label:'Last Cron',value:d.lastCron||'-'},
+      {label:'Provider',value:d.provider||'-'}
+    ];
+    h.innerHTML = '';
+    items.forEach(function(it) {
+      var el = document.createElement('div'); el.className = 'stat';
+      el.innerHTML = '<div class="stat-label">'+it.label+'</div><div class="stat-value" style="font-size:16px">'+it.value+'</div>';
+      h.appendChild(el);
+    });
+  }).catch(function(){});
+}
 </script>
+<div class="search-overlay" id="search-overlay" onclick="if(event.target===this)closeSearch()">
+  <div class="search-box">
+    <input class="search-input" id="search-input" placeholder="Search tasks, agents, projects..." oninput="onSearchInput(this.value)">
+    <div class="search-results" id="search-results"><div class="search-empty">Type to search... (Cmd+K)</div></div>
+  </div>
+</div>
 </body>
 </html>
