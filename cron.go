@@ -119,6 +119,9 @@ type CronEngine struct {
 	// Idle detection cache (avoids querying DB every tick).
 	idleCacheTime time.Time
 	idleCacheLast time.Time
+
+	// Hot-reload: track jobs.json mtime to auto-reload on change.
+	jobsFileMtime time.Time
 }
 
 func (c *CronEngine) LastRunTime() time.Time {
@@ -141,6 +144,54 @@ func newCronEngine(cfg *Config, sem, childSem chan struct{}, notifyFn func(strin
 		notifyFn: notifyFn,
 		stopCh:   make(chan struct{}),
 	}
+}
+
+// checkJobsReload checks if jobs.json was modified and reloads if needed.
+func (ce *CronEngine) checkJobsReload() {
+	info, err := os.Stat(ce.cfg.JobsFile)
+	if err != nil {
+		return
+	}
+	mtime := info.ModTime()
+	if mtime.Equal(ce.jobsFileMtime) || mtime.IsZero() {
+		return
+	}
+	// Preserve runtime state (lastRun, errors, running) across reload.
+	ce.mu.RLock()
+	stateMap := make(map[string]*cronJob, len(ce.jobs))
+	for _, j := range ce.jobs {
+		stateMap[j.ID] = j
+	}
+	ce.mu.RUnlock()
+
+	if err := ce.loadJobs(); err != nil {
+		logWarn("cron hot-reload failed", "error", err)
+		return
+	}
+
+	// Restore runtime state for jobs that still exist.
+	ce.mu.Lock()
+	for _, j := range ce.jobs {
+		if old, ok := stateMap[j.ID]; ok {
+			j.lastRun = old.lastRun
+			j.lastErr = old.lastErr
+			j.lastCost = old.lastCost
+			j.errors = old.errors
+			j.running = old.running
+			j.runCount = old.runCount
+			j.runStart = old.runStart
+			j.cancelFn = old.cancelFn
+			j.pendingApproval = old.pendingApproval
+			j.approvalCh = old.approvalCh
+			// Keep next run from old if it's in the future (avoids re-triggering).
+			if old.nextRun.After(time.Now()) {
+				j.nextRun = old.nextRun
+			}
+		}
+	}
+	ce.mu.Unlock()
+
+	logInfo("cron hot-reloaded jobs.json", "total", len(ce.jobs), "enabled", ce.countEnabled())
 }
 
 func (ce *CronEngine) loadJobs() error {
@@ -185,6 +236,11 @@ func (ce *CronEngine) loadJobs() error {
 		}
 		j.nextRun = nextRunAfter(j.expr, j.loc, time.Now().In(j.loc))
 		ce.jobs = append(ce.jobs, j)
+	}
+
+	// Record mtime for hot-reload detection.
+	if info, err := os.Stat(ce.cfg.JobsFile); err == nil {
+		ce.jobsFileMtime = info.ModTime()
 	}
 
 	logInfo("cron loaded jobs", "total", len(ce.jobs), "enabled", ce.countEnabled())
@@ -419,6 +475,9 @@ func (ce *CronEngine) hasRunningJobs(excludeID string) bool {
 }
 
 func (ce *CronEngine) tick(ctx context.Context) {
+	// Hot-reload: check if jobs.json was modified since last load.
+	ce.checkJobsReload()
+
 	// Check quiet hours transition (flush digest if just left quiet period).
 	quiet.checkQuietTransition(ce.cfg, ce.notifyFn)
 
@@ -989,7 +1048,9 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 
 // RunJobByID manually triggers a cron job. Returns error if not found.
 // Respects the job's maxConcurrentRuns limit.
-func (ce *CronEngine) RunJobByID(ctx context.Context, id string) error {
+// NOTE: Uses ce.ctx (daemon lifetime) instead of the caller's ctx,
+// because HTTP request contexts die when the response is sent.
+func (ce *CronEngine) RunJobByID(_ context.Context, id string) error {
 	ce.mu.Lock()
 	var target *cronJob
 	for _, j := range ce.jobs {
@@ -1009,7 +1070,7 @@ func (ce *CronEngine) RunJobByID(ctx context.Context, id string) error {
 	}
 	target.runCount++
 	target.running = true
-	jobCtx, jobCancel := context.WithCancel(ctx)
+	jobCtx, jobCancel := context.WithCancel(ce.ctx)
 	target.cancelFn = jobCancel
 	ce.mu.Unlock()
 

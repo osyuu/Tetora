@@ -44,6 +44,31 @@ func triageBacklog(ctx context.Context, cfg *Config, sem, childSem chan struct{}
 		validAgents[name] = true
 	}
 
+	// Fast-path: promote assigned tasks with no blocking deps directly to todo.
+	fastPromoted := 0
+	for _, t := range tasks {
+		if t.Assignee != "" && !hasBlockingDeps(tb, t) {
+			if _, err := tb.MoveTask(t.ID, "todo"); err == nil {
+				logInfo("triage: fast-path promote", "taskId", t.ID, "assignee", t.Assignee, "priority", t.Priority)
+				tb.AddComment(t.ID, "triage", "[triage] Fast-path: already assigned, no blocking deps → todo")
+				fastPromoted++
+			}
+		}
+	}
+	if fastPromoted > 0 {
+		logInfo("triage: fast-path promoted tasks", "count", fastPromoted)
+		// Re-fetch remaining backlog for LLM triage.
+		tasks, err = tb.ListTasks("backlog", "", "")
+		if err != nil {
+			logError("triage: re-list backlog failed", "error", err)
+			return
+		}
+		if len(tasks) == 0 {
+			logDebug("triage: all backlog tasks promoted via fast-path")
+			return
+		}
+	}
+
 	logInfo("triage: processing backlog", "count", len(tasks))
 
 	for _, t := range tasks {

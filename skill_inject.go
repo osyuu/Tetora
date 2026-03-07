@@ -120,6 +120,17 @@ func buildSkillsPrompt(cfg *Config, task Task, complexity RequestComplexity) str
 		return ""
 	}
 
+	// Limit number of injected skills per task (SkillsBench: 2-3 curated > many).
+	maxN := cfg.PromptBudget.maxSkillsPerTaskOrDefault()
+	if len(skills) > maxN {
+		skills = skills[:maxN]
+	}
+
+	// Track which skills were injected for this task.
+	for _, s := range skills {
+		recordSkillEvent(cfg.HistoryDB, s.Name, "injected", task.Prompt, task.Agent)
+	}
+
 	var sb strings.Builder
 	sb.WriteString("\n\n## Available Skills\n\n")
 	sb.WriteString("You have access to the following external commands/skills:\n\n")

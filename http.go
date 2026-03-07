@@ -550,23 +550,34 @@ func startHTTPServer(s *Server) *http.Server {
 		}
 	}()
 
+	// Pre-bind the port synchronously before returning. This prevents the
+	// daemon from proceeding with Discord/service initialization while the
+	// HTTP server goroutine hasn't bound yet — which causes split-brain
+	// (Discord bot in one process, HTTP server in another).
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		logError("http server bind failed (another instance running?)", "addr", cfg.ListenAddr, "error", err)
+		os.Exit(1)
+	}
+
 	// Start with TLS if configured.
 	if cfg.tlsEnabled {
 		srv.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}
 		go func() {
+			ln.Close() // release pre-bound listener; TLS needs its own
 			if err := srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != http.ErrServerClosed {
 				logError("https server error", "error", err)
-				os.Exit(1) // Fatal — prevent headless zombie instance
+				os.Exit(1)
 			}
 		}()
 		logInfo("https server listening", "addr", cfg.ListenAddr)
 	} else {
 		go func() {
-			if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+			if err := srv.Serve(ln); err != http.ErrServerClosed {
 				logError("http server error", "error", err)
-				os.Exit(1) // Fatal — prevent headless zombie instance
+				os.Exit(1)
 			}
 		}()
 		logInfo("http server listening", "addr", cfg.ListenAddr)

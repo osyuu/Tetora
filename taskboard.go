@@ -654,6 +654,20 @@ func getFloat64(row map[string]any, key string) float64 {
 	return 0
 }
 
+// hasBlockingDeps returns true if any dependency of the task is not yet done.
+func hasBlockingDeps(tb *TaskBoardEngine, t TaskBoard) bool {
+	if len(t.DependsOn) == 0 {
+		return false
+	}
+	for _, depID := range t.DependsOn {
+		dep, err := tb.GetTask(depID)
+		if err != nil || dep.Status != "done" {
+			return true
+		}
+	}
+	return false
+}
+
 // --- Board View & Project Stats ---
 
 type BoardView struct {
