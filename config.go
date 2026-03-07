@@ -136,6 +136,7 @@ type Config struct {
 	CronNotify            *bool                            `json:"cronNotify,omitempty"`             // nil/true = send cron notifications, false = suppress all
 	CronReplayHours       int                              `json:"cronReplayHours,omitempty"`        // hours to look back for missed jobs on startup (default 2)
 	Heartbeat             HeartbeatConfig                  `json:"heartbeat,omitempty"`              // --- Agent Heartbeat / Self-healing ---
+	Hooks                 HooksConfig                      `json:"hooks,omitempty"`                  // --- v3: Claude Code Hooks ---
 
 	// Resolved at runtime (not serialized).
 	baseDir           string

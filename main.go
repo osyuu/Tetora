@@ -238,6 +238,9 @@ func main() {
 	state.tmuxSupervisor = tmuxSup
 	cfg.tmuxSupervisor = tmuxSup
 
+	// Initialize hooks event receiver.
+	hookRecv := newHookReceiver(state.broker, tmuxSup, cfg)
+
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -989,6 +992,7 @@ func main() {
 			slackBot: slackBot, whatsappBot: whatsappBot, pluginHost: pluginHost,
 			lineBot: lineBot, teamsBot: teamsBot, signalBot: signalBot, gchatBot: gchatBot, imessageBot: imessageBot,
 			heartbeatMonitor: heartbeatMon,
+			hookReceiver:     hookRecv,
 			DegradedServices: degradedServices,
 			drainCh:          drainCh,
 		}

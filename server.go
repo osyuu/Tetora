@@ -31,6 +31,7 @@ type Server struct {
 	canvasEngine        *CanvasEngine
 	voiceRealtimeEngine *VoiceRealtimeEngine
 	heartbeatMonitor    *HeartbeatMonitor
+	hookReceiver        *hookReceiver
 	startTime           time.Time
 	limiter             *loginLimiter
 	apiLimiter          *apiRateLimiter

@@ -42,6 +42,8 @@ const (
 	SSETaskStalled       = "task_stalled"
 	SSETaskRecovered     = "task_recovered"
 	SSEWorkerUpdate      = "worker_update"
+	SSEHookEvent         = "hook_event"
+	SSEPlanReview        = "plan_review"
 )
 
 // --- SSE Broker ---

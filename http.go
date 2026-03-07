@@ -44,7 +44,7 @@ func authMiddleware(cfg *Config, secMon *securityMonitor, next http.Handler) htt
 
 		// Skip auth for health check, metrics, dashboard, Slack events, WhatsApp webhook, Discord interactions, LINE webhook, Teams webhook, Signal webhook, Google Chat webhook, and iMessage webhook.
 		p := r.URL.Path
-		if p == "/healthz" || p == "/metrics" || p == "/dashboard" || strings.HasPrefix(p, "/dashboard/") || p == "/slack/events" || p == "/api/whatsapp/webhook" || p == "/api/discord/interactions" || strings.HasPrefix(p, "/api/line/") || strings.HasPrefix(p, "/api/teams/") || strings.HasPrefix(p, "/api/signal/") || strings.HasPrefix(p, "/api/gchat/") || strings.HasPrefix(p, "/api/imessage/") || p == "/api/docs" || p == "/api/spec" || strings.HasPrefix(p, "/hooks/") || (strings.HasPrefix(p, "/api/oauth/") && strings.HasSuffix(p, "/callback")) {
+		if p == "/healthz" || p == "/metrics" || p == "/dashboard" || strings.HasPrefix(p, "/dashboard/") || p == "/slack/events" || p == "/api/whatsapp/webhook" || p == "/api/discord/interactions" || strings.HasPrefix(p, "/api/line/") || strings.HasPrefix(p, "/api/teams/") || strings.HasPrefix(p, "/api/signal/") || strings.HasPrefix(p, "/api/gchat/") || strings.HasPrefix(p, "/api/imessage/") || p == "/api/docs" || p == "/api/spec" || strings.HasPrefix(p, "/hooks/") || isHooksPath(p) || (strings.HasPrefix(p, "/api/oauth/") && strings.HasSuffix(p, "/callback")) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -516,6 +516,7 @@ func startHTTPServer(s *Server) *http.Server {
 	s.registerWSEventsRoutes(mux)
 	s.registerDiscordRoutes(mux)
 	s.registerWorkersRoutes(mux)
+	s.registerHookRoutes(mux)
 
 	// PWA assets.
 	mux.HandleFunc("/dashboard/manifest.json", handlePWAManifest)
