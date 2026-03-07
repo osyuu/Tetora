@@ -40,7 +40,6 @@ type DiscordBotConfig struct {
 	NotifyChannelID  string                      `json:"notifyChannelID,omitempty"`  // task notification channel (thread-per-task)
 	ShowProgress     *bool                       `json:"showProgress,omitempty"`    // show live "Working..." streaming in Discord (default: true)
 	Routes           map[string]DiscordRouteConfig `json:"routes,omitempty"`           // per-channel agent routing
-	Terminal         DiscordTerminalConfig          `json:"terminal,omitempty"`          // terminal bridge
 }
 
 // DiscordRouteConfig binds a Discord channel to a specific agent.
@@ -430,7 +429,6 @@ type DiscordBot struct {
 	voice        *discordVoiceManager     // P14.5: voice channel manager
 	gatewayConn  *wsConn                  // P14.5: active gateway connection for voice state updates
 	notifier     *discordTaskNotifier     // task notification (thread-per-task)
-	terminal     *terminalBridge         // terminal bridge (tmux ↔ Discord)
 	msgSem       chan struct{}            // limits concurrent message handlers
 }
 
@@ -480,15 +478,6 @@ func newDiscordBot(cfg *Config, state *dispatchState, sem, childSem chan struct{
 		logInfo("discord task notifier enabled", "channel", ch)
 	}
 
-	// Terminal bridge (tmux ↔ Discord).
-	if cfg.Discord.Terminal.Enabled {
-		db.terminal = newTerminalBridge(db, cfg.Discord.Terminal)
-		logInfo("discord terminal bridge enabled",
-			"maxSessions", cfg.Discord.Terminal.MaxSessions,
-			"cols", db.terminal.cfg.CaptureCols,
-			"rows", db.terminal.cfg.CaptureRows)
-	}
-
 	return db
 }
 
@@ -525,9 +514,6 @@ func (db *DiscordBot) Run(ctx context.Context) {
 
 // Stop signals the bot to disconnect.
 func (db *DiscordBot) Stop() {
-	if db.terminal != nil {
-		db.terminal.stopAllSessions()
-	}
 	select {
 	case <-db.stopCh:
 	default:
@@ -915,18 +901,6 @@ func (db *DiscordBot) handleMessage(msg discordMessage) {
 		return
 	}
 
-	// Terminal bridge: /term start|stop|status
-	if strings.HasPrefix(text, "/term") && db.terminal != nil {
-		args := strings.TrimPrefix(text, "/term")
-		db.terminal.handleTermCommand(msg, args)
-		return
-	}
-
-	// Terminal input interception: if there's an active session, route plain text to tmux.
-	if db.terminal != nil && db.terminal.handleTerminalInput(msg.ChannelID, text) {
-		return
-	}
-
 	// Command handling.
 	if strings.HasPrefix(text, "!") {
 		db.handleCommand(msg, text[1:])
@@ -1023,14 +997,6 @@ func (db *DiscordBot) handleCommand(msg discordMessage, cmdText string) {
 		}
 	case "approve":
 		db.cmdApprove(msg, args)
-	case "terminal":
-		db.cmdTerminal(msg, args)
-	case "workers":
-		db.cmdWorkers(msg)
-	case "peek":
-		db.cmdPeek(msg, args)
-	case "kill":
-		db.cmdKillWorker(msg, args)
 	case "version", "ver":
 		db.sendMessage(msg.ChannelID, fmt.Sprintf("Tetora v%s", tetoraVersion))
 	case "help":
@@ -1270,275 +1236,10 @@ func (db *DiscordBot) cmdHelp(msg discordMessage) {
 			{Name: "!cancel", Value: "Cancel all running tasks"},
 			{Name: "!ask <prompt>", Value: "Quick question (no routing, no session)"},
 			{Name: "!approve [tool|reset]", Value: "Manage auto-approved tools"},
-			{Name: "!terminal [on|off] [agent]", Value: "Enable/disable terminal viewer for an agent"},
-			{Name: "!workers", Value: "List active tmux workers"},
-			{Name: "!peek <name>", Value: "Show tmux worker screen"},
-			{Name: "!kill <name>", Value: "Kill a tmux worker"},
 			{Name: "!help", Value: "Show this help"},
 			{Name: "Free text", Value: "Mention me + your prompt for smart dispatch"},
 		},
 	})
-}
-
-// cmdTerminal enables or disables terminal viewer (claude-tmux provider) for an agent.
-// Usage: !terminal [on|off] [agent]
-func (db *DiscordBot) cmdTerminal(msg discordMessage, args string) {
-	parts := strings.Fields(args)
-	action := "on"
-	agentName := db.cfg.SmartDispatch.DefaultAgent
-	if agentName == "" {
-		// Find first agent.
-		for name := range db.cfg.Agents {
-			agentName = name
-			break
-		}
-	}
-	if len(parts) >= 1 {
-		action = strings.ToLower(parts[0])
-	}
-	if len(parts) >= 2 {
-		agentName = parts[1]
-	}
-
-	if action != "on" && action != "off" {
-		db.sendMessage(msg.ChannelID, "Usage: `!terminal [on|off] [agent]`\nExample: `!terminal on 琉璃`")
-		return
-	}
-
-	rc, ok := db.cfg.Agents[agentName]
-	if !ok {
-		db.sendMessage(msg.ChannelID, fmt.Sprintf("Agent `%s` not found.", agentName))
-		return
-	}
-
-	if action == "on" {
-		// Step 1: Ensure tmux is installed.
-		if err := ensureTmux(); err != nil {
-			db.sendMessage(msg.ChannelID, fmt.Sprintf("tmux install failed: %v", err))
-			return
-		}
-
-		// Step 2: Add claude-tmux provider if not present.
-		configPath := findConfigPath()
-		if _, exists := db.cfg.Providers["claude-tmux"]; !exists {
-			claudePath := "/usr/local/bin/claude"
-			if db.cfg.ClaudePath != "" {
-				claudePath = db.cfg.ClaudePath
-			}
-			updateConfigField(configPath, func(raw map[string]any) {
-				providers, _ := raw["providers"].(map[string]any)
-				if providers == nil {
-					providers = make(map[string]any)
-					raw["providers"] = providers
-				}
-				providers["claude-tmux"] = map[string]any{
-					"type": "claude-tmux",
-					"path": claudePath,
-				}
-			})
-			// Update in-memory config.
-			if db.cfg.Providers == nil {
-				db.cfg.Providers = make(map[string]ProviderConfig)
-			}
-			db.cfg.Providers["claude-tmux"] = ProviderConfig{
-				Type: "claude-tmux",
-				Path: claudePath,
-			}
-			// Register the provider in the runtime registry.
-			if db.cfg.registry != nil {
-				db.cfg.registry.register("claude-tmux", &TmuxProvider{
-					binaryPath: claudePath,
-					cfg:        db.cfg,
-					provCfg:    ProviderConfig{Type: "claude-tmux", Path: claudePath},
-					supervisor: db.cfg.tmuxSupervisor,
-					profile:    &claudeTmuxProfile{},
-				})
-			}
-		}
-
-		// Step 3: Switch agent to claude-tmux provider.
-		oldProvider := rc.Provider
-		rc.Provider = "claude-tmux"
-		db.cfg.Agents[agentName] = rc
-		updateConfigAgents(configPath, agentName, &rc)
-
-		desc := fmt.Sprintf("**%s** provider: `%s` → `claude-tmux`\n\nUse `!workers` to see live terminal.", agentName, oldProvider)
-		db.sendEmbed(msg.ChannelID, discordEmbed{
-			Title:       "Terminal Viewer Enabled",
-			Description: desc,
-			Color:       0x57F287,
-		})
-
-	} else {
-		// Switch back to default CLI provider.
-		configPath := findConfigPath()
-		oldProvider := rc.Provider
-		fallback := db.cfg.DefaultProvider
-		if fallback == "" || fallback == "claude-tmux" {
-			fallback = "claude"
-		}
-		rc.Provider = fallback
-		db.cfg.Agents[agentName] = rc
-		updateConfigAgents(configPath, agentName, &rc)
-
-		db.sendEmbed(msg.ChannelID, discordEmbed{
-			Title:       "Terminal Viewer Disabled",
-			Description: fmt.Sprintf("**%s** provider: `%s` → `%s`", agentName, oldProvider, fallback),
-			Color:       0xED4245,
-		})
-	}
-}
-
-// cmdWorkers lists all active tmux workers with Peek buttons.
-func (db *DiscordBot) cmdWorkers(msg discordMessage) {
-	sup := db.getTmuxSupervisor()
-	if sup == nil {
-		db.sendMessage(msg.ChannelID, "Tmux supervisor not available.")
-		return
-	}
-	workers := sup.listWorkers()
-	if len(workers) == 0 {
-		db.sendMessage(msg.ChannelID, "No active tmux workers.")
-		return
-	}
-	var fields []discordEmbedField
-	var buttons []discordComponent
-	for _, w := range workers {
-		age := time.Since(w.CreatedAt).Round(time.Second)
-		prompt := w.Prompt
-		if len(prompt) > 80 {
-			prompt = prompt[:80] + "..."
-		}
-		fields = append(fields, discordEmbedField{
-			Name:  w.TmuxName,
-			Value: fmt.Sprintf("State: `%s` | Agent: `%s` | Up: %s\n%s", w.State, w.Agent, age, prompt),
-		})
-		// Add a Peek button (Discord allows max 5 buttons per action row, 5 rows max).
-		if len(buttons) < 25 {
-			customID := "peek:" + w.TmuxName
-			buttons = append(buttons, discordComponent{
-				Type:     componentTypeButton,
-				Style:    buttonStyleSecondary,
-				Label:    "Peek " + w.TmuxName,
-				CustomID: customID,
-			})
-			// Register reusable callback (capture channel from original message).
-			workerName := w.TmuxName
-			chID := msg.ChannelID
-			db.interactions.register(&pendingInteraction{
-				CustomID:  customID,
-				CreatedAt: time.Now(),
-				Reusable:  true,
-				Callback: func(data discordInteractionData) {
-					db.peekWorkerCallback(chID, workerName)
-				},
-			})
-		}
-	}
-	// Build action rows (5 buttons per row).
-	var components []discordComponent
-	for i := 0; i < len(buttons); i += 5 {
-		end := i + 5
-		if end > len(buttons) {
-			end = len(buttons)
-		}
-		components = append(components, discordComponent{
-			Type:       componentTypeActionRow,
-			Components: buttons[i:end],
-		})
-	}
-	embed := discordEmbed{
-		Title:  fmt.Sprintf("Tmux Workers (%d)", len(workers)),
-		Color:  0x57F287,
-		Fields: fields,
-	}
-	db.sendEmbedWithComponents(msg.ChannelID, embed, components)
-}
-
-// peekWorkerCallback handles a Peek button press — captures and sends terminal screen.
-func (db *DiscordBot) peekWorkerCallback(channelID, name string) {
-	sup := db.getTmuxSupervisor()
-	if sup == nil {
-		db.sendMessage(channelID, "Supervisor not available.")
-		return
-	}
-	w := sup.getWorker(name)
-	if w == nil {
-		db.sendMessage(channelID, fmt.Sprintf("Worker `%s` no longer active.", name))
-		return
-	}
-	capture, err := tmuxCapture(name)
-	if err != nil {
-		db.sendMessage(channelID, fmt.Sprintf("Capture failed: %v", err))
-		return
-	}
-	screen := renderTerminalScreen(capture, 1900)
-	db.sendMessage(channelID, fmt.Sprintf("**%s** [%s]\n```\n%s\n```", name, w.State, screen))
-}
-
-// cmdPeek captures and displays the current screen of a tmux worker.
-func (db *DiscordBot) cmdPeek(msg discordMessage, args string) {
-	name := strings.TrimSpace(args)
-	if name == "" {
-		db.sendMessage(msg.ChannelID, "Usage: `!peek <worker-name>`")
-		return
-	}
-
-	sup := db.getTmuxSupervisor()
-	if sup == nil {
-		db.sendMessage(msg.ChannelID, "Tmux supervisor not available.")
-		return
-	}
-
-	w := sup.getWorker(name)
-	if w == nil {
-		db.sendMessage(msg.ChannelID, fmt.Sprintf("Worker `%s` not found.", name))
-		return
-	}
-
-	capture, err := tmuxCapture(name)
-	if err != nil {
-		db.sendMessage(msg.ChannelID, fmt.Sprintf("Capture failed: %v", err))
-		return
-	}
-
-	screen := renderTerminalScreen(capture, 1900)
-	db.sendMessage(msg.ChannelID, fmt.Sprintf("**%s** [%s]\n```\n%s\n```", name, w.State, screen))
-}
-
-// cmdKillWorker forcefully terminates a tmux worker session.
-func (db *DiscordBot) cmdKillWorker(msg discordMessage, args string) {
-	name := strings.TrimSpace(args)
-	if name == "" {
-		db.sendMessage(msg.ChannelID, "Usage: `!kill <worker-name>`")
-		return
-	}
-
-	sup := db.getTmuxSupervisor()
-	if sup == nil {
-		db.sendMessage(msg.ChannelID, "Tmux supervisor not available.")
-		return
-	}
-
-	w := sup.getWorker(name)
-	if w == nil {
-		db.sendMessage(msg.ChannelID, fmt.Sprintf("Worker `%s` not found.", name))
-		return
-	}
-
-	if tmuxHasSession(name) {
-		tmuxKill(name)
-	}
-	sup.unregister(name)
-	db.sendMessage(msg.ChannelID, fmt.Sprintf("Worker `%s` killed.", name))
-}
-
-// getTmuxSupervisor returns the tmux supervisor from the dispatch state.
-func (db *DiscordBot) getTmuxSupervisor() *tmuxSupervisor {
-	if db.state == nil {
-		return nil
-	}
-	return db.state.tmuxSupervisor
 }
 
 func (db *DiscordBot) cmdApprove(msg discordMessage, args string) {
@@ -2417,7 +2118,7 @@ func (db *DiscordBot) runDiscordProgressUpdater(
 				}
 			}
 		case SSECompleted, SSEError:
-			logDebug("discord progress terminal event", "type", ev.Type, "taskID", taskID)
+			logDebug("discord progress completed/error event", "type", ev.Type, "taskID", taskID)
 			return true
 		}
 		return false

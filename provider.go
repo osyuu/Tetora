@@ -131,11 +131,10 @@ func (r *providerRegistry) get(name string) (Provider, error) {
 // --- Provider Resolution ---
 
 // providerHasNativeSession returns true if the provider maintains its own
-// session state (e.g. claude-code with --session-id). For these providers,
-// Tetora should NOT inject conversation history as text — the provider
-// already resumes the session natively, and double-injection causes confusion.
+// session state. For these providers, Tetora should NOT inject conversation
+// history as text — the provider already resumes the session natively.
 func providerHasNativeSession(providerName string) bool {
-	return providerName == "claude-code" || providerName == "claude-tmux" || providerName == "codex-tmux"
+	return providerName == "claude-code"
 }
 
 // resolveProviderName determines which provider to use for a task.
@@ -184,45 +183,21 @@ func initProviders(cfg *Config) *providerRegistry {
 		case "claude-api":
 			// Deprecated in v3: claude-api provider removed. Use "claude-code" instead.
 			logWarn("provider type 'claude-api' is deprecated in v3, use 'claude-code' instead", "name", name)
-			// Fall through to claude-code as a compatibility shim.
 			path := pc.Path
 			if path == "" {
 				path = "/usr/local/bin/claude"
 			}
-			reg.register(name, &ClaudeCodeProvider{binaryPath: path, cfg: cfg})
+			reg.register(name, &ClaudeProvider{binaryPath: path, cfg: cfg})
 
 		case "claude-code":
+			// Same as claude-cli but signals prompt_tier.go to skip injection
+			// (Claude Code reads project files natively).
 			path := pc.Path
 			if path == "" {
 				path = "/usr/local/bin/claude"
 			}
-			reg.register(name, &ClaudeCodeProvider{binaryPath: path, cfg: cfg})
+			reg.register(name, &ClaudeProvider{binaryPath: path, cfg: cfg})
 
-		case "claude-tmux":
-			path := pc.Path
-			if path == "" {
-				path = "/usr/local/bin/claude"
-			}
-			reg.register(name, &TmuxProvider{
-				binaryPath: path,
-				cfg:        cfg,
-				provCfg:    pc,
-				supervisor: cfg.tmuxSupervisor,
-				profile:    &claudeTmuxProfile{},
-			})
-
-		case "codex-tmux":
-			path := pc.Path
-			if path == "" {
-				path = "codex"
-			}
-			reg.register(name, &TmuxProvider{
-				binaryPath: path,
-				cfg:        cfg,
-				provCfg:    pc,
-				supervisor: cfg.tmuxSupervisor,
-				profile:    &codexTmuxProfile{},
-			})
 		}
 	}
 
@@ -233,6 +208,17 @@ func initProviders(cfg *Config) *providerRegistry {
 			path = "claude"
 		}
 		reg.register("claude", &ClaudeProvider{binaryPath: path, cfg: cfg})
+	}
+
+	// Ensure "claude-code" provider always exists (headless default).
+	// Same runtime as "claude" but the name signals prompt_tier.go to skip
+	// injection (Claude Code reads project files natively).
+	if _, err := reg.get("claude-code"); err != nil {
+		path := cfg.ClaudePath
+		if path == "" {
+			path = "/usr/local/bin/claude"
+		}
+		reg.register("claude-code", &ClaudeProvider{binaryPath: path, cfg: cfg})
 	}
 
 	return reg

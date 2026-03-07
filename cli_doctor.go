@@ -181,20 +181,7 @@ func cmdDoctor() {
 		check(true, "ffmpeg", "available")
 	}
 
-	// 13. tmux (required for claude-tmux / codex-tmux providers)
-	if _, err := exec.LookPath("tmux"); err != nil {
-		if hasTmuxProvider(cfg) {
-			check(false, "tmux", "not found — required by tmux provider")
-			ok = false
-		} else {
-			suggestions = append(suggestions, "Install tmux for terminal worker support: brew install tmux")
-		}
-	} else {
-		out, _ := exec.Command("tmux", "-V").CombinedOutput()
-		check(true, "tmux", strings.TrimSpace(string(out)))
-	}
-
-	// 14. sqlite3
+	// 13. sqlite3
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		check(false, "sqlite3", "not found — required for DB operations")
 		ok = false

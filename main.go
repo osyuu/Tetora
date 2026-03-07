@@ -238,14 +238,8 @@ func main() {
 	state := newDispatchState()
 	state.broker = newSSEBroker()
 
-	// Initialize tmux worker supervisor.
-	tmuxSup := newTmuxSupervisor()
-	tmuxSup.broker = state.broker
-	state.tmuxSupervisor = tmuxSup
-	cfg.tmuxSupervisor = tmuxSup
-
 	// Initialize hooks event receiver.
-	hookRecv := newHookReceiver(state.broker, tmuxSup, cfg)
+	hookRecv := newHookReceiver(state.broker, cfg)
 	cfg.hookRecv = hookRecv
 
 	// Signal handling.
@@ -258,24 +252,6 @@ func main() {
 
 		// Track degraded services for health reporting.
 		var degradedServices []string
-
-		// Auto-install tmux if any provider requires it.
-		if hasTmuxProvider(cfg) {
-			if err := ensureTmux(); err != nil {
-				logWarn("tmux auto-install failed", "error", err)
-				degradedServices = append(degradedServices, "tmux")
-			}
-			// Clean up orphaned tmux sessions from previous daemon run.
-			// Keep one idle session for reuse if any provider has keepSessions.
-			keepOne := false
-			for _, pc := range cfg.Providers {
-				if pc.TmuxKeepSessions {
-					keepOne = true
-					break
-				}
-			}
-			tmuxSup.cleanupOrphanedSessions(keepOne, &claudeTmuxProfile{})
-		}
 
 		// Init history DB.
 		if cfg.HistoryDB != "" {
@@ -749,7 +725,7 @@ func main() {
 		if cfg.Discord.Enabled && cfg.Discord.BotToken != "" {
 			discordBot = newDiscordBot(cfg, state, sem, childSem, cron)
 			state.discordBot = discordBot // P14.1: store for interaction handler
-			cfg.discordBot = discordBot   // tmux provider approval routing
+			cfg.discordBot = discordBot   // provider approval routing
 			logInfo("discord bot enabled")
 
 			// Wire Discord into notification chain.

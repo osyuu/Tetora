@@ -110,7 +110,6 @@ type dispatchState struct {
 	sandboxMgr        *SandboxManager              // --- P13.2: Sandbox Plugin ---
 	discordBot        *DiscordBot                  // --- P14.1: Discord Components v2 ---
 	discordActivities map[string]*discordActivity  // task ID -> active Discord task
-	tmuxSupervisor    *tmuxSupervisor              // tracks tmux-based Claude Code workers
 }
 
 // discordActivity tracks a Discord-initiated task for dashboard visibility.
@@ -1052,9 +1051,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 		"role", agentName, "workdir", task.Workdir)
 
 	// Discord thread-per-task notification (top-level tasks only).
-	// Skip for Discord-sourced tmux tasks — the user already sees the response inline.
-	isDiscordTmux := strings.HasPrefix(task.Source, "discord") && strings.HasSuffix(providerName, "-tmux")
-	doDiscordNotify := task.Depth == 0 && state.discordBot != nil && state.discordBot.notifier != nil && !isDiscordTmux
+	doDiscordNotify := task.Depth == 0 && state.discordBot != nil && state.discordBot.notifier != nil
 	if doDiscordNotify {
 		state.discordBot.notifier.NotifyStart(task)
 	}

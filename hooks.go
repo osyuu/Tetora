@@ -16,48 +16,126 @@ import (
 // Receives hook events from Claude Code (PostToolUse, Stop, Notification, etc.)
 // and routes them to the supervisor + SSE broker for real-time monitoring.
 
-// HookEvent represents a Claude Code hook event payload.
-// See: https://docs.anthropic.com/en/docs/claude-code/hooks
+// HookEvent represents a Claude Code hook event payload (flat format).
+// See: https://code.claude.com/docs/en/hooks
 type HookEvent struct {
-	Type      string          `json:"type"`                // "PreToolUse", "PostToolUse", "Stop", "Notification"
-	Tool      *HookToolInfo   `json:"tool,omitempty"`      // tool details (PreToolUse/PostToolUse)
-	Session   *HookSession    `json:"session,omitempty"`   // session info
-	Stop      *HookStopInfo   `json:"stop_info,omitempty"` // stop details
-	Timestamp string          `json:"timestamp,omitempty"` // ISO 8601
-	Raw       json.RawMessage `json:"-"`                   // original payload for forwarding
+	// New flat format (Claude Code 2025+).
+	HookEventName string          `json:"hook_event_name"`        // "PreToolUse", "PostToolUse", "Stop", "Notification"
+	SessionID     string          `json:"session_id"`             // session UUID
+	Cwd           string          `json:"cwd,omitempty"`          // working directory
+	ToolName      string          `json:"tool_name,omitempty"`    // tool name (PreToolUse/PostToolUse)
+	ToolInput     json.RawMessage `json:"tool_input,omitempty"`   // tool input
+	ToolResponse  json.RawMessage `json:"tool_response,omitempty"` // tool output (PostToolUse)
+	ToolUseID     string          `json:"tool_use_id,omitempty"`  // tool use ID
+	StopHookActive bool           `json:"stop_hook_active,omitempty"` // Stop event
+	LastAssistant  string         `json:"last_assistant_message,omitempty"` // Stop event
+
+	// Legacy nested format (backward compat).
+	Type      string          `json:"type"`                // old: "PreToolUse", etc.
+	Tool      *HookToolInfo   `json:"tool,omitempty"`      // old: nested tool info
+	Session   *HookSession    `json:"session,omitempty"`   // old: nested session
+	Stop      *HookStopInfo   `json:"stop_info,omitempty"` // old: nested stop info
+
+	Timestamp string          `json:"timestamp,omitempty"`
+	Raw       json.RawMessage `json:"-"`
 }
 
-// HookToolInfo contains tool-related details from a hook event.
+// ResolvedType returns the event type, supporting both new and legacy format.
+func (e *HookEvent) ResolvedType() string {
+	if e.HookEventName != "" {
+		return e.HookEventName
+	}
+	return e.Type
+}
+
+// ResolvedSessionID returns the session ID from either format.
+func (e *HookEvent) ResolvedSessionID() string {
+	if e.SessionID != "" {
+		return e.SessionID
+	}
+	if e.Session != nil {
+		return e.Session.ID
+	}
+	return ""
+}
+
+// ResolvedToolName returns the tool name from either format.
+func (e *HookEvent) ResolvedToolName() string {
+	if e.ToolName != "" {
+		return e.ToolName
+	}
+	if e.Tool != nil {
+		return e.Tool.Name
+	}
+	return ""
+}
+
+// ResolvedCwd returns the working directory from either format.
+func (e *HookEvent) ResolvedCwd() string {
+	if e.Cwd != "" {
+		return e.Cwd
+	}
+	if e.Session != nil {
+		return e.Session.Cwd
+	}
+	return ""
+}
+
+// HookToolInfo contains tool-related details (legacy format).
 type HookToolInfo struct {
 	Name  string          `json:"tool_name"`
 	Input json.RawMessage `json:"tool_input,omitempty"`
 }
 
-// HookSession identifies the Claude Code session that fired the hook.
+// HookSession identifies the Claude Code session (legacy format).
 type HookSession struct {
 	ID  string `json:"session_id"`
 	Cwd string `json:"cwd,omitempty"`
 }
 
-// HookStopInfo contains details about why Claude Code stopped.
+// HookStopInfo contains details about why Claude Code stopped (legacy format).
 type HookStopInfo struct {
-	Reason string `json:"reason,omitempty"` // "end_turn", "max_turns", "error", etc.
+	Reason string `json:"reason,omitempty"`
+}
+
+// planGateDecision represents the result of a plan gate review.
+type planGateDecision struct {
+	Approved bool
+	Reason   string
+}
+
+// hookWorkerInfo tracks a Claude Code session detected via hooks.
+type hookWorkerInfo struct {
+	SessionID string
+	State     string // "working", "idle", "done"
+	LastTool  string
+	Cwd       string
+	FirstSeen time.Time
+	LastSeen  time.Time
+	ToolCount int
 }
 
 // hookReceiver processes incoming hook events and routes them to the system.
 type hookReceiver struct {
-	mu         sync.RWMutex
-	broker     *sseBroker
-	supervisor *tmuxSupervisor
-	cfg        *Config
+	mu     sync.RWMutex
+	broker *sseBroker
+	cfg    *Config
 
 	// planCache stores recently seen plan file paths and content.
 	planCache   map[string]*cachedPlan // sessionID → plan
 	planCacheMu sync.RWMutex
 
-	// sessionWorker maps Claude Code session IDs to tmux worker names.
-	sessionWorker   map[string]string
-	sessionWorkerMu sync.RWMutex
+	// planGates tracks pending plan gate long-poll channels.
+	planGates   map[string]chan planGateDecision
+	planGatesMu sync.Mutex
+
+	// questionGates tracks pending ask-user long-poll channels.
+	questionGates   map[string]chan string
+	questionGatesMu sync.Mutex
+
+	// hookWorkers tracks sessions detected via hooks.
+	hookWorkers   map[string]*hookWorkerInfo
+	hookWorkersMu sync.RWMutex
 
 	// stats
 	eventCount    int64
@@ -74,13 +152,14 @@ type cachedPlan struct {
 	ReadyForReview bool `json:"readyForReview"`
 }
 
-func newHookReceiver(broker *sseBroker, supervisor *tmuxSupervisor, cfg *Config) *hookReceiver {
+func newHookReceiver(broker *sseBroker, cfg *Config) *hookReceiver {
 	return &hookReceiver{
 		broker:        broker,
-		supervisor:    supervisor,
 		cfg:           cfg,
 		planCache:     make(map[string]*cachedPlan),
-		sessionWorker: make(map[string]string),
+		planGates:     make(map[string]chan planGateDecision),
+		questionGates: make(map[string]chan string),
+		hookWorkers:   make(map[string]*hookWorkerInfo),
 	}
 }
 
@@ -95,6 +174,8 @@ func (s *Server) registerHookRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/hooks/install", s.handleHookInstall)
 	mux.HandleFunc("/api/hooks/remove", s.handleHookRemove)
 	mux.HandleFunc("/api/hooks/install-status", s.handleHookInstallStatus)
+	mux.HandleFunc("/api/hooks/plan-gate", s.handlePlanGate)
+	mux.HandleFunc("/api/hooks/ask-user", s.handleAskUser)
 }
 
 // handleHookInstall installs Tetora hooks into Claude Code settings.
@@ -162,19 +243,25 @@ func (s *Server) handleHookInstallStatus(w http.ResponseWriter, r *http.Request)
 		if ok {
 			var hooks hooksConfig
 			if json.Unmarshal(raw, &hooks) == nil {
-				for _, h := range hooks.PostToolUse {
-					if isTetoraHook(h.Command) {
+				for _, r := range hooks.PreToolUse {
+					if isTetoraRule(r) {
 						installed = true
 						hookCount++
 					}
 				}
-				for _, h := range hooks.Stop {
-					if isTetoraHook(h.Command) {
+				for _, r := range hooks.PostToolUse {
+					if isTetoraRule(r) {
+						installed = true
 						hookCount++
 					}
 				}
-				for _, h := range hooks.Notification {
-					if isTetoraHook(h.Command) {
+				for _, r := range hooks.Stop {
+					if isTetoraRule(r) {
+						hookCount++
+					}
+				}
+				for _, r := range hooks.Notification {
+					if isTetoraRule(r) {
 						hookCount++
 					}
 				}
@@ -289,7 +376,11 @@ func (hr *hookReceiver) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract session ID from various locations in the payload.
-	sessionID := hr.extractSessionID(&event, body)
+	sessionID := event.ResolvedSessionID()
+	if sessionID == "" {
+		sessionID = hr.extractSessionID(&event, body)
+	}
+	eventType := event.ResolvedType()
 
 	// Update stats.
 	hr.mu.Lock()
@@ -298,7 +389,7 @@ func (hr *hookReceiver) handleEvent(w http.ResponseWriter, r *http.Request) {
 	hr.mu.Unlock()
 
 	// Route by event type.
-	switch event.Type {
+	switch eventType {
 	case "PreToolUse":
 		hr.handlePreToolUse(&event, sessionID)
 	case "PostToolUse":
@@ -308,7 +399,7 @@ func (hr *hookReceiver) handleEvent(w http.ResponseWriter, r *http.Request) {
 	case "Notification":
 		hr.handleNotification(&event, sessionID)
 	default:
-		logDebug("hooks: unknown event type", "type", event.Type)
+		logDebug("hooks: unknown event type", "type", eventType)
 	}
 
 	// Publish raw event to dashboard SSE.
@@ -317,8 +408,8 @@ func (hr *hookReceiver) handleEvent(w http.ResponseWriter, r *http.Request) {
 			Type:      SSEHookEvent,
 			SessionID: sessionID,
 			Data: map[string]any{
-				"hookType":  event.Type,
-				"toolName":  hr.toolName(&event),
+				"hookType":  eventType,
+				"toolName":  event.ResolvedToolName(),
 				"sessionId": sessionID,
 				"timestamp": event.Timestamp,
 			},
@@ -354,18 +445,10 @@ func (hr *hookReceiver) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	hr.planCacheMu.RUnlock()
 
-	hr.sessionWorkerMu.RLock()
-	workerMap := make(map[string]string, len(hr.sessionWorker))
-	for k, v := range hr.sessionWorker {
-		workerMap[k] = v
-	}
-	hr.sessionWorkerMu.RUnlock()
-
 	resp := map[string]any{
 		"eventCount":    count,
 		"lastEventTime": lastEvent.Format(time.RFC3339),
 		"planCache":     plans,
-		"sessionWorker": workerMap,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -374,16 +457,19 @@ func (hr *hookReceiver) handleStatus(w http.ResponseWriter, r *http.Request) {
 // --- Event Handlers ---
 
 func (hr *hookReceiver) handlePreToolUse(event *HookEvent, sessionID string) {
-	toolName := hr.toolName(event)
+	toolName := event.ResolvedToolName()
 	logDebug("hooks: PreToolUse", "tool", toolName, "session", sessionID)
 
-	// Update worker state to "working" since a tool is being called.
-	hr.updateWorkerState(sessionID, tmuxStateWorking, "tool:"+toolName)
+	// Track hook worker.
+	hr.trackHookWorker(event, sessionID, "working", toolName)
 }
 
 func (hr *hookReceiver) handlePostToolUse(event *HookEvent, sessionID string) {
-	toolName := hr.toolName(event)
+	toolName := event.ResolvedToolName()
 	logDebug("hooks: PostToolUse", "tool", toolName, "session", sessionID)
+
+	// Track hook worker.
+	hr.trackHookWorker(event, sessionID, "working", toolName)
 
 	// Check for plan-related tool calls.
 	switch toolName {
@@ -394,9 +480,6 @@ func (hr *hookReceiver) handlePostToolUse(event *HookEvent, sessionID string) {
 		// Plan review triggered — cache and publish.
 		hr.handlePlanReviewTrigger(sessionID)
 	}
-
-	// Update worker state.
-	hr.updateWorkerState(sessionID, tmuxStateWorking, "post:"+toolName)
 }
 
 func (hr *hookReceiver) handleStop(event *HookEvent, sessionID string) {
@@ -406,8 +489,8 @@ func (hr *hookReceiver) handleStop(event *HookEvent, sessionID string) {
 	}
 	logInfo("hooks: Stop", "reason", reason, "session", sessionID)
 
-	// Update worker state to done.
-	hr.updateWorkerState(sessionID, tmuxStateDone, "stop:"+reason)
+	// Mark hook worker as done.
+	hr.trackHookWorker(event, sessionID, "done", "")
 
 	// Publish stop event.
 	if hr.broker != nil {
@@ -441,7 +524,12 @@ func (hr *hookReceiver) handleNotification(event *HookEvent, sessionID string) {
 
 // checkPlanFileWrite checks if a Write/Edit tool call is targeting a plan file.
 func (hr *hookReceiver) checkPlanFileWrite(event *HookEvent, sessionID string) {
-	if event.Tool == nil || len(event.Tool.Input) == 0 {
+	// Get tool input from either format.
+	toolInput := event.ToolInput
+	if len(toolInput) == 0 && event.Tool != nil {
+		toolInput = event.Tool.Input
+	}
+	if len(toolInput) == 0 {
 		return
 	}
 
@@ -449,7 +537,7 @@ func (hr *hookReceiver) checkPlanFileWrite(event *HookEvent, sessionID string) {
 	var input struct {
 		FilePath string `json:"file_path"`
 	}
-	if err := json.Unmarshal(event.Tool.Input, &input); err != nil || input.FilePath == "" {
+	if err := json.Unmarshal(toolInput, &input); err != nil || input.FilePath == "" {
 		return
 	}
 
@@ -523,67 +611,6 @@ func (hr *hookReceiver) handlePlanReviewTrigger(sessionID string) {
 	}
 }
 
-// --- Worker State Updates ---
-
-// updateWorkerState updates the tmux worker state from hook events.
-func (hr *hookReceiver) updateWorkerState(sessionID string, state tmuxScreenState, detail string) {
-	if sessionID == "" || hr.supervisor == nil {
-		return
-	}
-
-	// Find the worker for this session.
-	workerName := hr.getWorkerForSession(sessionID)
-	if workerName == "" {
-		return
-	}
-
-	worker := hr.supervisor.getWorker(workerName)
-	if worker == nil {
-		return
-	}
-
-	worker.State = state
-	worker.LastChanged = time.Now()
-
-	// Publish state update.
-	if hr.broker != nil {
-		hr.broker.Publish(SSEDashboardKey, SSEEvent{
-			Type:      SSEWorkerUpdate,
-			SessionID: sessionID,
-			Data: map[string]string{
-				"action":    "state_update",
-				"name":      workerName,
-				"state":     state.String(),
-				"detail":    detail,
-				"sessionId": sessionID,
-			},
-		})
-	}
-}
-
-// MapSessionToWorker associates a Claude Code session ID with a tmux worker name.
-func (hr *hookReceiver) MapSessionToWorker(sessionID, workerName string) {
-	if sessionID == "" || workerName == "" {
-		return
-	}
-	hr.sessionWorkerMu.Lock()
-	hr.sessionWorker[sessionID] = workerName
-	hr.sessionWorkerMu.Unlock()
-}
-
-// UnmapSession removes a session-to-worker mapping.
-func (hr *hookReceiver) UnmapSession(sessionID string) {
-	hr.sessionWorkerMu.Lock()
-	delete(hr.sessionWorker, sessionID)
-	hr.sessionWorkerMu.Unlock()
-}
-
-func (hr *hookReceiver) getWorkerForSession(sessionID string) string {
-	hr.sessionWorkerMu.RLock()
-	defer hr.sessionWorkerMu.RUnlock()
-	return hr.sessionWorker[sessionID]
-}
-
 // GetCachedPlan returns the cached plan for a session, if any.
 func (hr *hookReceiver) GetCachedPlan(sessionID string) *cachedPlan {
 	hr.planCacheMu.RLock()
@@ -638,6 +665,370 @@ func (hr *hookReceiver) cleanupStalePlans() {
 	for sid, p := range hr.planCache {
 		if p.CachedAt.Before(cutoff) {
 			delete(hr.planCache, sid)
+		}
+	}
+}
+
+// --- Plan Gate (PreToolUse:ExitPlanMode long-poll) ---
+
+// handlePlanGate handles POST /api/hooks/plan-gate.
+// Called by the PreToolUse:ExitPlanMode hook script. Blocks until Discord approval.
+func (s *Server) handlePlanGate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, `{"error":"read body failed"}`, http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse hook event from Claude Code.
+	var event HookEvent
+	json.Unmarshal(body, &event)
+	sessionID := event.ResolvedSessionID()
+	if sessionID == "" {
+		sessionID = s.hookReceiver.extractSessionID(&event, body)
+	}
+
+	hr := s.hookReceiver
+	cfg := s.Cfg()
+
+	// Read cached plan content.
+	planText := ""
+	if sessionID != "" {
+		if plan := hr.GetCachedPlan(sessionID); plan != nil {
+			planText = plan.Content
+		}
+	}
+
+	// Generate gate ID.
+	sessionShort := sessionID
+	if len(sessionShort) > 8 {
+		sessionShort = sessionShort[:8]
+	}
+	gateID := fmt.Sprintf("pg-%s-%d", sessionShort, time.Now().Unix())
+
+	// Create decision channel.
+	ch := make(chan planGateDecision, 1)
+	hr.planGatesMu.Lock()
+	hr.planGates[gateID] = ch
+	hr.planGatesMu.Unlock()
+	defer func() {
+		hr.planGatesMu.Lock()
+		delete(hr.planGates, gateID)
+		hr.planGatesMu.Unlock()
+	}()
+
+	// Insert plan review DB record.
+	review := &PlanReview{
+		ID:        gateID,
+		SessionID: sessionID,
+		PlanText:  planText,
+		Status:    "pending",
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	if cfg.HistoryDB != "" {
+		insertPlanReview(cfg.HistoryDB, review)
+	}
+
+	// Send to Discord if available.
+	if bot := cfg.discordBot; bot != nil {
+		embed := buildPlanReviewEmbed(review)
+		customApprove := "pgate_approve:" + gateID
+		customReject := "pgate_reject:" + gateID
+		components := []discordComponent{
+			discordActionRow(
+				discordButton(customApprove, "Approve Plan", buttonStyleSuccess),
+				discordButton(customReject, "Reject Plan", buttonStyleDanger),
+			),
+		}
+
+		bot.interactions.register(&pendingInteraction{
+			CustomID:  customApprove,
+			CreatedAt: time.Now(),
+			Callback: func(data discordInteractionData) {
+				if cfg.HistoryDB != "" {
+					updatePlanReviewStatus(cfg.HistoryDB, gateID, "approved", "discord", "")
+				}
+				select {
+				case ch <- planGateDecision{Approved: true}:
+				default:
+				}
+			},
+		})
+		bot.interactions.register(&pendingInteraction{
+			CustomID:  customReject,
+			CreatedAt: time.Now(),
+			Callback: func(data discordInteractionData) {
+				if cfg.HistoryDB != "" {
+					updatePlanReviewStatus(cfg.HistoryDB, gateID, "rejected", "discord", "")
+				}
+				select {
+				case ch <- planGateDecision{Approved: false, Reason: "Rejected via Discord"}:
+				default:
+				}
+			},
+		})
+		defer func() {
+			bot.interactions.remove(customApprove)
+			bot.interactions.remove(customReject)
+		}()
+
+		notifyCh := bot.notifyChannelID()
+		if notifyCh != "" {
+			bot.sendEmbedWithComponents(notifyCh, embed, components)
+		}
+
+		logInfo("plan gate: waiting for Discord approval", "gateId", gateID, "session", sessionID)
+	} else {
+		// No Discord — auto-approve.
+		logInfo("plan gate: no Discord bot, auto-approving", "gateId", gateID)
+		ch <- planGateDecision{Approved: true}
+	}
+
+	// Publish to SSE for dashboard.
+	if hr.broker != nil {
+		hr.broker.Publish(SSEDashboardKey, SSEEvent{
+			Type:      SSEPlanReview,
+			SessionID: sessionID,
+			Data: map[string]any{
+				"gateId":    gateID,
+				"sessionId": sessionID,
+				"status":    "waiting",
+			},
+		})
+	}
+
+	// Long-poll: wait for decision or timeout (5 minutes).
+	var decision planGateDecision
+	select {
+	case decision = <-ch:
+		logInfo("plan gate: decision received", "gateId", gateID, "approved", decision.Approved)
+	case <-time.After(5 * time.Minute):
+		logWarn("plan gate: timeout, auto-approving", "gateId", gateID)
+		decision = planGateDecision{Approved: true, Reason: "timeout"}
+	}
+
+	// Clear cached plan.
+	if sessionID != "" {
+		hr.ClearPlanCache(sessionID)
+	}
+
+	// Return Claude Code hook response.
+	w.Header().Set("Content-Type", "application/json")
+	if decision.Approved {
+		json.NewEncoder(w).Encode(map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":     "PreToolUse",
+				"permissionDecision": "allow",
+			},
+		})
+	} else {
+		reason := decision.Reason
+		if reason == "" {
+			reason = "Plan rejected by reviewer"
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":     "PreToolUse",
+				"permissionDecision": "deny",
+				"reason":            reason,
+			},
+		})
+	}
+}
+
+// --- Ask User (long-poll question gate) ---
+
+// handleAskUser handles POST /api/hooks/ask-user.
+// MCP tool tetora_ask_user routes questions here. Blocks until Discord response.
+func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Question string   `json:"question"`
+		Options  []string `json:"options,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Question == "" {
+		http.Error(w, `{"error":"question is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	hr := s.hookReceiver
+	cfg := s.Cfg()
+
+	qID := fmt.Sprintf("q-%d", time.Now().UnixNano())
+
+	// Create answer channel.
+	ch := make(chan string, 1)
+	hr.questionGatesMu.Lock()
+	hr.questionGates[qID] = ch
+	hr.questionGatesMu.Unlock()
+	defer func() {
+		hr.questionGatesMu.Lock()
+		delete(hr.questionGates, qID)
+		hr.questionGatesMu.Unlock()
+	}()
+
+	// Send to Discord.
+	var cleanupIDs []string
+	var cleanupBot *DiscordBot
+	if bot := cfg.discordBot; bot != nil {
+		notifyCh := bot.notifyChannelID()
+		if notifyCh != "" {
+			cleanupBot = bot
+
+			// Build buttons for options.
+			var buttons []discordComponent
+			for i, opt := range body.Options {
+				if i >= 4 {
+					break // Discord max 5 buttons per row, keep room for "Type" button
+				}
+				customID := fmt.Sprintf("askuser_%s_%d", qID, i)
+				answer := opt
+				bot.interactions.register(&pendingInteraction{
+					CustomID:  customID,
+					CreatedAt: time.Now(),
+					Callback: func(data discordInteractionData) {
+						select {
+						case ch <- answer:
+						default:
+						}
+					},
+				})
+				cleanupIDs = append(cleanupIDs, customID)
+				buttons = append(buttons, discordButton(customID, truncate(opt, 80), buttonStylePrimary))
+			}
+
+			// Add "Type" button for free-text input.
+			typeButtonID := "askuser_type_" + qID
+			typeModalID := "askuser_modal_" + qID
+			modalResp := discordBuildModal(typeModalID, "Your Answer",
+				discordTextInput("answer_text", "Answer", true))
+			bot.interactions.register(&pendingInteraction{
+				CustomID:      typeButtonID,
+				CreatedAt:     time.Now(),
+				ModalResponse: &modalResp,
+			})
+			cleanupIDs = append(cleanupIDs, typeButtonID)
+
+			bot.interactions.register(&pendingInteraction{
+				CustomID:  typeModalID,
+				CreatedAt: time.Now(),
+				Callback: func(data discordInteractionData) {
+					values := extractModalValues(data.Components)
+					text := values["answer_text"]
+					if text == "" {
+						text = "(empty)"
+					}
+					select {
+					case ch <- text:
+					default:
+					}
+				},
+			})
+			cleanupIDs = append(cleanupIDs, typeModalID)
+
+			buttons = append(buttons, discordButton(typeButtonID, "Type...", buttonStyleSecondary))
+
+			content := fmt.Sprintf("**Question from Claude Code:**\n%s", body.Question)
+			components := []discordComponent{discordActionRow(buttons...)}
+			bot.sendMessageWithComponents(notifyCh, content, components)
+
+			logInfo("ask-user: waiting for Discord answer", "qId", qID)
+		}
+	} else {
+		// No Discord — return empty answer.
+		logInfo("ask-user: no Discord bot, returning empty", "qId", qID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"answer": "(no Discord configured)"})
+		return
+	}
+
+	// Long-poll: wait for answer or timeout (6 minutes).
+	var answer string
+	select {
+	case answer = <-ch:
+		logInfo("ask-user: answer received", "qId", qID)
+	case <-time.After(6 * time.Minute):
+		logWarn("ask-user: timeout", "qId", qID)
+		answer = "(timeout: no answer received)"
+	}
+
+	// Cleanup all registered interactions.
+	if cleanupBot != nil {
+		for _, id := range cleanupIDs {
+			cleanupBot.interactions.remove(id)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"answer": answer})
+}
+
+// --- Hook-Based Worker Tracking ---
+
+// trackHookWorker creates or updates a hook worker entry.
+func (hr *hookReceiver) trackHookWorker(event *HookEvent, sessionID string, state, toolName string) {
+	if sessionID == "" {
+		return
+	}
+
+	cwd := event.ResolvedCwd()
+
+	hr.hookWorkersMu.Lock()
+	defer hr.hookWorkersMu.Unlock()
+
+	w, ok := hr.hookWorkers[sessionID]
+	if !ok {
+		w = &hookWorkerInfo{
+			SessionID: sessionID,
+			FirstSeen: time.Now(),
+		}
+		hr.hookWorkers[sessionID] = w
+	}
+	w.State = state
+	w.LastSeen = time.Now()
+	if toolName != "" {
+		w.LastTool = toolName
+		w.ToolCount++
+	}
+	if cwd != "" {
+		w.Cwd = cwd
+	}
+}
+
+// ListHookWorkers returns all hook-tracked workers.
+func (hr *hookReceiver) ListHookWorkers() []*hookWorkerInfo {
+	hr.hookWorkersMu.RLock()
+	defer hr.hookWorkersMu.RUnlock()
+
+	out := make([]*hookWorkerInfo, 0, len(hr.hookWorkers))
+	for _, w := range hr.hookWorkers {
+		out = append(out, w)
+	}
+	return out
+}
+
+// cleanupStaleHookWorkers removes hook workers not seen in 10 minutes.
+func (hr *hookReceiver) cleanupStaleHookWorkers() {
+	hr.hookWorkersMu.Lock()
+	defer hr.hookWorkersMu.Unlock()
+	cutoff := time.Now().Add(-10 * time.Minute)
+	for sid, w := range hr.hookWorkers {
+		if w.LastSeen.Before(cutoff) {
+			delete(hr.hookWorkers, sid)
 		}
 	}
 }
