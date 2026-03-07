@@ -61,6 +61,9 @@ func main() {
 		case "mcp":
 			cmdMCP(os.Args[2:])
 			return
+		case "mcp-server":
+			cmdMCPServer()
+			return
 		case "knowledge":
 			cmdKnowledge(os.Args[2:])
 			return

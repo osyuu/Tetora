@@ -2,6 +2,8 @@ package main
 
 import (
 	"cmp"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -43,6 +45,13 @@ func (p *claudeTmuxProfile) BuildCommand(binaryPath string, req ProviderRequest)
 
 	if req.MCPPath != "" {
 		args = append(args, "--mcp-config", req.MCPPath)
+	} else {
+		// Auto-inject Tetora MCP bridge config if available.
+		homeDir, _ := os.UserHomeDir()
+		bridgePath := filepath.Join(homeDir, ".tetora", "mcp", "bridge.json")
+		if _, err := os.Stat(bridgePath); err == nil {
+			args = append(args, "--mcp-config", bridgePath)
+		}
 	}
 
 	// Unset Claude Code session env vars to prevent nested-session detection.

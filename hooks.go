@@ -92,6 +92,64 @@ func (s *Server) registerHookRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("/api/hooks/event", s.hookReceiver.handleEvent)
 	mux.HandleFunc("/api/hooks/status", s.hookReceiver.handleStatus)
+	mux.HandleFunc("/api/hooks/notify", s.handleHookNotify)
+}
+
+// handleHookNotify receives notifications from Claude Code via MCP bridge
+// and forwards them to Discord/Telegram.
+// POST /api/hooks/notify
+func (s *Server) handleHookNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Message string `json:"message"`
+		Level   string `json:"level"` // info, warn, error
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Message == "" {
+		http.Error(w, `{"error":"message is required"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Level == "" {
+		body.Level = "info"
+	}
+
+	// Send notification via configured channels.
+	cfg := s.Cfg()
+	prefix := ""
+	switch body.Level {
+	case "warn":
+		prefix = "[WARN] "
+	case "error":
+		prefix = "[ERROR] "
+	}
+	msg := prefix + body.Message
+
+	// Try Discord notification channel.
+	if cfg.discordBot != nil {
+		cfg.discordBot.sendNotify(msg)
+	}
+
+	// Publish to SSE for dashboard.
+	if s.hookReceiver != nil && s.hookReceiver.broker != nil {
+		s.hookReceiver.broker.Publish(SSEDashboardKey, SSEEvent{
+			Type: SSEHookEvent,
+			Data: map[string]any{
+				"hookType": "notification",
+				"message":  body.Message,
+				"level":    body.Level,
+			},
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
 }
 
 // handleEvent receives a hook event from Claude Code.

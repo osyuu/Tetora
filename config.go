@@ -137,6 +137,7 @@ type Config struct {
 	CronReplayHours       int                              `json:"cronReplayHours,omitempty"`        // hours to look back for missed jobs on startup (default 2)
 	Heartbeat             HeartbeatConfig                  `json:"heartbeat,omitempty"`              // --- Agent Heartbeat / Self-healing ---
 	Hooks                 HooksConfig                      `json:"hooks,omitempty"`                  // --- v3: Claude Code Hooks ---
+	MCPBridge             MCPBridgeConfig                  `json:"mcpBridge,omitempty"`               // --- v3: MCP Server Bridge ---
 
 	// Resolved at runtime (not serialized).
 	baseDir           string
