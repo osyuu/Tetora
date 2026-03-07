@@ -796,6 +796,8 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .activity-type.tool { background: #1c1917; color: var(--yellow); }
 .activity-type.queued { background: #422006; color: var(--yellow); }
 .activity-type.worker { background: #1a1a2e; color: #60a5fa; }
+.activity-type.hook { background: #1a2e1a; color: #4ade80; }
+.activity-type.plan { background: #2e2e1a; color: #eab308; }
 .activity-detail { flex: 1; color: var(--text); line-height: 1.4; }
 .activity-detail .muted { color: var(--muted); font-size: 11px; }
 .activity-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
@@ -2169,6 +2171,24 @@ body:not([class*="theme-"])::after, body.theme-default::after {
       <input id="tv-text-input" type="text" placeholder="Type text..." onkeydown="if(event.key==='Enter'&&!event.isComposing)sendWorkerText()" style="flex:1;min-width:120px;padding:4px 10px;font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none">
       <button class="btn" onclick="sendWorkerText()" style="padding:4px 12px;font-size:12px">Send</button>
     </div>
+  </div>
+
+  <!-- Plan Reviews (v3) -->
+  <div class="section" id="plan-reviews-section" style="display:none">
+    <div class="section-header">
+      <span class="section-title">Plan Reviews</span>
+      <span class="section-meta" id="plan-reviews-count">0</span>
+    </div>
+    <div id="plan-reviews-list" style="display:flex;flex-direction:column;gap:8px"></div>
+  </div>
+
+  <!-- Hook Events (v3) -->
+  <div class="section" id="hook-events-section" style="display:none">
+    <div class="section-header">
+      <span class="section-title">Hook Events</span>
+      <span class="section-meta" id="hook-events-count">0</span>
+    </div>
+    <div id="hook-events-list" class="activity-list" style="max-height:200px;overflow-y:auto"></div>
   </div>
 
   <!-- Running Tasks -->
@@ -3759,7 +3779,7 @@ function connectDashboardSSE() {
     pollTimer = setInterval(refresh, 5000);
   };
 
-  var eventTypes = ['task_received', 'task_routing', 'started', 'completed', 'error', 'task_queued', 'tool_call', 'tool_result', 'output_chunk', 'discord_processing', 'discord_replying', 'agent_state', 'board_updated', 'worker_update'];
+  var eventTypes = ['task_received', 'task_routing', 'started', 'completed', 'error', 'task_queued', 'tool_call', 'tool_result', 'output_chunk', 'discord_processing', 'discord_replying', 'agent_state', 'board_updated', 'worker_update', 'hook_event', 'plan_review'];
   eventTypes.forEach(function(evType) {
     es.addEventListener(evType, function(e) {
       try {
@@ -3865,6 +3885,40 @@ function handleActivityEvent(type, ev) {
       else if (data.action === 'registered') detail = '<b>' + esc(wName) + '</b> registered';
       else if (data.action === 'unregistered') detail = '<b>' + esc(wName) + '</b> stopped';
       else detail = esc(wName) + ' ' + esc(data.action || '');
+      break;
+    case 'hook_event':
+      badge = 'hook';
+      var hookType = data.hookType || 'event';
+      var toolName = data.toolName || '';
+      if (hookType === 'notification') {
+        detail = '<b>Notification</b>: ' + esc(data.message || '');
+        addNotification(data.message || 'Notification', data.level === 'error' ? 'error' : 'info');
+      } else if (toolName) {
+        detail = '<b>' + esc(hookType) + '</b>: ' + esc(toolName);
+      } else {
+        detail = '<b>' + esc(hookType) + '</b>';
+      }
+      addHookEvent(data);
+      break;
+    case 'plan_review':
+      badge = 'plan';
+      if (data.readyForReview) {
+        detail = 'Plan ready for review';
+        if (data.sessionId) detail += ' <span class="muted">[' + esc(data.sessionId.substring(0, 8)) + ']</span>';
+        addNotification('Plan ready for review', 'info', {tab:'dashboard'});
+        play8BitSound('notification');
+        refreshPlanReviews();
+      } else if (data.action === 'approve') {
+        detail = 'Plan <b>approved</b>';
+        if (data.reviewer) detail += ' by ' + esc(data.reviewer);
+        refreshPlanReviews();
+      } else if (data.action === 'reject') {
+        detail = 'Plan <b>rejected</b>';
+        if (data.reviewer) detail += ' by ' + esc(data.reviewer);
+        refreshPlanReviews();
+      } else {
+        detail = 'Plan update';
+      }
       break;
     default:
       detail = type;
@@ -8524,6 +8578,7 @@ if (currentDashView === 'default' || currentDashView === 'selector') {
   loadDashViewData();
 }
 refreshWorkers();
+refreshPlanReviews();
 refreshPrompts();
 refreshMCP();
 refreshMemory();
@@ -10935,6 +10990,84 @@ function refreshWorkers() {
       grid.appendChild(card);
     });
   }).catch(function(){});
+}
+
+// --- Plan Reviews (v3) ---
+let hookEventsItems = [];
+const HOOK_EVENTS_MAX = 30;
+
+function refreshPlanReviews() {
+  fetch(API + '/api/plan-reviews?status=pending').then(function(r){return r.json()}).then(function(reviews) {
+    var section = document.getElementById('plan-reviews-section');
+    var list = document.getElementById('plan-reviews-list');
+    var count = document.getElementById('plan-reviews-count');
+    if (!reviews || reviews.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    count.textContent = reviews.length;
+    list.innerHTML = '';
+    reviews.forEach(function(r) {
+      var card = document.createElement('div');
+      card.className = 'pixel-panel';
+      card.style.cssText = 'padding:12px';
+      var preview = (r.planText || '').substring(0, 500);
+      if (r.planText && r.planText.length > 500) preview += '...';
+      card.innerHTML =
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+          '<span style="padding:2px 8px;border-radius:4px;background:var(--yellow);color:#000;font-size:11px;font-weight:700">REVIEW</span>' +
+          (r.agent ? '<span style="font-size:12px;color:var(--accent)">' + esc(r.agent) + '</span>' : '') +
+          '<span style="margin-left:auto;font-size:11px;color:var(--muted)">' + esc(r.createdAt ? new Date(r.createdAt).toLocaleTimeString() : '') + '</span>' +
+        '</div>' +
+        '<pre style="background:#0a0a0f;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:12px;color:var(--text);overflow:auto;max-height:300px;white-space:pre-wrap;margin-bottom:10px">' + esc(preview) + '</pre>' +
+        '<div style="display:flex;gap:8px">' +
+          '<button class="btn" style="background:var(--green);color:#000;padding:4px 16px;font-size:12px" onclick="reviewPlan(\'' + esc(r.id) + '\',\'approve\')">Approve</button>' +
+          '<button class="btn" style="background:var(--red);color:#fff;padding:4px 16px;font-size:12px" onclick="reviewPlan(\'' + esc(r.id) + '\',\'reject\')">Reject</button>' +
+        '</div>';
+      list.appendChild(card);
+    });
+  }).catch(function(){});
+}
+
+function reviewPlan(id, action) {
+  fetch(API + '/api/plan-reviews/' + id + '/' + action, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({reviewer: 'dashboard'})
+  }).then(function(r){return r.json()}).then(function(d) {
+    if (d.error) alert('Error: ' + d.error);
+    else refreshPlanReviews();
+  }).catch(function(err){ alert('Failed: ' + err); });
+}
+
+function addHookEvent(data) {
+  var hookType = data.hookType || 'event';
+  var toolName = data.toolName || '';
+  var time = new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  var detail = toolName ? hookType + ': ' + toolName : hookType;
+  hookEventsItems.unshift({detail: detail, time: time});
+  if (hookEventsItems.length > HOOK_EVENTS_MAX) hookEventsItems.length = HOOK_EVENTS_MAX;
+  renderHookEvents();
+}
+
+function renderHookEvents() {
+  var section = document.getElementById('hook-events-section');
+  var list = document.getElementById('hook-events-list');
+  var count = document.getElementById('hook-events-count');
+  if (hookEventsItems.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  count.textContent = hookEventsItems.length;
+  list.innerHTML = hookEventsItems.map(function(item) {
+    return '<div class="activity-item">' +
+      '<span class="activity-type hook">hook</span>' +
+      '<span class="activity-detail">' + esc(item.detail) + '</span>' +
+      '<span class="activity-time">' + esc(item.time) + '</span>' +
+    '</div>';
+  }).join('');
 }
 
 function openTerminalViewer(name) {
