@@ -790,6 +790,22 @@ afterRole:
 		serviceInstall()
 	}
 
+	// --- Optional: Install Claude Code hooks ---
+	fmt.Println()
+	fmt.Printf("  Install Claude Code hooks for real-time monitoring? (y/N) ")
+	scanner.Scan()
+	if strings.ToLower(strings.TrimSpace(scanner.Text())) == "y" {
+		if err := installHooks(listenAddr); err != nil {
+			fmt.Printf("  Warning: %v\n", err)
+		}
+		initCfg := &Config{ListenAddr: listenAddr, baseDir: configDir}
+		if err := generateMCPBridgeConfig(initCfg); err != nil {
+			fmt.Printf("  Warning: MCP bridge config: %v\n", err)
+		} else {
+			fmt.Printf("  MCP bridge config: %s/mcp/bridge.json\n", configDir)
+		}
+	}
+
 	// Final summary.
 	fmt.Println()
 	fmt.Printf("%s %s\n", L.FinalConfig, configPath)

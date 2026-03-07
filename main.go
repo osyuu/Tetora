@@ -64,6 +64,9 @@ func main() {
 		case "mcp-server":
 			cmdMCPServer()
 			return
+		case "hooks":
+			cmdHooks(os.Args[2:])
+			return
 		case "knowledge":
 			cmdKnowledge(os.Args[2:])
 			return
