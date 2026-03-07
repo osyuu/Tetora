@@ -276,9 +276,9 @@ func (d *TaskBoardDispatcher) scan() {
 		logWarn("taskboard dispatch scan error", "error", err)
 		return
 	}
+	d.triageBacklog() // always attempt (interval-gated internally)
 	if len(tasks) == 0 {
 		logDebug("taskboard dispatch: scan found no todo tasks")
-		d.triageBacklog()
 		d.idleAnalysis()
 		return
 	}
@@ -500,6 +500,24 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 	)
 	if err := execDB(d.engine.dbPath, combinedSQL); err != nil {
 		logError("taskboard dispatch: failed to update task status+cost", "id", t.ID, "error", err)
+		// Retry once after a short delay — transient SQLite lock errors are common.
+		time.Sleep(100 * time.Millisecond)
+		if err2 := execDB(d.engine.dbPath, combinedSQL); err2 != nil {
+			logError("taskboard dispatch: SQL retry also failed", "id", t.ID, "error", err2)
+			// Fallback: move back to todo so the task is not stuck in doing.
+			if _, ferr := d.engine.MoveTask(t.ID, "todo"); ferr != nil {
+				logError("taskboard dispatch: fallback MoveTask to todo failed", "id", t.ID, "error", ferr)
+			} else {
+				logWarn("taskboard dispatch: task moved back to todo after persistent SQL failure", "id", t.ID)
+			}
+		} else {
+			// Retry succeeded — fire webhook.
+			updatedTask := t
+			updatedTask.Status = newStatus
+			updatedTask.UpdatedAt = nowISO
+			updatedTask.CompletedAt = completedAt
+			go d.engine.fireWebhook("task.moved", updatedTask)
+		}
 	} else {
 		// Fire webhook only if DB update succeeded.
 		updatedTask := t
@@ -641,11 +659,6 @@ Minutes:`, truncateStr(prompt, 2000))
 // triageBacklog evaluates backlog tasks and promotes ready ones to todo.
 // Runs at most once per BacklogTriageInterval (default 1h) to avoid excessive LLM calls.
 func (d *TaskBoardDispatcher) triageBacklog() {
-	triageInterval := d.parseTriageInterval()
-	if time.Since(d.lastTriageAt) < triageInterval {
-		return
-	}
-
 	backlog, err := d.engine.ListTasks("backlog", "", "")
 	if err != nil {
 		logWarn("taskboard dispatch: backlog triage query failed", "error", err)
@@ -653,7 +666,45 @@ func (d *TaskBoardDispatcher) triageBacklog() {
 	}
 	if len(backlog) == 0 {
 		logDebug("taskboard dispatch: no backlog tasks to triage")
-		d.lastTriageAt = time.Now()
+		return
+	}
+
+	// Fast-path: promote assigned backlog tasks with no blocking deps directly.
+	promoted := 0
+	for _, t := range backlog {
+		if t.Assignee != "" && !hasBlockingDeps(d.engine, t) {
+			if _, err := d.engine.MoveTask(t.ID, "todo"); err == nil {
+				logInfo("taskboard dispatch: fast-path promote from backlog", "taskId", t.ID, "priority", t.Priority)
+				d.engine.AddComment(t.ID, "triage", "[triage] Fast-path: already assigned, no blocking deps → todo")
+				promoted++
+			}
+		}
+	}
+	if promoted > 0 {
+		// Re-fetch remaining backlog for LLM triage.
+		backlog, err = d.engine.ListTasks("backlog", "", "")
+		if err != nil || len(backlog) == 0 {
+			return
+		}
+	}
+
+	// Step 3: Urgent tickets get shorter triage interval (1/4, min 5min).
+	triageInterval := d.parseTriageInterval()
+	hasUrgent := false
+	for _, t := range backlog {
+		if t.Priority == "urgent" {
+			hasUrgent = true
+			break
+		}
+	}
+	if hasUrgent {
+		triageInterval = triageInterval / 4
+		if triageInterval < 5*time.Minute {
+			triageInterval = 5 * time.Minute
+		}
+	}
+
+	if time.Since(d.lastTriageAt) < triageInterval {
 		return
 	}
 
