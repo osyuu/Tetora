@@ -731,6 +731,16 @@ func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchSta
 
 // runSingleTask runs one task using the shared semaphore. Used by cron engine.
 func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem chan struct{}, agentName string) TaskResult {
+	// Register worker origin (if not already registered by cron layer).
+	if cfg.hookRecv != nil && task.SessionID != "" {
+		cfg.hookRecv.RegisterOriginIfAbsent(task.SessionID, &workerOrigin{
+			TaskID:   task.ID,
+			TaskName: task.Name,
+			Source:   task.Source,
+			Agent:    agentName,
+		})
+	}
+
 	// Apply trust level.
 	applyTrustToTask(cfg, &task, agentName)
 

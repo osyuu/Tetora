@@ -113,6 +113,15 @@ type hookWorkerEvent struct {
 
 const hookWorkerEventsMax = 50
 
+// workerOrigin tracks where a worker came from (cron, dispatch, ask, etc.).
+type workerOrigin struct {
+	TaskID   string `json:"taskId"`
+	TaskName string `json:"taskName"`
+	Source   string `json:"source"`   // "cron", "dispatch", "ask", "route:eng", etc.
+	Agent    string `json:"agent"`
+	JobID    string `json:"jobId"`    // cron job ID (empty = non-cron)
+}
+
 // hookWorkerInfo tracks a Claude Code session detected via hooks.
 type hookWorkerInfo struct {
 	SessionID string
@@ -123,6 +132,14 @@ type hookWorkerInfo struct {
 	LastSeen  time.Time
 	ToolCount int
 	Events    []hookWorkerEvent // ring buffer, max hookWorkerEventsMax
+	Origin    *workerOrigin     // nil = manual session
+
+	// Claude Code usage data (updated via statusline bridge).
+	CostUSD      float64 `json:"-"`
+	InputTokens  int     `json:"-"`
+	OutputTokens int     `json:"-"`
+	ContextPct   int     `json:"-"`
+	Model        string  `json:"-"`
 }
 
 // hookReceiver processes incoming hook events and routes them to the system.
@@ -147,6 +164,10 @@ type hookReceiver struct {
 	hookWorkers   map[string]*hookWorkerInfo
 	hookWorkersMu sync.RWMutex
 
+	// workerOrigins maps sessionID → origin (registered before CLI starts).
+	workerOrigins   map[string]*workerOrigin
+	workerOriginsMu sync.RWMutex
+
 	// stats
 	eventCount    int64
 	lastEventTime time.Time
@@ -170,6 +191,7 @@ func newHookReceiver(broker *sseBroker, cfg *Config) *hookReceiver {
 		planGates:     make(map[string]chan planGateDecision),
 		questionGates: make(map[string]chan string),
 		hookWorkers:   make(map[string]*hookWorkerInfo),
+		workerOrigins: make(map[string]*workerOrigin),
 	}
 }
 
@@ -186,6 +208,7 @@ func (s *Server) registerHookRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/hooks/install-status", s.handleHookInstallStatus)
 	mux.HandleFunc("/api/hooks/plan-gate", s.handlePlanGate)
 	mux.HandleFunc("/api/hooks/ask-user", s.handleAskUser)
+	mux.HandleFunc("/api/hooks/usage", s.hookReceiver.handleUsageUpdate)
 }
 
 // handleHookInstall installs Tetora hooks into Claude Code settings.
@@ -530,6 +553,64 @@ func (hr *hookReceiver) handleNotification(event *HookEvent, sessionID string) {
 	}
 }
 
+// handleUsageUpdate receives usage data from the Claude Code statusline script.
+// POST /api/hooks/usage
+func (hr *hookReceiver) handleUsageUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		SessionID    string  `json:"sessionId"`
+		CostUSD      float64 `json:"costUsd"`
+		InputTokens  int     `json:"inputTokens"`
+		OutputTokens int     `json:"outputTokens"`
+		ContextPct   int     `json:"contextPct"`
+		Model        string  `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if body.SessionID == "" {
+		http.Error(w, `{"error":"sessionId required"}`, http.StatusBadRequest)
+		return
+	}
+
+	hr.hookWorkersMu.Lock()
+	// Find worker by prefix match (statusline may send full or short session ID).
+	var target *hookWorkerInfo
+	for sid, w := range hr.hookWorkers {
+		if strings.HasPrefix(sid, body.SessionID) || strings.HasPrefix(body.SessionID, sid) {
+			target = w
+			break
+		}
+	}
+	if target == nil {
+		// Create a minimal worker entry so usage data is visible even before first hook event.
+		target = &hookWorkerInfo{
+			SessionID: body.SessionID,
+			State:     "working",
+			FirstSeen: time.Now(),
+			LastSeen:  time.Now(),
+		}
+		hr.hookWorkers[body.SessionID] = target
+	}
+	target.CostUSD = body.CostUSD
+	target.InputTokens = body.InputTokens
+	target.OutputTokens = body.OutputTokens
+	target.ContextPct = body.ContextPct
+	if body.Model != "" {
+		target.Model = body.Model
+	}
+	target.LastSeen = time.Now()
+	hr.hookWorkersMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
+}
+
 // --- Plan File Detection ---
 
 // checkPlanFileWrite checks if a Write/Edit tool call is targeting a plan file.
@@ -715,16 +796,10 @@ func (s *Server) handlePlanGate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// --- Keyboard mode: allow immediately, send Discord keyboard buttons ---
+	// --- Keyboard mode: allow immediately (no terminal UI in --print mode) ---
 	if cfg.PlanGate.Mode == "keyboard" {
 		logInfo("plan gate: keyboard mode, allowing immediately", "session", sessionID)
 
-		// Send Discord keyboard control buttons asynchronously.
-		if bot := cfg.discordBot; bot != nil {
-			go planGateKeyboardButtons(bot, sessionID, planText)
-		}
-
-		// Immediately allow ExitPlanMode to proceed (terminal UI appears).
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"hookSpecificOutput": map[string]any{
@@ -1021,6 +1096,22 @@ func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
 
 // --- Hook-Based Worker Tracking ---
 
+// RegisterOrigin registers a worker origin before the CLI session starts.
+func (hr *hookReceiver) RegisterOrigin(sessionID string, o *workerOrigin) {
+	hr.workerOriginsMu.Lock()
+	hr.workerOrigins[sessionID] = o
+	hr.workerOriginsMu.Unlock()
+}
+
+// RegisterOriginIfAbsent registers origin only if not already registered (e.g. by cron layer).
+func (hr *hookReceiver) RegisterOriginIfAbsent(sessionID string, o *workerOrigin) {
+	hr.workerOriginsMu.Lock()
+	if _, exists := hr.workerOrigins[sessionID]; !exists {
+		hr.workerOrigins[sessionID] = o
+	}
+	hr.workerOriginsMu.Unlock()
+}
+
 // trackHookWorker creates or updates a hook worker entry.
 func (hr *hookReceiver) trackHookWorker(event *HookEvent, sessionID string, state, toolName, eventType string) {
 	if sessionID == "" {
@@ -1038,6 +1129,10 @@ func (hr *hookReceiver) trackHookWorker(event *HookEvent, sessionID string, stat
 			SessionID: sessionID,
 			FirstSeen: time.Now(),
 		}
+		// Bring in origin from registry.
+		hr.workerOriginsMu.RLock()
+		w.Origin = hr.workerOrigins[sessionID]
+		hr.workerOriginsMu.RUnlock()
 		hr.hookWorkers[sessionID] = w
 	}
 	w.State = state
@@ -1113,6 +1208,15 @@ func (hr *hookReceiver) cleanupStaleHookWorkers() {
 			delete(hr.hookWorkers, sid)
 		}
 	}
+	// Also clean up stale origins (same 10-minute window).
+	hr.workerOriginsMu.Lock()
+	for sid := range hr.workerOrigins {
+		// Keep origin if worker still exists.
+		if _, exists := hr.hookWorkers[sid]; !exists {
+			delete(hr.workerOrigins, sid)
+		}
+	}
+	hr.workerOriginsMu.Unlock()
 }
 
 // --- Config ---
@@ -1125,110 +1229,6 @@ type HooksConfig struct {
 // PlanGateConfig configures plan gate behavior.
 type PlanGateConfig struct {
 	Mode string `json:"mode,omitempty"` // "hook" (default): blocking approve/deny; "keyboard": allow + Discord keyboard control
-}
-
-// --- Plan Gate Keyboard Mode ---
-
-// planGateKeyboardButtons sends Discord buttons for keyboard control of iTerm2.
-// Called asynchronously in keyboard mode after ExitPlanMode is allowed.
-func planGateKeyboardButtons(bot *DiscordBot, sessionID, planText string) {
-	notifyCh := bot.notifyChannelID()
-	if notifyCh == "" {
-		return
-	}
-
-	gateID := fmt.Sprintf("pgkb-%d", time.Now().UnixNano())
-
-	// Button custom IDs.
-	upID := "pgkb_up:" + gateID
-	downID := "pgkb_down:" + gateID
-	selectID := "pgkb_select:" + gateID
-	cancelID := "pgkb_cancel:" + gateID
-
-	// Register reusable buttons for Up/Down (can click multiple times).
-	bot.interactions.register(&pendingInteraction{
-		CustomID:  upID,
-		CreatedAt: time.Now(),
-		Reusable:  true,
-		Callback: func(data discordInteractionData) {
-			if err := sendITerm2Keystroke("ArrowUp"); err != nil {
-				logWarn("plan gate keyboard: up failed", "error", err)
-			}
-		},
-	})
-	bot.interactions.register(&pendingInteraction{
-		CustomID:  downID,
-		CreatedAt: time.Now(),
-		Reusable:  true,
-		Callback: func(data discordInteractionData) {
-			if err := sendITerm2Keystroke("ArrowDown"); err != nil {
-				logWarn("plan gate keyboard: down failed", "error", err)
-			}
-		},
-	})
-
-	// Select (Enter) — send keystroke then cleanup.
-	bot.interactions.register(&pendingInteraction{
-		CustomID:  selectID,
-		CreatedAt: time.Now(),
-		Response: &discordInteractionResponse{
-			Type: interactionResponseUpdateMessage,
-			Data: &discordInteractionResponseData{
-				Content: "✅ Selection confirmed.",
-			},
-		},
-		Callback: func(data discordInteractionData) {
-			if err := sendITerm2Keystroke("Return"); err != nil {
-				logWarn("plan gate keyboard: select failed", "error", err)
-			}
-			// Cleanup reusable buttons.
-			bot.interactions.remove(upID)
-			bot.interactions.remove(downID)
-		},
-	})
-
-	// Cancel (Escape) — send keystroke then cleanup.
-	bot.interactions.register(&pendingInteraction{
-		CustomID:  cancelID,
-		CreatedAt: time.Now(),
-		Response: &discordInteractionResponse{
-			Type: interactionResponseUpdateMessage,
-			Data: &discordInteractionResponseData{
-				Content: "❌ Cancelled.",
-			},
-		},
-		Callback: func(data discordInteractionData) {
-			if err := sendITerm2Keystroke("Escape"); err != nil {
-				logWarn("plan gate keyboard: cancel failed", "error", err)
-			}
-			// Cleanup reusable buttons.
-			bot.interactions.remove(upID)
-			bot.interactions.remove(downID)
-		},
-	})
-
-	// Build message content.
-	content := "**Plan Gate — Keyboard Control**"
-	if planText != "" {
-		preview := planText
-		if len(preview) > 500 {
-			preview = preview[:500] + "\n... (truncated)"
-		}
-		content += "\n```\n" + preview + "\n```"
-	}
-	content += "\nUse buttons to navigate the terminal selection:"
-
-	components := []discordComponent{
-		discordActionRow(
-			discordButton(upID, "⬆ Up", buttonStyleSecondary),
-			discordButton(downID, "⬇ Down", buttonStyleSecondary),
-			discordButton(selectID, "✅ Select", buttonStyleSuccess),
-			discordButton(cancelID, "❌ Cancel", buttonStyleDanger),
-		),
-	}
-
-	bot.sendMessageWithComponents(notifyCh, content, components)
-	logInfo("plan gate: keyboard buttons sent", "gateId", gateID, "session", sessionID)
 }
 
 // --- Auth bypass for hooks endpoint ---

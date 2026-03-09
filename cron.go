@@ -926,6 +926,17 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 		}
 	}
 
+	// Register worker origin with cron-specific JobID.
+	if ce.cfg.hookRecv != nil && task.SessionID != "" {
+		ce.cfg.hookRecv.RegisterOrigin(task.SessionID, &workerOrigin{
+			TaskID:   task.ID,
+			TaskName: j.Name,
+			Source:   jobSource,
+			Agent:    j.Agent,
+			JobID:    j.ID,
+		})
+	}
+
 	var result TaskResult
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
@@ -944,6 +955,17 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 			// Generate a new task ID + session for the retry.
 			task.ID = newUUID()
 			task.SessionID = newUUID()
+
+			// Re-register origin for the new session.
+			if ce.cfg.hookRecv != nil {
+				ce.cfg.hookRecv.RegisterOrigin(task.SessionID, &workerOrigin{
+					TaskID:   task.ID,
+					TaskName: j.Name,
+					Source:   jobSource,
+					Agent:    j.Agent,
+					JobID:    j.ID,
+				})
+			}
 
 			// Record the retry attempt in history.
 			recordHistory(ce.cfg.HistoryDB, j.ID, j.Name, jobSource, j.Agent, task, result,

@@ -17,14 +17,23 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 		w.Header().Set("Content-Type", "application/json")
 
 		type workerInfo struct {
-			SessionId string `json:"sessionId"`
-			Name      string `json:"name"`
-			State     string `json:"state"`
-			Workdir   string `json:"workdir"`
-			Uptime    string `json:"uptime"`
-			ToolCount int    `json:"toolCount"`
-			LastTool  string `json:"lastTool,omitempty"`
-			Source    string `json:"source"`
+			SessionId    string  `json:"sessionId"`
+			Name         string  `json:"name"`
+			State        string  `json:"state"`
+			Workdir      string  `json:"workdir"`
+			Uptime       string  `json:"uptime"`
+			ToolCount    int     `json:"toolCount"`
+			LastTool     string  `json:"lastTool,omitempty"`
+			Source       string  `json:"source"`
+			Agent        string  `json:"agent,omitempty"`
+			TaskName     string  `json:"taskName,omitempty"`
+			TaskID       string  `json:"taskId,omitempty"`
+			JobID        string  `json:"jobId,omitempty"`
+			CostUSD      float64 `json:"costUsd,omitempty"`
+			InputTokens  int     `json:"inputTokens,omitempty"`
+			OutputTokens int     `json:"outputTokens,omitempty"`
+			ContextPct   int     `json:"contextPct,omitempty"`
+			Model        string  `json:"model,omitempty"`
 		}
 		var out []workerInfo
 
@@ -39,7 +48,7 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 				if len(sessionShort) > 12 {
 					sessionShort = sessionShort[:12]
 				}
-				out = append(out, workerInfo{
+				wi := workerInfo{
 					SessionId: sessionShort,
 					Name:      "hook-" + sessionShort,
 					State:     hw.State,
@@ -47,8 +56,24 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 					Uptime:    time.Since(hw.FirstSeen).Round(time.Second).String(),
 					ToolCount: hw.ToolCount,
 					LastTool:  hw.LastTool,
-					Source:    "hooks",
-				})
+					Source:    "manual",
+				}
+				wi.CostUSD = hw.CostUSD
+				wi.InputTokens = hw.InputTokens
+				wi.OutputTokens = hw.OutputTokens
+				wi.ContextPct = hw.ContextPct
+				wi.Model = hw.Model
+				if o := hw.Origin; o != nil {
+					wi.Source = o.Source
+					wi.Agent = o.Agent
+					wi.TaskName = o.TaskName
+					wi.TaskID = o.TaskID
+					wi.JobID = o.JobID
+					if o.TaskName != "" {
+						wi.Name = o.TaskName
+					}
+				}
+				out = append(out, wi)
 			}
 		}
 
@@ -84,7 +109,7 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"sessionId": idPrefix,
 			"state":     worker.State,
 			"workdir":   worker.Cwd,
@@ -92,7 +117,22 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 			"lastTool":  worker.LastTool,
 			"uptime":    time.Since(worker.FirstSeen).Round(time.Second).String(),
 			"events":    events,
-		})
+		}
+		resp["costUsd"] = worker.CostUSD
+		resp["inputTokens"] = worker.InputTokens
+		resp["outputTokens"] = worker.OutputTokens
+		resp["contextPct"] = worker.ContextPct
+		resp["model"] = worker.Model
+		if o := worker.Origin; o != nil {
+			resp["source"] = o.Source
+			resp["agent"] = o.Agent
+			resp["taskName"] = o.TaskName
+			resp["taskId"] = o.TaskID
+			resp["jobId"] = o.JobID
+		} else {
+			resp["source"] = "manual"
+		}
+		json.NewEncoder(w).Encode(resp)
 	})
 
 	// GET /api/workers/agents — list agents with their provider info.
@@ -125,6 +165,33 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 			})
 		}
 		json.NewEncoder(w).Encode(map[string]any{"agents": agents})
+	})
+
+	// GET /api/codex/status — Codex quota status (cached 5 min).
+	mux.HandleFunc("/api/codex/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		// Find the codex binary path from registry or default.
+		binaryPath := "codex"
+		if s.cfg.registry != nil {
+			if p, err := s.cfg.registry.get("codex"); err == nil {
+				if cp, ok := p.(*CodexProvider); ok {
+					binaryPath = cp.binaryPath
+				}
+			}
+		}
+
+		q, err := fetchCodexQuota(binaryPath)
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(q)
 	})
 
 	// GET/PATCH /api/settings/discord — Discord display settings.
@@ -169,28 +236,4 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 		}
 	})
 
-	// POST /api/iterm2/keystroke — send a keystroke to iTerm2.
-	mux.HandleFunc("/api/iterm2/keystroke", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-
-		var body struct {
-			Key string `json:"key"` // ArrowUp, ArrowDown, Return, Escape
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "key is required"})
-			return
-		}
-
-		if err := sendITerm2Keystroke(body.Key); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"ok": "true", "key": body.Key})
-	})
 }
