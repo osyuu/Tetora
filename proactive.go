@@ -354,7 +354,7 @@ func (e *ProactiveEngine) getDailyCost() (float64, error) {
 	}
 
 	today := time.Now().Format("2006-01-02")
-	sql := fmt.Sprintf("SELECT COALESCE(SUM(cost_usd), 0) FROM runs WHERE started_at LIKE '%s%%'", escapeSQLite(today))
+	sql := fmt.Sprintf("SELECT COALESCE(SUM(cost_usd), 0) FROM job_runs WHERE started_at LIKE '%s%%'", escapeSQLite(today))
 
 	rows, err := queryDB(e.cfg.HistoryDB, sql)
 	if err != nil {
@@ -435,7 +435,7 @@ func (e *ProactiveEngine) getFailedTasksToday() (float64, error) {
 	}
 
 	today := time.Now().Format("2006-01-02")
-	sql := fmt.Sprintf("SELECT COUNT(*) FROM runs WHERE started_at LIKE '%s%%' AND status != 'success'", escapeSQLite(today))
+	sql := fmt.Sprintf("SELECT COUNT(*) FROM job_runs WHERE started_at LIKE '%s%%' AND status != 'success'", escapeSQLite(today))
 
 	rows, err := queryDB(e.cfg.HistoryDB, sql)
 	if err != nil {
@@ -519,8 +519,13 @@ func (e *ProactiveEngine) actionDispatch(ctx context.Context, rule ProactiveRule
 
 	// Run in background goroutine so the trigger loop is not blocked.
 	go func() {
+		start := time.Now()
 		result := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, agentName)
 		logInfo("proactive dispatch done", "rule", rule.Name, "taskId", truncate(task.ID, 16), "status", result.Status, "durationMs", result.DurationMs)
+
+		// Record to history DB so cost/tokens appear in budget queries.
+		recordHistory(e.cfg.HistoryDB, task.ID, task.Name, task.Source, agentName, task, result,
+			start.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
 
 		// Deliver the result output via configured channel.
 		out := result.Output
@@ -561,7 +566,7 @@ func (e *ProactiveEngine) buildAutonomousPrompt(rule ProactiveRule) string {
 		}
 
 		// Recent 5 completed tasks.
-		rows, err := queryDB(e.cfg.HistoryDB, "SELECT name, status, started_at FROM runs ORDER BY started_at DESC LIMIT 5")
+		rows, err := queryDB(e.cfg.HistoryDB, "SELECT name, status, started_at FROM job_runs ORDER BY started_at DESC LIMIT 5")
 		if err == nil && len(rows) > 0 {
 			b.WriteString("\nRecent tasks:\n")
 			for _, row := range rows {
