@@ -1473,13 +1473,46 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 	var progressMsgID string
 	var progressStopCh chan struct{}
 	var progressBuilder *discordProgressBuilder
+	var progressEscapeID string // interaction custom ID for escape button cleanup
 	if showProgress && db.state != nil && db.state.broker != nil {
-		msgID, err := db.sendMessageReturningID(msg.ChannelID, "Working...")
+		// Build escape button for the progress message.
+		escapeID := fmt.Sprintf("progress_escape:%s", task.ID)
+		escapeComponents := []discordComponent{
+			discordActionRow(
+				discordButton(escapeID, "Escape", buttonStyleDanger),
+			),
+		}
+
+		msgID, err := db.sendMessageWithComponentsReturningID(msg.ChannelID, "Working...", escapeComponents)
 		if err == nil && msgID != "" {
 			progressMsgID = msgID
+			progressEscapeID = escapeID
 			progressStopCh = make(chan struct{})
 			progressBuilder = newDiscordProgressBuilder()
-			go db.runDiscordProgressUpdater(msg.ChannelID, progressMsgID, task.ID, task.SessionID, db.state.broker, progressStopCh, progressBuilder)
+
+			// Register escape button interaction.
+			db.interactions.register(&pendingInteraction{
+				CustomID:  escapeID,
+				CreatedAt: time.Now(),
+				Response: &discordInteractionResponse{
+					Type: interactionResponseUpdateMessage,
+					Data: &discordInteractionResponseData{
+						Content: "Interrupted.",
+					},
+				},
+				Callback: func(data discordInteractionData) {
+					logInfo("progress escape: cancelling task", "taskId", task.ID)
+					if db.state != nil {
+						db.state.mu.Lock()
+						if ts, ok := db.state.running[task.ID]; ok && ts.cancelFn != nil {
+							ts.cancelFn()
+						}
+						db.state.mu.Unlock()
+					}
+				},
+			})
+
+			go db.runDiscordProgressUpdater(msg.ChannelID, progressMsgID, task.ID, task.SessionID, db.state.broker, progressStopCh, progressBuilder, escapeComponents)
 		}
 	}
 
@@ -1490,15 +1523,20 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 	if progressStopCh != nil {
 		close(progressStopCh)
 	}
+	// Clean up escape button interaction.
+	if progressEscapeID != "" {
+		db.interactions.remove(progressEscapeID)
+	}
 	if progressMsgID != "" {
 		if result.Status != "success" {
 			// On error, edit progress to show error instead of deleting.
+			// Clear components (remove escape button).
 			errMsg := result.Error
 			if errMsg == "" {
 				errMsg = result.Status
 			}
 			elapsed := time.Since(taskStart).Round(time.Second)
-			db.editMessage(msg.ChannelID, progressMsgID, fmt.Sprintf("Error (%s): %s", elapsed, errMsg))
+			db.editMessageWithComponents(msg.ChannelID, progressMsgID, fmt.Sprintf("Error (%s): %s", elapsed, errMsg), nil)
 		} else {
 			// On success: if output fits in one message, edit progress in-place (no flicker).
 			// Otherwise delete and re-send as chunks.
@@ -1507,7 +1545,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 				output = "Task completed successfully."
 			}
 			if len(output) <= 1900 {
-				db.editMessage(msg.ChannelID, progressMsgID, output)
+				db.editMessageWithComponents(msg.ChannelID, progressMsgID, output, nil)
 				progressMsgID = "" // signal sendRouteResponse to skip output (already shown)
 			} else {
 				db.deleteMessage(msg.ChannelID, progressMsgID)
@@ -1951,6 +1989,22 @@ func (db *DiscordBot) editMessage(channelID, messageID, content string) error {
 	return err
 }
 
+// editMessageWithComponents edits an existing Discord message, replacing content and components.
+func (db *DiscordBot) editMessageWithComponents(channelID, messageID, content string, components []discordComponent) error {
+	if len(content) > 2000 {
+		content = content[:1997] + "..."
+	}
+	payload := map[string]any{"content": content}
+	if components != nil {
+		payload["components"] = components
+	} else {
+		payload["components"] = []discordComponent{} // clear components
+	}
+	_, err := db.discordRequestWithResponse("PATCH",
+		fmt.Sprintf("/channels/%s/messages/%s", channelID, messageID), payload)
+	return err
+}
+
 // deleteMessage deletes a Discord message.
 func (db *DiscordBot) deleteMessage(channelID, messageID string) {
 	_, err := db.discordRequestWithResponse("DELETE",
@@ -1971,6 +2025,26 @@ func (db *DiscordBot) sendMessageWithComponents(channelID, content string, compo
 		"content":    content,
 		"components": components,
 	})
+}
+
+// sendMessageWithComponentsReturningID sends a message with components and returns the message ID.
+func (db *DiscordBot) sendMessageWithComponentsReturningID(channelID, content string, components []discordComponent) (string, error) {
+	if len(content) > 2000 {
+		content = content[:1997] + "..."
+	}
+	body, err := db.discordRequestWithResponse("POST",
+		fmt.Sprintf("/channels/%s/messages", channelID),
+		map[string]any{"content": content, "components": components})
+	if err != nil {
+		return "", err
+	}
+	var msg struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return "", err
+	}
+	return msg.ID, nil
 }
 
 // sendEmbedWithComponents sends an embed message with interactive components.
@@ -2087,6 +2161,7 @@ func (db *DiscordBot) runDiscordProgressUpdater(
 	broker *sseBroker,
 	stopCh <-chan struct{},
 	builder *discordProgressBuilder,
+	components []discordComponent,
 ) {
 	eventCh, unsub := broker.Subscribe(taskID)
 	defer unsub()
@@ -2112,7 +2187,7 @@ func (db *DiscordBot) runDiscordProgressUpdater(
 		if builder.isDirty() && time.Since(lastEdit) >= 1500*time.Millisecond {
 			content := builder.render()
 			logDebug("discord progress edit", "contentLen", len(content), "taskID", taskID)
-			if err := db.editMessage(channelID, progressMsgID, content); err != nil {
+			if err := db.editMessageWithComponents(channelID, progressMsgID, content, components); err != nil {
 				logWarn("discord progress edit failed", "error", err)
 			}
 			db.sendTyping(channelID)
