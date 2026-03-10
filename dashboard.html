@@ -103,6 +103,131 @@ body.theme-boardroom {
   --font-heading: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 }
+/* --- Nord --- */
+body.theme-nord {
+  --bg: #2e3440; --surface: #3b4252; --border: #4c566a;
+  --text: #eceff4; --muted: #81a1c1;
+  --accent: #88c0d0; --accent2: #81a1c1; --green: #a3be8c; --red: #bf616a; --yellow: #ebcb8b;
+  --pixel-border: #4c566a;
+  --panel-radius: 10px;
+  --panel-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  --panel-blur: none;
+  --panel-border: 1px solid #4c566a;
+  --header-border: 1px solid #4c566a;
+}
+/* --- Dracula --- */
+body.theme-dracula {
+  --bg: #282a36; --surface: #343746; --border: #44475a;
+  --text: #f8f8f2; --muted: #6272a4;
+  --accent: #bd93f9; --accent2: #ff79c6; --green: #50fa7b; --red: #ff5555; --yellow: #f1fa8c;
+  --pixel-border: #44475a;
+  --panel-radius: 10px;
+  --panel-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  --panel-blur: none;
+  --panel-border: 1px solid #44475a;
+  --header-border: 1px solid #44475a;
+}
+/* --- Solarized Dark --- */
+body.theme-solarized {
+  --bg: #002b36; --surface: #073642; --border: #586e75;
+  --text: #eee8d5; --muted: #839496;
+  --accent: #268bd2; --accent2: #2aa198; --green: #859900; --red: #dc322f; --yellow: #b58900;
+  --pixel-border: #586e75;
+  --panel-radius: 8px;
+  --panel-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  --panel-blur: none;
+  --panel-border: 1px solid #586e75;
+  --header-border: 1px solid #586e75;
+}
+/* --- Rose Pine --- */
+body.theme-rosepine {
+  --bg: #191724; --surface: #1f1d2e; --border: #403d52;
+  --text: #e0def4; --muted: #908caa;
+  --accent: #c4a7e7; --accent2: #ebbcba; --green: #9ccfd8; --red: #eb6f92; --yellow: #f6c177;
+  --pixel-border: #403d52;
+  --panel-radius: 12px;
+  --panel-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  --panel-blur: none;
+  --panel-border: 1px solid #403d52;
+  --header-border: 1px solid #403d52;
+}
+
+/* ========== Light Mode Variants ========== */
+body.mode-light {
+  --bg: #f5f5f7; --surface: #ffffff; --border: #e0e0e0;
+  --text: #1d1d1f; --muted: #86868b;
+  --accent: #06b6d4; --accent2: #8b5cf6; --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
+  --pixel-border: #e0e0e0;
+  --panel-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  --panel-blur: none;
+  --panel-border: 1px solid #e0e0e0;
+  --header-border: 1px solid #e5e5e5;
+}
+body.mode-light.theme-clean {
+  --bg: #f7f8fa; --surface: #ffffff; --border: #e5e7eb;
+  --text: #111827; --muted: #6b7280;
+  --accent: #3b82f6; --accent2: #6366f1; --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
+  --panel-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  --panel-border: 1px solid #e5e7eb; --header-border: 1px solid #e5e7eb;
+}
+body.mode-light.theme-material {
+  --bg: #fffbfe; --surface: #ffffff; --border: #e7e0ec;
+  --text: #1c1b1f; --muted: #79747e;
+  --accent: #6750a4; --accent2: #7d5260; --green: #4caf50; --red: #b3261e; --yellow: #f9a825;
+  --panel-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  --panel-border: none; --header-border: none;
+}
+body.mode-light.theme-boardroom {
+  /* Boardroom is already light by default, dark variant: */
+}
+body.theme-boardroom.mode-dark {
+  --bg: #1a202c; --surface: #2d3748; --border: #4a5568;
+  --text: #e2e8f0; --muted: #a0aec0;
+  --accent: #63b3ed; --accent2: #a0aec0; --green: #68d391; --red: #fc8181; --yellow: #f6e05e;
+  --panel-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  --panel-border: 1px solid #4a5568; --header-border: 1px solid #4a5568;
+}
+body.mode-light.theme-nord {
+  --bg: #eceff4; --surface: #ffffff; --border: #d8dee9;
+  --text: #2e3440; --muted: #4c566a;
+  --accent: #5e81ac; --accent2: #81a1c1; --green: #a3be8c; --red: #bf616a; --yellow: #ebcb8b;
+  --panel-shadow: 0 1px 3px rgba(46,52,64,0.08);
+  --panel-border: 1px solid #d8dee9; --header-border: 1px solid #d8dee9;
+}
+body.mode-light.theme-dracula {
+  --bg: #f8f8f2; --surface: #ffffff; --border: #e0dfe4;
+  --text: #282a36; --muted: #6272a4;
+  --accent: #7c3aed; --accent2: #db2777; --green: #16a34a; --red: #dc2626; --yellow: #ca8a04;
+  --panel-shadow: 0 1px 3px rgba(40,42,54,0.08);
+  --panel-border: 1px solid #e0dfe4; --header-border: 1px solid #e0dfe4;
+}
+body.mode-light.theme-solarized {
+  --bg: #fdf6e3; --surface: #eee8d5; --border: #d3cbb7;
+  --text: #073642; --muted: #586e75;
+  --accent: #268bd2; --accent2: #2aa198; --green: #859900; --red: #dc322f; --yellow: #b58900;
+  --panel-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  --panel-border: 1px solid #d3cbb7; --header-border: 1px solid #d3cbb7;
+}
+body.mode-light.theme-rosepine {
+  --bg: #faf4ed; --surface: #fffaf3; --border: #dfdad9;
+  --text: #575279; --muted: #9893a5;
+  --accent: #907aa9; --accent2: #d7827e; --green: #56949f; --red: #b4637a; --yellow: #ea9d34;
+  --panel-shadow: 0 1px 3px rgba(87,82,121,0.06);
+  --panel-border: 1px solid #dfdad9; --header-border: 1px solid #dfdad9;
+}
+/* Light mode general overrides */
+body.mode-light .logo { -webkit-text-fill-color: var(--text); }
+body.mode-light .logo span { -webkit-text-fill-color: var(--muted); }
+body.mode-light::before, body.mode-light::after { display: none; }
+body.mode-light .sidebar-nav { background: var(--surface); }
+body.mode-light .kanban-column { background: var(--surface); }
+body.mode-light .kanban-card { background: var(--bg); border-color: var(--border); }
+body.mode-light .kanban-card:hover { background: var(--surface); }
+body.mode-light .project-card:hover { background: var(--surface); }
+body.mode-light .stat { box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+body.mode-light .section { border-color: var(--border); }
+body.mode-light .modal { background: var(--surface); }
+
 body.theme-boardroom .agent-world-canvas { background: #f0ebe3; }
 body.theme-boardroom .agent-world-canvas canvas { background: #f0ebe3; }
 body.theme-boardroom .aw-minimap { background: #f0ebe3; }
@@ -168,7 +293,7 @@ body {
 }
 .container { max-width: 100%; margin: 0; padding: 0; }
 .app-layout { display: flex; min-height: calc(100vh - 80px); }
-.app-main { flex: 1; min-width: 0; padding: 24px 28px; max-width: 1100px; }
+.app-main { flex: 1; min-width: 0; padding: 24px 32px; }
 
 /* Header */
 header {
@@ -981,6 +1106,8 @@ body.theme-gameboy .modal-overlay, body.theme-amber .modal-overlay {
 /* --- Clean Theme Extras --- */
 body.theme-clean .project-card:hover { background: #20252a; }
 body.theme-clean .kanban-card:hover { background: #1e2328; }
+body.mode-light.theme-clean .project-card:hover { background: #f0f1f3; }
+body.mode-light.theme-clean .kanban-card:hover { background: #eef0f2; }
 
 /* --- Material Theme Extras --- */
 body.theme-material::before, body.theme-material::after,
@@ -1023,6 +1150,29 @@ body.theme-material .logo {
   background: linear-gradient(135deg, #d0bcff, #efb8c8);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+}
+/* Material light mode overrides */
+body.mode-light.theme-material .stat {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 2px 6px rgba(0,0,0,0.06);
+}
+body.mode-light.theme-material .stat:hover,
+body.mode-light.theme-material .project-card:hover,
+body.mode-light.theme-material .kanban-card:hover {
+  box-shadow: 0 2px 6px rgba(0,0,0,0.12), 0 8px 16px rgba(0,0,0,0.08);
+}
+body.mode-light.theme-material .project-card:hover { background: #f3f0f6; }
+body.mode-light.theme-material .kanban-card:hover { background: #f3f0f6; }
+body.mode-light.theme-material .kanban-column {
+  border-radius: 16px; background: #f6f2f8;
+}
+body.mode-light.theme-material .pixel-window-title { background: #6750a4; }
+body.mode-light.theme-material .logo {
+  background: linear-gradient(135deg, #6750a4, #7d5260);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+body.mode-light.theme-material .btn:hover {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
 }
 
 /* Modal */
@@ -2184,6 +2334,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
   <header>
     <div class="logo">Tetora <span id="version"></span></div>
     <div class="header-right">
+      <button class="btn" id="mode-toggle-btn" onclick="toggleColorMode()" title="Toggle light/dark" style="padding:6px 10px;font-size:15px;line-height:1">&#x263E;</button>
       <div class="theme-switcher" id="theme-switcher">
         <button class="btn" onclick="toggleThemeDropdown()" id="theme-toggle-btn" title="Switch theme" style="padding:6px 10px;font-size:13px">&#127912;</button>
         <div class="theme-dropdown" id="theme-dropdown">
@@ -2191,10 +2342,15 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           <button onclick="setTheme('clean')">Clean</button>
           <button onclick="setTheme('material')">Material</button>
           <button onclick="setTheme('boardroom')">Boardroom</button>
-          <button onclick="setTheme('classic')">Retro</button>
-          <button onclick="setTheme('nes')">NES Dark</button>
-          <button onclick="setTheme('gameboy')">Game Boy</button>
-          <button onclick="setTheme('amber')">Amber</button>
+          <button onclick="setTheme('nord')">Nord</button>
+          <button onclick="setTheme('dracula')">Dracula</button>
+          <button onclick="setTheme('solarized')">Solarized</button>
+          <button onclick="setTheme('rosepine')">Rose Pine</button>
+          <div style="height:1px;background:var(--border);margin:4px 0"></div>
+          <button onclick="setTheme('classic')">&#x1F3AE; Retro</button>
+          <button onclick="setTheme('nes')">&#x1F3AE; NES Dark</button>
+          <button onclick="setTheme('gameboy')">&#x1F3AE; Game Boy</button>
+          <button onclick="setTheme('amber')">&#x1F3AE; Amber</button>
         </div>
       </div>
       <button class="btn btn-add" id="pwa-install-btn" onclick="pwaInstall()" style="display:none;padding:6px 14px;font-size:12px">Install App</button>
@@ -2234,8 +2390,8 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     <button class="nav-item" id="tab-operations-tasks" onclick="switchTab('operations');switchSubTab('operations','tasks')">
       <span class="nav-icon">&#x1F4CB;</span> Tasks
     </button>
-    <button class="nav-item" id="tab-operations-memory" onclick="switchTab('operations');switchSubTab('operations','memory')">
-      <span class="nav-icon">&#x1F4C2;</span> Memory
+    <button class="nav-item" id="tab-operations-files" onclick="switchTab('operations');switchSubTab('operations','files')">
+      <span class="nav-icon">&#x1F4C2;</span> Files
     </button>
     <div class="nav-divider"></div>
     <div class="nav-label">Settings</div>
@@ -2940,7 +3096,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
       <button class="active" data-sub="agents" onclick="switchSubTab('operations','agents')">Agents</button>
       <button data-sub="workflows" onclick="switchSubTab('operations','workflows')">Workflows</button>
       <button data-sub="tasks" onclick="switchSubTab('operations','tasks')">Tasks</button>
-      <button data-sub="memory" onclick="switchSubTab('operations','memory')">Memory</button>
+      <button data-sub="files" onclick="switchSubTab('operations','files')">Memory</button>
     </div>
 
     <!-- === Sub: Workflows === -->
@@ -3127,7 +3283,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     </div><!-- /operations-sub-tasks -->
 
     <!-- === Sub: Memory === -->
-    <div id="operations-sub-memory" style="display:none">
+    <div id="operations-sub-files" style="display:none">
       <div class="section" id="memory-browser-section">
         <div class="section-header"><span class="section-title">Workspace Files</span></div>
         <div class="memory-browser">
@@ -3135,7 +3291,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           <div class="memory-editor" id="memory-editor"><div class="search-empty">Select a file to view</div></div>
         </div>
       </div>
-    </div><!-- /operations-sub-memory -->
+    </div><!-- /operations-sub-files -->
 
   </div><!-- /operations-content -->
 
@@ -3153,19 +3309,37 @@ body:not([class*="theme-"])::after, body.theme-default::after {
       <div id="settings-sub-general">
         <!-- Theme -->
         <div class="section">
-          <div class="section-header"><span class="section-title">Theme</span></div>
+          <div class="section-header">
+            <span class="section-title">Theme</span>
+            <button class="btn" onclick="toggleColorMode()" style="padding:4px 14px;font-size:12px">
+              <span id="settings-mode-icon">&#x263E;</span> Toggle Light/Dark
+            </button>
+          </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;padding:8px 0">
             <button class="btn" onclick="setTheme('default')" id="theme-btn-default">Glass</button>
             <button class="btn" onclick="setTheme('clean')" id="theme-btn-clean">Clean</button>
             <button class="btn" onclick="setTheme('material')" id="theme-btn-material">Material</button>
             <button class="btn" onclick="setTheme('boardroom')" id="theme-btn-boardroom">Boardroom</button>
-            <button class="btn" onclick="setTheme('classic')" id="theme-btn-classic">Retro</button>
-            <button class="btn" onclick="setTheme('nes')" id="theme-btn-nes">NES Dark</button>
-            <button class="btn" onclick="setTheme('gameboy')" id="theme-btn-gameboy">Game Boy</button>
-            <button class="btn" onclick="setTheme('amber')" id="theme-btn-amber">Amber</button>
-            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-left:16px;cursor:pointer">
-              <input type="checkbox" id="sound-toggle" onchange="_soundEnabled=this.checked;localStorage.setItem('tetora-sound',this.checked)"> 8-bit sounds
-            </label>
+            <button class="btn" onclick="setTheme('nord')" id="theme-btn-nord">Nord</button>
+            <button class="btn" onclick="setTheme('dracula')" id="theme-btn-dracula">Dracula</button>
+            <button class="btn" onclick="setTheme('solarized')" id="theme-btn-solarized">Solarized</button>
+            <button class="btn" onclick="setTheme('rosepine')" id="theme-btn-rosepine">Rose Pine</button>
+          </div>
+          <!-- Retro Lab -->
+          <div style="margin-top:10px">
+            <button class="btn" onclick="var p=document.getElementById('retro-lab-panel');p.style.display=p.style.display==='none'?'':'none'" style="font-size:11px;padding:5px 12px;color:var(--muted);border:1px dashed var(--border)">&#x1F3AE; Retro Lab</button>
+            <div id="retro-lab-panel" style="display:none;margin-top:8px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:8px">8-bit themes for the nostalgic</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <button class="btn" onclick="setTheme('classic')" id="theme-btn-classic">Retro</button>
+                <button class="btn" onclick="setTheme('nes')" id="theme-btn-nes">NES Dark</button>
+                <button class="btn" onclick="setTheme('gameboy')" id="theme-btn-gameboy">Game Boy</button>
+                <button class="btn" onclick="setTheme('amber')" id="theme-btn-amber">Amber</button>
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-left:8px;cursor:pointer">
+                  <input type="checkbox" id="sound-toggle" onchange="_soundEnabled=this.checked;localStorage.setItem('tetora-sound',this.checked)"> 8-bit sounds
+                </label>
+              </div>
+            </div>
           </div>
         </div>
         <!-- General -->
@@ -8386,7 +8560,7 @@ function refreshOperationsSubTab(sub) {
   if (sub === 'agents') refreshAgents();
   if (sub === 'workflows') { refreshWorkflowRuns(); loadWorkflowDefs(); }
   if (sub === 'tasks') refreshBoard();
-  if (sub === 'memory') loadMemoryBrowser();
+  if (sub === 'files') loadMemoryBrowser();
 }
 
 function refreshSettingsSubTab(sub) {
@@ -13148,7 +13322,10 @@ function dcmSave() {
 }
 
 // --- Theme System ---
-var THEMES = ['default', 'clean', 'material', 'boardroom', 'classic', 'nes', 'gameboy', 'amber'];
+var THEMES = ['default', 'clean', 'material', 'boardroom', 'nord', 'dracula', 'solarized', 'rosepine', 'classic', 'nes', 'gameboy', 'amber'];
+// Themes that default to light mode (dark toggle available)
+var LIGHT_DEFAULT_THEMES = ['boardroom'];
+
 function setTheme(name) {
   THEMES.forEach(function(t) { document.body.classList.remove('theme-' + t); });
   if (name && name !== 'default') document.body.classList.add('theme-' + name);
@@ -13157,10 +13334,54 @@ function setTheme(name) {
     var b = document.getElementById('theme-btn-' + t);
     if (b) b.style.borderColor = (t === (name || 'default')) ? 'var(--accent)' : '';
   });
+  // Auto-expand Retro Lab if a retro theme is selected
+  var retroThemes = ['classic','nes','gameboy','amber'];
+  var lab = document.getElementById('retro-lab-panel');
+  if (lab && retroThemes.indexOf(name) >= 0) lab.style.display = '';
   // Close dropdown after selection
   var dd = document.getElementById('theme-dropdown');
   if (dd) dd.classList.remove('open');
+  // Update mode toggle icon
+  updateModeToggle();
 }
+
+function setColorMode(mode) {
+  document.body.classList.remove('mode-light', 'mode-dark');
+  if (mode) document.body.classList.add('mode-' + mode);
+  localStorage.setItem('tetora-color-mode', mode || '');
+  updateModeToggle();
+}
+
+function toggleColorMode() {
+  var isLight = document.body.classList.contains('mode-light');
+  var currentTheme = localStorage.getItem('tetora-theme') || 'default';
+  // Boardroom defaults to light, so toggle = dark
+  if (LIGHT_DEFAULT_THEMES.indexOf(currentTheme) >= 0) {
+    if (document.body.classList.contains('mode-dark')) {
+      setColorMode('');
+    } else {
+      setColorMode('dark');
+    }
+  } else {
+    setColorMode(isLight ? '' : 'light');
+  }
+}
+
+function updateModeToggle() {
+  var btn = document.getElementById('mode-toggle-btn');
+  if (!btn) return;
+  var isLight = document.body.classList.contains('mode-light');
+  var currentTheme = localStorage.getItem('tetora-theme') || 'default';
+  // Boardroom is light by default
+  if (LIGHT_DEFAULT_THEMES.indexOf(currentTheme) >= 0 && !document.body.classList.contains('mode-dark')) {
+    isLight = true;
+  }
+  btn.textContent = isLight ? '\u2600' : '\u263E';
+  btn.title = isLight ? 'Switch to dark mode' : 'Switch to light mode';
+  var si = document.getElementById('settings-mode-icon');
+  if (si) si.innerHTML = isLight ? '&#x2600;' : '&#x263E;';
+}
+
 function toggleThemeDropdown() {
   var dd = document.getElementById('theme-dropdown');
   if (dd) dd.classList.toggle('open');
@@ -13172,6 +13393,8 @@ document.addEventListener('click', function(e) {
 });
 (function() {
   var s = localStorage.getItem('tetora-theme'); if (s && s !== 'default') setTheme(s);
+  var m = localStorage.getItem('tetora-color-mode'); if (m) setColorMode(m);
+  updateModeToggle();
   var st = document.getElementById('sound-toggle');
   if (st) st.checked = _soundEnabled;
 })();
