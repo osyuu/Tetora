@@ -1,0 +1,152 @@
+{
+  "name": "tpl-manufacturing-qc",
+  "description": "Quality defect workflow: receive MES inspection data, analyze root cause, create NCR, draft and send SCAR to supplier, verify response",
+  "variables": {
+    "product_id": "",
+    "batch_number": "",
+    "inspection_station": "",
+    "defect_type": "",
+    "supplier_name": "",
+    "supplier_email": ""
+  },
+  "steps": [
+    {
+      "id": "receive-inspection-data",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.MES_API_KEY}}",
+        "Content-Type": "application/xml"
+      },
+      "externalBody": {
+        "product_id": "{{product_id}}",
+        "batch_number": "{{batch_number}}",
+        "inspection_station": "{{inspection_station}}",
+        "defect_type": "{{defect_type}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/mes-{{runId}}"
+      },
+      "callbackKey": "mes-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.inspection_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "analyze-defects",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "Analyze the manufacturing defect data for product {{product_id}}, batch {{batch_number}}, detected at inspection station {{inspection_station}}. Defect type: {{defect_type}}. Full MES inspection output: {{steps.receive-inspection-data.output}}. Produce: (1) severity — one of 'critical', 'major', or 'minor' based on impact to safety, function, and customer experience; (2) root_cause — the most probable root cause with supporting evidence from the inspection data; (3) affected_quantity — estimated number of units affected; (4) containment_action — immediate steps to prevent further defective units from reaching customers; (5) supplier_implicated — true or false, whether this defect traces to incoming material from {{supplier_name}}. Output as plain text with labeled sections.",
+      "timeout": 360,
+      "budget": 0.35,
+      "dependsOn": ["receive-inspection-data"]
+    },
+    {
+      "id": "check-severity",
+      "type": "condition",
+      "if": "{{steps.analyze-defects.output.severity}} == 'critical'",
+      "then": "create-ncr",
+      "else": "check-major",
+      "dependsOn": ["analyze-defects"]
+    },
+    {
+      "id": "check-major",
+      "type": "condition",
+      "if": "{{steps.analyze-defects.output.severity}} == 'major'",
+      "then": "create-ncr",
+      "else": "notify-minor-defect",
+      "dependsOn": ["check-severity"]
+    },
+    {
+      "id": "notify-minor-defect",
+      "type": "notify",
+      "notifyMsg": "Minor defect logged for product {{product_id}}, batch {{batch_number}} (station: {{inspection_station}}). Root cause: {{steps.analyze-defects.output.root_cause}}. Affected quantity: {{steps.analyze-defects.output.affected_quantity}}. No NCR required — added to trend tracking.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-major"]
+    },
+    {
+      "id": "create-ncr",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.QUALITY_SYSTEM_API_KEY}}"
+      },
+      "externalBody": {
+        "product_id": "{{product_id}}",
+        "batch_number": "{{batch_number}}",
+        "defect_type": "{{defect_type}}",
+        "severity": "{{steps.analyze-defects.output.severity}}",
+        "root_cause": "{{steps.analyze-defects.output.root_cause}}",
+        "affected_quantity": "{{steps.analyze-defects.output.affected_quantity}}",
+        "containment_action": "{{steps.analyze-defects.output.containment_action}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/ncr-{{runId}}"
+      },
+      "callbackKey": "ncr-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.ncr_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-severity", "check-major"]
+    },
+    {
+      "id": "draft-scar",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Draft a formal Supplier Corrective Action Request (SCAR) to send to {{supplier_name}} ({{supplier_email}}) regarding defects found in product {{product_id}}, batch {{batch_number}}. NCR number: {{steps.create-ncr.output.ncr_id}}. Defect type: {{defect_type}}. Severity: {{steps.analyze-defects.output.severity}}. Root cause analysis: {{steps.analyze-defects.output.root_cause}}. Affected quantity: {{steps.analyze-defects.output.affected_quantity}}. The SCAR must include: (1) a clear problem statement with reference to the NCR; (2) a request for the supplier's root cause analysis within 14 days; (3) required corrective and preventive actions (CAPA); (4) a request for an updated inspection plan; (5) consequences of non-response. Tone should be firm but professional. Length: 300-400 words.",
+      "timeout": 300,
+      "budget": 0.30,
+      "dependsOn": ["create-ncr"]
+    },
+    {
+      "id": "send-scar",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.EMAIL_API_KEY}}"
+      },
+      "externalBody": {
+        "to": "{{supplier_email}}",
+        "subject": "Supplier Corrective Action Request — NCR {{steps.create-ncr.output.ncr_id}}",
+        "body": "{{steps.draft-scar.output}}",
+        "ncr_id": "{{steps.create-ncr.output.ncr_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/scar-response-{{runId}}"
+      },
+      "callbackKey": "scar-response-{{runId}}",
+      "callbackTimeout": "14d",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.supplier_response_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["draft-scar"]
+    },
+    {
+      "id": "check-supplier-response",
+      "type": "condition",
+      "if": "{{steps.send-scar.output.supplier_response_status}} == 'adequate'",
+      "then": "notify-resolution",
+      "else": "notify-escalation",
+      "dependsOn": ["send-scar"]
+    },
+    {
+      "id": "notify-escalation",
+      "type": "notify",
+      "notifyMsg": "SCAR escalation required for NCR {{steps.create-ncr.output.ncr_id}}. Supplier {{supplier_name}} ({{supplier_email}}) response status: {{steps.send-scar.output.supplier_response_status}}. Product: {{product_id}}, batch: {{batch_number}}, severity: {{steps.analyze-defects.output.severity}}. Procurement and quality management notified — consider supplier qualification review.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-supplier-response"]
+    },
+    {
+      "id": "notify-resolution",
+      "type": "notify",
+      "notifyMsg": "Quality defect resolved. NCR {{steps.create-ncr.output.ncr_id}} closed. Product: {{product_id}}, batch: {{batch_number}}. Supplier {{supplier_name}} submitted adequate CAPA. Root cause: {{steps.analyze-defects.output.root_cause}}. Affected quantity: {{steps.analyze-defects.output.affected_quantity}} units. Quality team and procurement notified.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-supplier-response"]
+    }
+  ]
+}

@@ -1,0 +1,130 @@
+{
+  "name": "tpl-loan-credit-review",
+  "description": "Bank Credit Analyst (銀行徵信專員) — credit bureau query, financial statement fetch, AI DSCR/ratio analysis and credit recommendation, conditional decline notification or credit memo drafting, LOS submission, confirmation. Replace bureau and LOS externalUrl with your bank's endpoints (e.g. Experian, Equifax, nCino, Salesforce Financial Services Cloud).",
+  "variables": {
+    "application_id": "",
+    "applicant_name": "",
+    "loan_amount": "",
+    "loan_purpose": ""
+  },
+  "steps": [
+    {
+      "id": "query-credit-bureau",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CREDIT_BUREAU_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "application_id": "{{application_id}}",
+        "applicant_name": "{{applicant_name}}",
+        "report_type": "full_commercial",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/bureau-{{runId}}"
+      },
+      "callbackKey": "bureau-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "fetch-financial-statements",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.DOCUMENT_VAULT_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "application_id": "{{application_id}}",
+        "applicant_name": "{{applicant_name}}",
+        "document_types": ["income_statement", "balance_sheet", "cash_flow_statement", "tax_returns"],
+        "years": 3,
+        "callback_url": "https://your-tetora.example.com/api/callbacks/financials-{{runId}}"
+      },
+      "callbackKey": "financials-{{runId}}",
+      "callbackTimeout": "20m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["query-credit-bureau"]
+    },
+    {
+      "id": "assess-creditworthiness",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a senior bank credit analyst performing a commercial loan credit assessment.\n\nApplication ID: {{application_id}}\nApplicant: {{applicant_name}}\nLoan amount requested: {{loan_amount}}\nLoan purpose: {{loan_purpose}}\n\nCredit bureau report:\n{{steps.query-credit-bureau.output}}\n\nFinancial statements (3 years):\n{{steps.fetch-financial-statements.output}}\n\nPerform a thorough credit analysis. Calculate and interpret: (1) Debt Service Coverage Ratio (DSCR) for each of the past 3 years and the trend; (2) current ratio and quick ratio; (3) debt-to-equity ratio; (4) net profit margin and operating margin trends; (5) credit score interpretation and bureau risk flags. Based on this analysis, provide: recommendation — one of 'approve', 'decline', or 'refer_to_committee'; risk_rating — one of 'low', 'moderate', 'high', 'very_high'; key_strengths (array of strings); key_concerns (array of strings); dscr_latest (number); conditions_if_approved (array of strings, e.g. collateral requirements, covenants); decline_reason (string, only if recommendation is decline). Output as a JSON object with these fields. Reply with only the JSON object.",
+      "timeout": 600,
+      "budget": 0.50,
+      "dependsOn": ["fetch-financial-statements"]
+    },
+    {
+      "id": "check-recommendation",
+      "type": "condition",
+      "if": "{{steps.assess-creditworthiness.output.recommendation}} == 'decline'",
+      "then": "notify-decline",
+      "else": "draft-credit-memo",
+      "dependsOn": ["assess-creditworthiness"]
+    },
+    {
+      "id": "notify-decline",
+      "type": "notify",
+      "notifyMsg": "Credit application {{application_id}} recommended for DECLINE. Applicant: {{applicant_name}}. Loan amount: {{loan_amount}} ({{loan_purpose}}). Risk rating: {{steps.assess-creditworthiness.output.risk_rating}}. DSCR: {{steps.assess-creditworthiness.output.dscr_latest}}. Decline reason: {{steps.assess-creditworthiness.output.decline_reason}}. Key concerns: {{steps.assess-creditworthiness.output.key_concerns}}. Relationship manager notified — adverse action notice required within regulatory deadline.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-recommendation"]
+    },
+    {
+      "id": "draft-credit-memo",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Draft a formal credit memorandum for review and approval.\n\nApplication ID: {{application_id}}\nApplicant: {{applicant_name}}\nLoan amount: {{loan_amount}}\nLoan purpose: {{loan_purpose}}\nRecommendation: {{steps.assess-creditworthiness.output.recommendation}}\nRisk rating: {{steps.assess-creditworthiness.output.risk_rating}}\nDSCR (latest): {{steps.assess-creditworthiness.output.dscr_latest}}\nKey strengths: {{steps.assess-creditworthiness.output.key_strengths}}\nKey concerns: {{steps.assess-creditworthiness.output.key_concerns}}\nConditions if approved: {{steps.assess-creditworthiness.output.conditions_if_approved}}\n\nBureau summary: {{steps.query-credit-bureau.output.summary}}\n\nWrite a professional bank credit memorandum with the following sections: (1) Executive Summary — loan request details and recommendation in 2-3 sentences; (2) Borrower Background — business profile and purpose of financing; (3) Financial Analysis — key ratios, DSCR trend, balance sheet highlights; (4) Credit Bureau Summary — score, trade lines, public records; (5) Risk Assessment — key strengths and concerns; (6) Recommendation and Conditions — approval conditions or committee referral rationale. Tone should be formal and analytical. Target length: 600-800 words.",
+      "timeout": 600,
+      "budget": 0.50,
+      "dependsOn": ["check-recommendation"]
+    },
+    {
+      "id": "submit-to-los",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.LOS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "application_id": "{{application_id}}",
+        "applicant_name": "{{applicant_name}}",
+        "loan_amount": "{{loan_amount}}",
+        "loan_purpose": "{{loan_purpose}}",
+        "recommendation": "{{steps.assess-creditworthiness.output.recommendation}}",
+        "risk_rating": "{{steps.assess-creditworthiness.output.risk_rating}}",
+        "dscr_latest": "{{steps.assess-creditworthiness.output.dscr_latest}}",
+        "conditions": "{{steps.assess-creditworthiness.output.conditions_if_approved}}",
+        "credit_memo": "{{steps.draft-credit-memo.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/los-submit-{{runId}}"
+      },
+      "callbackKey": "los-submit-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["draft-credit-memo"]
+    },
+    {
+      "id": "notify-submission",
+      "type": "notify",
+      "notifyMsg": "Credit memo submitted to LOS for application {{application_id}} ({{applicant_name}}). Loan: {{loan_amount}} — {{loan_purpose}}. Recommendation: {{steps.assess-creditworthiness.output.recommendation}}. Risk rating: {{steps.assess-creditworthiness.output.risk_rating}}. DSCR: {{steps.assess-creditworthiness.output.dscr_latest}}. LOS reference: {{steps.submit-to-los.output.los_reference}}. Next step: {{steps.submit-to-los.output.next_action}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["submit-to-los"]
+    }
+  ]
+}

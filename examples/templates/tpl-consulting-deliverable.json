@@ -1,0 +1,137 @@
+{
+  "name": "tpl-consulting-deliverable",
+  "description": "Management Consultant (管理顧問) — fetch interview transcripts from project workspace, AI synthesize findings brief, AI build slide narrative outline, submit to client portal staging, alert engagement manager, delay 24h for review, conditionally publish or notify for revision. Replace workspace and client-portal externalUrl with your document system endpoints (e.g. SharePoint, Confluence, Box, Notion API).",
+  "variables": {
+    "engagement_id": "",
+    "client_name": "",
+    "deliverable_type": "",
+    "project_workspace_url": ""
+  },
+  "steps": [
+    {
+      "id": "fetch-transcripts",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.WORKSPACE_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "engagement_id": "{{engagement_id}}",
+        "client_name": "{{client_name}}",
+        "workspace_url": "{{project_workspace_url}}",
+        "document_types": ["interview_transcript", "stakeholder_notes", "workshop_output"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/transcripts-{{runId}}"
+      },
+      "callbackKey": "transcripts-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "synthesize-findings",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a management consultant synthesizing qualitative research for a client deliverable.\n\nEngagement ID: {{engagement_id}}\nClient: {{client_name}}\nDeliverable type: {{deliverable_type}}\n\nInterview transcripts and stakeholder notes:\n{{steps.fetch-transcripts.output}}\n\nSynthesize the key findings from all transcripts into a structured findings brief. Identify: (1) the top 3-5 strategic themes that emerged consistently across multiple stakeholders; (2) for each theme, the supporting evidence (direct quotes or paraphrased observations attributed to interviewee role, not name); (3) areas of notable disagreement or tension between stakeholder groups; (4) critical gaps or risks identified; (5) quick wins vs. long-term opportunities. Output a JSON object with fields: themes (array of objects with theme_title, supporting_evidence as array of strings, stakeholder_groups_aligned as array of strings), tensions (array of strings), critical_gaps (array of strings), quick_wins (array of strings), long_term_opportunities (array of strings), executive_summary (string, 4-5 sentences synthesizing the overall picture). Reply with only the JSON object.",
+      "timeout": 600,
+      "budget": 0.60,
+      "dependsOn": ["fetch-transcripts"]
+    },
+    {
+      "id": "build-slide-narrative",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "You are a management consulting writer building a slide deck narrative outline for a client presentation.\n\nEngagement ID: {{engagement_id}}\nClient: {{client_name}}\nDeliverable type: {{deliverable_type}}\n\nFindings brief:\nExecutive summary: {{steps.synthesize-findings.output.executive_summary}}\nThemes: {{steps.synthesize-findings.output.themes}}\nTensions: {{steps.synthesize-findings.output.tensions}}\nCritical gaps: {{steps.synthesize-findings.output.critical_gaps}}\nQuick wins: {{steps.synthesize-findings.output.quick_wins}}\nLong-term opportunities: {{steps.synthesize-findings.output.long_term_opportunities}}\n\nBuild a complete slide narrative outline using the Pyramid Principle (SCR: Situation-Complication-Resolution). For each slide provide: slide_number, slide_title, message (the one key takeaway for that slide — one sentence), supporting_points (2-4 bullet points), suggested_visual (chart type or diagram description). Structure the deck as: (1) Executive Summary slide, (2-4) Situation/Context slides, (5-7) Complication/Findings slides (one per major theme), (8) Tensions and Risks slide, (9-10) Recommendations slides (quick wins then long-term), (11) Next Steps slide. Output the outline as a JSON array of slide objects. Reply with only the JSON array.",
+      "timeout": 480,
+      "budget": 0.40,
+      "dependsOn": ["synthesize-findings"]
+    },
+    {
+      "id": "submit-to-staging",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CLIENT_PORTAL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "engagement_id": "{{engagement_id}}",
+        "client_name": "{{client_name}}",
+        "deliverable_type": "{{deliverable_type}}",
+        "executive_summary": "{{steps.synthesize-findings.output.executive_summary}}",
+        "findings_themes": "{{steps.synthesize-findings.output.themes}}",
+        "slide_outline": "{{steps.build-slide-narrative.output}}",
+        "staging": true,
+        "callback_url": "https://your-tetora.example.com/api/callbacks/staging-{{runId}}"
+      },
+      "callbackKey": "staging-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["build-slide-narrative"]
+    },
+    {
+      "id": "alert-engagement-manager",
+      "type": "notify",
+      "notifyMsg": "Deliverable ready for review — {{deliverable_type}} for {{client_name}} (engagement {{engagement_id}}). Staging URL: {{steps.submit-to-staging.output.staging_url}}. Findings: {{steps.synthesize-findings.output.executive_summary}}. Slide outline: {{steps.build-slide-narrative.output.length}} slides. Review window: 24 hours. Approve or request revisions via the portal before the draft is published to the client.",
+      "notifyTo": "discord",
+      "dependsOn": ["submit-to-staging"]
+    },
+    {
+      "id": "wait-review-period",
+      "type": "delay",
+      "delayDuration": "24h",
+      "dependsOn": ["alert-engagement-manager"]
+    },
+    {
+      "id": "check-approval",
+      "type": "condition",
+      "if": "{{steps.submit-to-staging.output.review_status}} == 'approved'",
+      "then": "publish-to-client",
+      "else": "notify-revision-required",
+      "dependsOn": ["wait-review-period"]
+    },
+    {
+      "id": "publish-to-client",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CLIENT_PORTAL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "engagement_id": "{{engagement_id}}",
+        "client_name": "{{client_name}}",
+        "deliverable_type": "{{deliverable_type}}",
+        "staging_id": "{{steps.submit-to-staging.output.staging_id}}",
+        "action": "publish",
+        "notify_client": true,
+        "callback_url": "https://your-tetora.example.com/api/callbacks/publish-{{runId}}"
+      },
+      "callbackKey": "publish-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-approval"]
+    },
+    {
+      "id": "notify-revision-required",
+      "type": "notify",
+      "notifyMsg": "Revision required for {{deliverable_type}} ({{client_name}}, engagement {{engagement_id}}). Review status: {{steps.submit-to-staging.output.review_status}}. Reviewer comments: {{steps.submit-to-staging.output.review_comments}}. Staging URL: {{steps.submit-to-staging.output.staging_url}}. Deliverable NOT published — please revise and resubmit. Re-run workflow or update staging draft directly.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-approval"]
+    }
+  ]
+}

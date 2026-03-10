@@ -1,0 +1,87 @@
+{
+  "name": "tpl-performance-review",
+  "description": "Performance review cycle: self-assessment, peer reviews, AI synthesis, manager approval, employee notification",
+  "variables": {
+    "employee_name": "",
+    "review_period": "",
+    "manager_name": "",
+    "peer_list": "",
+    "competency_framework": ""
+  },
+  "steps": [
+    {
+      "id": "send-self-assessment",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "employee_name": "{{employee_name}}",
+        "review_period": "{{review_period}}",
+        "competency_framework": "{{competency_framework}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/self-assessment-{{runId}}"
+      },
+      "callbackKey": "self-assessment-{{runId}}",
+      "callbackTimeout": "168h",
+      "callbackAuth": "open",
+      "onTimeout": "stop"
+    },
+    {
+      "id": "send-peer-reviews",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "employee_name": "{{employee_name}}",
+        "review_period": "{{review_period}}",
+        "peer_list": "{{peer_list}}",
+        "competency_framework": "{{competency_framework}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/peer-reviews-{{runId}}"
+      },
+      "callbackKey": "peer-reviews-{{runId}}",
+      "callbackTimeout": "168h",
+      "callbackAuth": "open",
+      "onTimeout": "skip",
+      "dependsOn": ["send-self-assessment"]
+    },
+    {
+      "id": "synthesize-feedback",
+      "type": "dispatch",
+      "agent": "kokuyou",
+      "prompt": "Review period: {{review_period}}. Employee: {{employee_name}}. Competency framework: {{competency_framework}}. Self-assessment responses: {{steps.send-self-assessment.output}}. Peer review responses: {{steps.send-peer-reviews.output}}. Synthesize a balanced performance narrative: (1) identify recurring themes across self and peer inputs, (2) highlight demonstrated strengths with specific evidence, (3) identify development areas with constructive framing, (4) map observations to each competency in the framework, (5) suggest 2-3 focused growth goals for the next review period. Write in third person, professional tone, suitable for an HR record.",
+      "dependsOn": ["send-peer-reviews"],
+      "timeout": "15m",
+      "budget": 1.0
+    },
+    {
+      "id": "manager-review",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "employee_name": "{{employee_name}}",
+        "manager_name": "{{manager_name}}",
+        "review_period": "{{review_period}}",
+        "synthesized_review": "{{steps.synthesize-feedback.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/manager-review-{{runId}}"
+      },
+      "callbackKey": "manager-review-{{runId}}",
+      "callbackTimeout": "72h",
+      "callbackAuth": "open",
+      "onTimeout": "stop",
+      "dependsOn": ["synthesize-feedback"]
+    },
+    {
+      "id": "notify-employee",
+      "type": "notify",
+      "notifyMsg": "{{employee_name}}, your {{review_period}} performance review is ready. Manager {{manager_name}} has completed their review. Please log in to view your feedback.",
+      "notifyTo": "discord",
+      "dependsOn": ["manager-review"]
+    }
+  ]
+}

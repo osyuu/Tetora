@@ -1,0 +1,130 @@
+{
+  "name": "tpl-site-safety-incident",
+  "description": "Construction site safety incident response: receive report, triage severity and regulatory obligations, submit regulatory notification for serious incidents, alert stakeholders, wait for investigation findings, and draft OSHA-compliant incident report",
+  "variables": {
+    "site_id": "",
+    "project_name": "",
+    "incident_date": "",
+    "incident_type": "",
+    "injured_count": ""
+  },
+  "steps": [
+    {
+      "id": "receive-incident-report",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SITE_APP_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "site_id": "{{site_id}}",
+        "project_name": "{{project_name}}",
+        "incident_date": "{{incident_date}}",
+        "incident_type": "{{incident_type}}",
+        "injured_count": "{{injured_count}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/incident-report-{{runId}}"
+      },
+      "callbackKey": "incident-report-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.report_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "triage-severity",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a construction safety compliance specialist. Triage the following site incident and determine severity classification and regulatory obligations.\n\nSite ID: {{site_id}}\nProject: {{project_name}}\nIncident date: {{incident_date}}\nIncident type: {{incident_type}}\nInjured count: {{injured_count}}\nFull incident report: {{steps.receive-incident-report.output}}\n\nAnalyze and output plain text with labeled sections:\n- severity_class: one of 'fatality_or_lost_time' or 'recordable_or_minor' — classify as 'fatality_or_lost_time' if there is any fatality, hospitalization, amputation, loss of an eye, or any incident requiring days away from work\n- osha_notification_required: true or false — true if severity_class is 'fatality_or_lost_time' (OSHA requires notification within 8 hours for fatalities, 24 hours for hospitalizations/amputations)\n- osha_notification_deadline: ISO 8601 timestamp of the notification deadline based on incident_date\n- regulatory_obligations: bullet list of specific OSHA 300 log entries, state-level reporting, and other obligations applicable to this incident type\n- investigation_requirements: bullet list of evidence to preserve and witnesses to interview\n- immediate_containment: bullet list of immediate site actions required (scene preservation, equipment lockout, witness segregation)",
+      "timeout": 300,
+      "budget": 0.35,
+      "dependsOn": ["receive-incident-report"]
+    },
+    {
+      "id": "check-severity-class",
+      "type": "condition",
+      "if": "{{steps.triage-severity.output.severity_class}} == 'fatality_or_lost_time'",
+      "then": "submit-regulatory-notification",
+      "else": "alert-safety-officer",
+      "dependsOn": ["triage-severity"]
+    },
+    {
+      "id": "submit-regulatory-notification",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.OSHA_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "site_id": "{{site_id}}",
+        "project_name": "{{project_name}}",
+        "incident_date": "{{incident_date}}",
+        "incident_type": "{{incident_type}}",
+        "injured_count": "{{injured_count}}",
+        "severity_class": "{{steps.triage-severity.output.severity_class}}",
+        "osha_notification_deadline": "{{steps.triage-severity.output.osha_notification_deadline}}",
+        "incident_detail": "{{steps.receive-incident-report.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/osha-notify-{{runId}}"
+      },
+      "callbackKey": "osha-notify-{{runId}}",
+      "callbackTimeout": "1h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.submission_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-severity-class"]
+    },
+    {
+      "id": "alert-safety-officer",
+      "type": "notify",
+      "notifyMsg": "Site safety incident reported — immediate attention required.\n\nProject: {{project_name}} (Site: {{site_id}})\nDate: {{incident_date}} | Type: {{incident_type}} | Injured: {{injured_count}}\nSeverity: {{steps.triage-severity.output.severity_class}}\nOSHA notification required: {{steps.triage-severity.output.osha_notification_required}}\n\nRegulatory obligations: {{steps.triage-severity.output.regulatory_obligations}}\nImmediate containment actions: {{steps.triage-severity.output.immediate_containment}}\nInvestigation requirements: {{steps.triage-severity.output.investigation_requirements}}\n\nSafety officer, PM, and HR notified.",
+      "notifyTo": "discord",
+      "dependsOn": ["submit-regulatory-notification", "check-severity-class"]
+    },
+    {
+      "id": "wait-investigation-window",
+      "type": "delay",
+      "delayDuration": "48h",
+      "dependsOn": ["alert-safety-officer"]
+    },
+    {
+      "id": "receive-investigation-findings",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SITE_APP_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "site_id": "{{site_id}}",
+        "incident_date": "{{incident_date}}",
+        "request_type": "investigation_findings",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/investigation-{{runId}}"
+      },
+      "callbackKey": "investigation-{{runId}}",
+      "callbackTimeout": "24h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.findings_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["wait-investigation-window"]
+    },
+    {
+      "id": "draft-incident-report",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Draft a formal OSHA-compliant incident investigation report for the following construction site incident.\n\nProject: {{project_name}} (Site: {{site_id}})\nIncident date: {{incident_date}}\nIncident type: {{incident_type}}\nInjured count: {{injured_count}}\nSeverity classification: {{steps.triage-severity.output.severity_class}}\nRegulatory obligations: {{steps.triage-severity.output.regulatory_obligations}}\nOSHA notification submission: {{steps.submit-regulatory-notification.output}}\nInitial incident report: {{steps.receive-incident-report.output}}\nInvestigation findings: {{steps.receive-investigation-findings.output}}\n\nThe report must include the following numbered sections:\n1. Incident Summary — date, time, location, type, injured parties\n2. Description of Events — chronological account leading to the incident\n3. Root Cause Analysis — direct cause, contributing factors, root cause\n4. Witness Statements Summary — anonymized if required\n5. Regulatory Compliance — OSHA notification reference number, 300 log entry, state reporting status\n6. Corrective and Preventive Actions (CAPA) — specific actions with responsible parties and due dates\n7. Return-to-Work Plan — if applicable\n8. Sign-off Section — fields for safety officer, project manager, and HR\n\nFormat as a formal professional document. Language must be factual, specific, and free of speculation.",
+      "timeout": 480,
+      "budget": 0.75,
+      "dependsOn": ["receive-investigation-findings"]
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "name": "tpl-gov-procurement",
+  "description": "Government Procurement Officer (政府採購專員) — fetch bid documents, AI compliance pre-screen, re-tender alert if zero pass, AI score compliant bids, submit scoring matrix, notify evaluation summary. Replace bid-portal externalUrl with your e-procurement system endpoint (e.g. GeBIZ, UNSPSC, SAP Ariba).",
+  "variables": {
+    "tender_id": "",
+    "tender_title": "",
+    "evaluation_weights_json": "",
+    "compliance_checklist": ""
+  },
+  "steps": [
+    {
+      "id": "fetch-bid-documents",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PROCUREMENT_PORTAL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "tender_id": "{{tender_id}}",
+        "tender_title": "{{tender_title}}",
+        "include_attachments": true,
+        "callback_url": "https://your-tetora.example.com/api/callbacks/bid-docs-{{runId}}"
+      },
+      "callbackKey": "bid-docs-{{runId}}",
+      "callbackTimeout": "20m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "compliance-prescreen",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a government procurement officer performing a mandatory compliance pre-screen of submitted bids.\n\nTender ID: {{tender_id}}\nTender title: {{tender_title}}\n\nCompliance checklist (all items are mandatory pass/fail):\n{{compliance_checklist}}\n\nSubmitted bid documents:\n{{steps.fetch-bid-documents.output}}\n\nFor each bidder in the bid documents, check every item in the compliance checklist. A bidder FAILS if any single mandatory item is missing or non-compliant. Output a JSON object with fields: total_bids_received (number), compliant_bidders (array of objects with bidder_id, bidder_name, status='pass'), non_compliant_bidders (array of objects with bidder_id, bidder_name, status='fail', failed_items as array of strings), compliant_count (number), recommendation (string). Reply with only the JSON object.",
+      "timeout": 480,
+      "budget": 0.35,
+      "dependsOn": ["fetch-bid-documents"]
+    },
+    {
+      "id": "check-compliant-count",
+      "type": "condition",
+      "if": "{{steps.compliance-prescreen.output.compliant_count}} == 0",
+      "then": "notify-retender",
+      "else": "score-compliant-bids",
+      "dependsOn": ["compliance-prescreen"]
+    },
+    {
+      "id": "notify-retender",
+      "type": "notify",
+      "notifyMsg": "Re-tender required for {{tender_title}} ({{tender_id}}). Zero compliant bids received out of {{steps.compliance-prescreen.output.total_bids_received}} submitted. All bids failed compliance pre-screen. Non-compliant bidders: {{steps.compliance-prescreen.output.non_compliant_bidders}}. Procurement committee notification issued — re-tender process must be initiated per regulations.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-compliant-count"]
+    },
+    {
+      "id": "score-compliant-bids",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a government procurement evaluation officer. Score all compliant bids for this tender.\n\nTender ID: {{tender_id}}\nTender title: {{tender_title}}\n\nEvaluation criteria and weights (JSON):\n{{evaluation_weights_json}}\n\nCompliant bidders:\n{{steps.compliance-prescreen.output.compliant_bidders}}\n\nFull bid documents:\n{{steps.fetch-bid-documents.output}}\n\nFor each compliant bidder, evaluate and score their proposal against each weighted criterion. Apply the weights from evaluation_weights_json to compute a weighted total score out of 100. Output a JSON object with fields: scores (array of objects with bidder_id, bidder_name, criterion_scores as object mapping criterion name to raw score, weighted_total as number), recommended_awardee_id (string), recommended_awardee_name (string), evaluation_narrative (string summarising the basis for recommendation, 3-5 sentences), tied (boolean, true if top two bidders are within 1 point). Reply with only the JSON object.",
+      "timeout": 600,
+      "budget": 0.50,
+      "dependsOn": ["check-compliant-count"]
+    },
+    {
+      "id": "submit-scoring-matrix",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PROCUREMENT_PORTAL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "tender_id": "{{tender_id}}",
+        "tender_title": "{{tender_title}}",
+        "total_bids_received": "{{steps.compliance-prescreen.output.total_bids_received}}",
+        "compliant_count": "{{steps.compliance-prescreen.output.compliant_count}}",
+        "scores": "{{steps.score-compliant-bids.output.scores}}",
+        "recommended_awardee_id": "{{steps.score-compliant-bids.output.recommended_awardee_id}}",
+        "recommended_awardee_name": "{{steps.score-compliant-bids.output.recommended_awardee_name}}",
+        "tied": "{{steps.score-compliant-bids.output.tied}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/scoring-submit-{{runId}}"
+      },
+      "callbackKey": "scoring-submit-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["score-compliant-bids"]
+    },
+    {
+      "id": "notify-evaluation-summary",
+      "type": "notify",
+      "notifyMsg": "Tender evaluation complete for {{tender_title}} ({{tender_id}}). Total bids: {{steps.compliance-prescreen.output.total_bids_received}}, Compliant: {{steps.compliance-prescreen.output.compliant_count}}. Recommended awardee: {{steps.score-compliant-bids.output.recommended_awardee_name}} ({{steps.score-compliant-bids.output.recommended_awardee_id}}). Tied: {{steps.score-compliant-bids.output.tied}}. Narrative: {{steps.score-compliant-bids.output.evaluation_narrative}}. Scoring matrix submitted to portal — reference: {{steps.submit-scoring-matrix.output.submission_reference}}. Awaiting procurement committee approval.",
+      "notifyTo": "discord",
+      "dependsOn": ["submit-scoring-matrix"]
+    }
+  ]
+}

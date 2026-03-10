@@ -1,0 +1,108 @@
+{
+  "name": "tpl-manager-approval",
+  "description": "Multi-level approval workflow: AI risk assessment, auto-approve low-risk requests under budget, escalate to manager with 48h timeout, execute approved action",
+  "variables": {
+    "request_type": "",
+    "request_description": "",
+    "requester": "",
+    "amount": "",
+    "department": ""
+  },
+  "steps": [
+    {
+      "id": "assess-request",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "A {{request_type}} request has been submitted by {{requester}} from the {{department}} department.\n\nRequest details: {{request_description}}\nAmount: {{amount}}\n\nPerform a structured risk and cost-benefit assessment. Output three labeled fields:\n- risk_level: one of 'low', 'medium', 'high'\n- auto_approve: 'yes' if risk_level is 'low' AND amount is under 500, otherwise 'no'\n- summary: 2-3 sentences covering the business justification, any concerns, and recommended action.\n\nOutput plain text with labeled sections.",
+      "timeout": 180,
+      "budget": 0.10
+    },
+    {
+      "id": "check-auto-approve",
+      "type": "condition",
+      "if": "{{steps.assess-request.output.auto_approve}} == 'yes'",
+      "then": "execute-action",
+      "else": "send-to-manager",
+      "dependsOn": ["assess-request"]
+    },
+    {
+      "id": "send-to-manager",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.APPROVAL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "requester": "{{requester}}",
+        "department": "{{department}}",
+        "request_type": "{{request_type}}",
+        "request_description": "{{request_description}}",
+        "amount": "{{amount}}",
+        "risk_level": "{{steps.assess-request.output.risk_level}}",
+        "ai_summary": "{{steps.assess-request.output.summary}}",
+        "approve_url": "https://your-tetora.example.com/api/callbacks/approval-{{runId}}?decision=approved",
+        "deny_url": "https://your-tetora.example.com/api/callbacks/approval-{{runId}}?decision=denied",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/approval-{{runId}}"
+      },
+      "callbackKey": "approval-{{runId}}",
+      "callbackTimeout": "48h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.decision",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-auto-approve"]
+    },
+    {
+      "id": "check-decision",
+      "type": "condition",
+      "if": "{{steps.send-to-manager.output.decision}} == 'approved'",
+      "then": "execute-action",
+      "else": "notify-denied",
+      "dependsOn": ["send-to-manager"]
+    },
+    {
+      "id": "notify-denied",
+      "type": "notify",
+      "notifyMsg": "Request denied for {{requester}} ({{department}}).\n\nRequest: {{request_type}} — {{request_description}}\nAmount: {{amount}}\nRisk assessment: {{steps.assess-request.output.risk_level}}\nManager decision: denied\nReason: {{steps.send-to-manager.output.reason}}\n\nPlease contact your manager to discuss resubmission options.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-decision"]
+    },
+    {
+      "id": "execute-action",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.ACTION_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "requester": "{{requester}}",
+        "department": "{{department}}",
+        "request_type": "{{request_type}}",
+        "request_description": "{{request_description}}",
+        "amount": "{{amount}}",
+        "auto_approved": "{{steps.assess-request.output.auto_approve}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/execute-{{runId}}"
+      },
+      "callbackKey": "execute-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-auto-approve", "check-decision"]
+    },
+    {
+      "id": "notify-approved",
+      "type": "notify",
+      "notifyMsg": "Request approved and executed for {{requester}} ({{department}}).\n\nRequest: {{request_type}} — {{request_description}}\nAmount: {{amount}}\nAI assessment: {{steps.assess-request.output.summary}}\nApproval: {{steps.assess-request.output.auto_approve == 'yes' ? 'auto-approved (low risk)' : 'manager approved'}}\nExecution status: {{steps.execute-action.output.status}}\nReference ID: {{steps.execute-action.output.reference_id}}",
+      "notifyTo": "discord",
+      "dependsOn": ["execute-action"]
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "name": "tpl-contract-review",
+  "description": "Contract Review + E-Sign Pipeline — OCR contract, AI risk analysis, route to legal or DocuSign. Replace OCR externalUrl with your provider (e.g. AWS Textract, Google Document AI). Replace DocuSign externalUrl with https://api.docusign.com/v2.1/accounts/{accountId}/envelopes.",
+  "variables": {
+    "contract_url": "",
+    "counterparty_name": "",
+    "deal_value": "",
+    "contract_type": ""
+  },
+  "steps": [
+    {
+      "id": "ocr-contract",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.OCR_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "document_url": "{{contract_url}}",
+        "output_format": "text",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/ocr-{{runId}}"
+      },
+      "callbackKey": "ocr-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "review-contract",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a senior legal analyst. Review the following contract text and produce a structured risk assessment.\n\nContract type: {{contract_type}}\nCounterparty: {{counterparty_name}}\nDeal value: {{deal_value}}\n\nContract text:\n{{steps.ocr-contract.output.text}}\n\nOutput a JSON object with fields: risk_level (one of: low, medium, high), risk_summary (string), flagged_clauses (array of objects with fields: clause_text, reason, severity). Reply with only the JSON object.",
+      "timeout": "10m",
+      "budget": 0.20,
+      "dependsOn": ["ocr-contract"]
+    },
+    {
+      "id": "check-risk",
+      "type": "condition",
+      "if": "{{steps.review-contract.output.risk_level}} == 'low'",
+      "then": "send-for-signature",
+      "else": "escalate",
+      "dependsOn": ["review-contract"]
+    },
+    {
+      "id": "escalate",
+      "type": "notify",
+      "notifyMsg": "Contract review for {{counterparty_name}} ({{contract_type}}, {{deal_value}}) requires legal review. Risk level: {{steps.review-contract.output.risk_level}}. Summary: {{steps.review-contract.output.risk_summary}}. Flagged clauses: {{steps.review-contract.output.flagged_clauses}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-risk"]
+    },
+    {
+      "id": "send-for-signature",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.DOCUSIGN_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "document_url": "{{contract_url}}",
+        "counterparty": "{{counterparty_name}}",
+        "subject": "Please sign: {{contract_type}} agreement",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/esign-{{runId}}"
+      },
+      "callbackKey": "esign-{{runId}}",
+      "callbackTimeout": "30d",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-risk"]
+    },
+    {
+      "id": "notify-signed",
+      "type": "notify",
+      "notifyMsg": "Contract signed by {{counterparty_name}}. Type: {{contract_type}}, Deal value: {{deal_value}}. Envelope ID: {{steps.send-for-signature.output.envelope_id}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["send-for-signature"]
+    }
+  ]
+}

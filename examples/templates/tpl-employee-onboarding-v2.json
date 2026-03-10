@@ -1,0 +1,92 @@
+{
+  "name": "tpl-employee-onboarding-v2",
+  "description": "Draft personalized welcome content, provision accounts and payroll in parallel, then send welcome or escalate blockers",
+  "variables": {
+    "employee_name": "",
+    "employee_email": "",
+    "role_title": "",
+    "department": "",
+    "manager_name": "",
+    "start_date": ""
+  },
+  "steps": [
+    {
+      "id": "draft-welcome",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Write a personalized welcome email and a first-week schedule for {{employee_name}}, who is joining as {{role_title}} in the {{department}} team on {{start_date}}. Their manager is {{manager_name}}. The email should be warm, specific to their role, and 150-200 words. The first-week schedule should be a day-by-day bullet list (Mon-Fri) with realistic onboarding activities for a {{role_title}}. Output two sections: 'Welcome Email' and 'First-Week Schedule'.",
+      "timeout": 180,
+      "budget": 0.10
+    },
+    {
+      "id": "provision-accounts",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.IT_PROVISIONING_API_KEY}}"
+      },
+      "externalBody": {
+        "email": "{{employee_email}}",
+        "full_name": "{{employee_name}}",
+        "department": "{{department}}",
+        "role": "{{role_title}}",
+        "start_date": "{{start_date}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/provision-{{runId}}"
+      },
+      "callbackKey": "provision-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "setup-payroll",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PAYROLL_API_KEY}}"
+      },
+      "externalBody": {
+        "employee_email": "{{employee_email}}",
+        "employee_name": "{{employee_name}}",
+        "role_title": "{{role_title}}",
+        "department": "{{department}}",
+        "start_date": "{{start_date}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/payroll-{{runId}}"
+      },
+      "callbackKey": "payroll-{{runId}}",
+      "callbackTimeout": "1h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.enrolled",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "check-provisioning",
+      "type": "condition",
+      "if": "{{steps.provision-accounts.output.status}} == 'ready'",
+      "then": "send-welcome",
+      "else": "notify-blocker",
+      "dependsOn": ["draft-welcome", "provision-accounts", "setup-payroll"]
+    },
+    {
+      "id": "send-welcome",
+      "type": "notify",
+      "notifyMsg": "Welcome {{employee_name}}! Here is your onboarding information:\n\n{{steps.draft-welcome.output}}\n\nAccount credentials have been sent to {{employee_email}}. Payroll enrollment: {{steps.setup-payroll.output.enrolled}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-provisioning"]
+    },
+    {
+      "id": "notify-blocker",
+      "type": "notify",
+      "notifyMsg": "IT provisioning blocker for new hire {{employee_name}} ({{role_title}}, starts {{start_date}}). Provisioning status: {{steps.provision-accounts.output.status}}. Error: {{steps.provision-accounts.output.error}}. Manager: {{manager_name}}. Please resolve before start date.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-provisioning"]
+    }
+  ]
+}

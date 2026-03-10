@@ -1,0 +1,113 @@
+{
+  "name": "tpl-content-publish",
+  "description": "Content Publishing Pipeline — research topic, write blog post and social variants, publish to CMS, schedule social posts. Replace CMS externalUrl with your provider (e.g. Contentful: https://api.contentful.com/spaces/{spaceId}/entries). Replace social scheduler externalUrl with your provider (e.g. Buffer: https://api.bufferapp.com/1/updates/create.json).",
+  "variables": {
+    "topic": "",
+    "target_keyword": "",
+    "word_count": "1200",
+    "brand_voice": "",
+    "publish_date": ""
+  },
+  "steps": [
+    {
+      "id": "research-topic",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a content strategist. Research the following topic and compile a structured brief for a blog post.\n\nTopic: {{topic}}\nTarget SEO keyword: {{target_keyword}}\nTarget word count: {{word_count}}\nBrand voice: {{brand_voice}}\n\nOutput a JSON object with fields: angle (the unique editorial angle, string), key_points (array of strings, 5-7 items), seo_keywords (array of strings, primary + secondary), competitor_gaps (array of strings, what competitors miss), suggested_title (string). Reply with only the JSON object.",
+      "timeout": "10m",
+      "budget": 0.15
+    },
+    {
+      "id": "write-draft",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "You are a professional content writer. Write a complete blog post based on the research brief below.\n\nTopic: {{topic}}\nTarget keyword: {{target_keyword}}\nWord count: {{word_count}} words\nBrand voice: {{brand_voice}}\nSuggested title: {{steps.research-topic.output.suggested_title}}\nAngle: {{steps.research-topic.output.angle}}\nKey points: {{steps.research-topic.output.key_points}}\nSEO keywords: {{steps.research-topic.output.seo_keywords}}\n\nWrite a complete, publication-ready post in Markdown. Include: H1 title, introduction, body sections with H2/H3, conclusion with CTA. Naturally incorporate SEO keywords. Match the brand voice exactly.",
+      "timeout": "15m",
+      "budget": 0.25,
+      "dependsOn": ["research-topic"]
+    },
+    {
+      "id": "write-social",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "You are a social media copywriter. Based on the blog post below, write 3 social media post variants.\n\nBlog title: {{steps.research-topic.output.suggested_title}}\nBrand voice: {{brand_voice}}\nTarget keyword: {{target_keyword}}\n\nBlog post:\n{{steps.write-draft.output}}\n\nWrite 3 variants: (1) Twitter/X — punchy hook under 280 chars + link placeholder, (2) LinkedIn — professional 2-3 sentence teaser, (3) Instagram caption — engaging with relevant hashtags. Output a JSON object with fields: twitter, linkedin, instagram. Reply with only the JSON object.",
+      "timeout": "5m",
+      "budget": 0.10,
+      "dependsOn": ["write-draft"]
+    },
+    {
+      "id": "publish-cms",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "title": "{{steps.research-topic.output.suggested_title}}",
+        "body": "{{steps.write-draft.output}}",
+        "slug": "{{target_keyword}}",
+        "publish_date": "{{publish_date}}",
+        "status": "scheduled",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/cms-{{runId}}"
+      },
+      "callbackKey": "cms-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["write-social"]
+    },
+    {
+      "id": "check-publish",
+      "type": "condition",
+      "if": "{{steps.publish-cms.output.status}} == 'published'",
+      "then": "schedule-social",
+      "else": "notify-error",
+      "dependsOn": ["publish-cms"]
+    },
+    {
+      "id": "schedule-social",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SOCIAL_SCHEDULER_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "post_url": "{{steps.publish-cms.output.post_url}}",
+        "publish_date": "{{publish_date}}",
+        "twitter": "{{steps.write-social.output.twitter}}",
+        "linkedin": "{{steps.write-social.output.linkedin}}",
+        "instagram": "{{steps.write-social.output.instagram}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/social-{{runId}}"
+      },
+      "callbackKey": "social-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-publish"]
+    },
+    {
+      "id": "notify-done",
+      "type": "notify",
+      "notifyMsg": "Content published: \"{{steps.research-topic.output.suggested_title}}\" — CMS URL: {{steps.publish-cms.output.post_url}}. Scheduled for {{publish_date}}. Social posts queued: {{steps.schedule-social.output.scheduled_count}} platforms.",
+      "notifyTo": "discord",
+      "dependsOn": ["schedule-social"]
+    },
+    {
+      "id": "notify-error",
+      "type": "notify",
+      "notifyMsg": "CMS publish failed for \"{{steps.research-topic.output.suggested_title}}\". Status: {{steps.publish-cms.output.status}}. Error: {{steps.publish-cms.output.error}}. Manual intervention required.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-publish"]
+    }
+  ]
+}

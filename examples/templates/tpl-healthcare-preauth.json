@@ -1,0 +1,121 @@
+{
+  "name": "tpl-healthcare-preauth",
+  "description": "Insurance pre-authorization: extract diagnosis codes, submit to payer with 72h timeout, schedule procedure if approved or draft appeal if denied",
+  "variables": {
+    "patient_id": "",
+    "patient_name": "",
+    "procedure_code": "",
+    "diagnosis_code": "",
+    "insurance_provider": "",
+    "provider_name": ""
+  },
+  "steps": [
+    {
+      "id": "review-records",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a medical billing specialist preparing a pre-authorization request.\n\nPatient: {{patient_name}} (ID: {{patient_id}})\nProcedure code: {{procedure_code}}\nDiagnosis code: {{diagnosis_code}}\nInsurance provider: {{insurance_provider}}\nOrdering provider: {{provider_name}}\n\nReview the clinical details and prepare a structured pre-authorization package with the following labeled sections:\n- clinical_summary: 3-4 sentences describing the medical necessity for the procedure, referencing the diagnosis\n- icd10_codes: comma-separated list of all applicable ICD-10 codes derived from {{diagnosis_code}}\n- cpt_codes: comma-separated list of all applicable CPT codes derived from {{procedure_code}}\n- supporting_criteria: 3-5 bullet points citing clinical criteria or payer policy that support medical necessity\n- urgency: one of 'routine', 'urgent', 'emergent'\n\nOutput plain text with labeled sections.",
+      "timeout": 300,
+      "budget": 0.25
+    },
+    {
+      "id": "submit-preauth",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PAYER_API_KEY}}",
+        "Content-Type": "application/json",
+        "X-Payer-ID": "{{insurance_provider}}"
+      },
+      "externalBody": {
+        "patient_id": "{{patient_id}}",
+        "patient_name": "{{patient_name}}",
+        "procedure_code": "{{procedure_code}}",
+        "diagnosis_code": "{{diagnosis_code}}",
+        "icd10_codes": "{{steps.review-records.output.icd10_codes}}",
+        "cpt_codes": "{{steps.review-records.output.cpt_codes}}",
+        "clinical_summary": "{{steps.review-records.output.clinical_summary}}",
+        "supporting_criteria": "{{steps.review-records.output.supporting_criteria}}",
+        "urgency": "{{steps.review-records.output.urgency}}",
+        "provider_name": "{{provider_name}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/preauth-{{runId}}"
+      },
+      "callbackKey": "preauth-{{runId}}",
+      "callbackTimeout": "72h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.decision",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["review-records"]
+    },
+    {
+      "id": "check-decision",
+      "type": "condition",
+      "if": "{{steps.submit-preauth.output.decision}} == 'approved'",
+      "then": "schedule-procedure",
+      "else": "check-pending",
+      "dependsOn": ["submit-preauth"]
+    },
+    {
+      "id": "check-pending",
+      "type": "condition",
+      "if": "{{steps.submit-preauth.output.decision}} == 'pending'",
+      "then": "notify-pending",
+      "else": "draft-appeal",
+      "dependsOn": ["check-decision"]
+    },
+    {
+      "id": "notify-pending",
+      "type": "notify",
+      "notifyMsg": "Pre-authorization pending additional review for {{patient_name}} (ID: {{patient_id}}).\n\nProcedure: {{procedure_code}} | Diagnosis: {{diagnosis_code}}\nInsurance: {{insurance_provider}} | Auth reference: {{steps.submit-preauth.output.reference_number}}\nPayer notes: {{steps.submit-preauth.output.payer_notes}}\nExpected decision by: {{steps.submit-preauth.output.decision_date}}\n\nFollow up with {{insurance_provider}} if no response within 5 business days.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-pending"]
+    },
+    {
+      "id": "draft-appeal",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "A pre-authorization request has been denied by {{insurance_provider}} for patient {{patient_name}} (ID: {{patient_id}}).\n\nProcedure: {{procedure_code}}\nDiagnosis: {{diagnosis_code}}\nProvider: {{provider_name}}\nDenial data: {{steps.submit-preauth.output}}\nOriginal clinical summary: {{steps.review-records.output.clinical_summary}}\nSupporting criteria: {{steps.review-records.output.supporting_criteria}}\n\nDraft a formal pre-authorization appeal letter. The letter must include:\n1. Clear identification of the denied service and denial reference number\n2. Statement of medical necessity with clinical evidence, citing applicable payer coverage policies and clinical guidelines (e.g., MCG, InterQual)\n3. Rebuttal of each denial reason cited in the payer's decision\n4. A documentation checklist of records to attach (operative notes, lab results, prior treatment history)\n5. Requested resolution and deadline for reconsideration\n\nFormat as a professional medical billing appeal letter ready for submission.",
+      "timeout": 600,
+      "budget": 1.00,
+      "dependsOn": ["check-pending"]
+    },
+    {
+      "id": "schedule-procedure",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SCHEDULING_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "patient_id": "{{patient_id}}",
+        "patient_name": "{{patient_name}}",
+        "procedure_code": "{{procedure_code}}",
+        "provider_name": "{{provider_name}}",
+        "auth_number": "{{steps.submit-preauth.output.auth_number}}",
+        "auth_valid_through": "{{steps.submit-preauth.output.valid_through}}",
+        "urgency": "{{steps.review-records.output.urgency}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/schedule-{{runId}}"
+      },
+      "callbackKey": "schedule-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-decision"]
+    },
+    {
+      "id": "notify-outcome",
+      "type": "notify",
+      "notifyMsg": "Pre-authorization outcome for {{patient_name}} (ID: {{patient_id}}).\n\nProcedure: {{procedure_code}} | Diagnosis: {{diagnosis_code}}\nInsurance: {{insurance_provider}} | Provider: {{provider_name}}\nDecision: {{steps.submit-preauth.output.decision}}\nAuth number: {{steps.submit-preauth.output.auth_number}}\nValid through: {{steps.submit-preauth.output.valid_through}}\nScheduled: {{steps.schedule-procedure.output.appointment_date}} at {{steps.schedule-procedure.output.facility}}\n\nPatient notification sent to {{patient_name}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["schedule-procedure"]
+    }
+  ]
+}

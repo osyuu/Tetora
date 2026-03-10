@@ -1,0 +1,95 @@
+{
+  "name": "tpl-churn-intervention",
+  "description": "Fetch customer health score, run deep analysis and draft outreach for high-risk accounts, create CRM task, alert CSM",
+  "variables": {
+    "customer_id": "",
+    "customer_name": "",
+    "csm_name": "",
+    "contract_value": "",
+    "renewal_date": ""
+  },
+  "steps": [
+    {
+      "id": "fetch-health-score",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.ANALYTICS_API_KEY}}"
+      },
+      "externalBody": {
+        "customer_id": "{{customer_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/health-{{runId}}"
+      },
+      "callbackKey": "health-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data.customer"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "check-risk",
+      "type": "condition",
+      "if": "{{steps.fetch-health-score.output.score}} < 40",
+      "then": "deep-analysis",
+      "else": "no-action",
+      "dependsOn": ["fetch-health-score"]
+    },
+    {
+      "id": "no-action",
+      "type": "notify",
+      "notifyMsg": "No action needed for {{customer_name}} (ID: {{customer_id}}). Health score {{steps.fetch-health-score.output.score}} is above threshold. CSM: {{csm_name}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-risk"]
+    },
+    {
+      "id": "deep-analysis",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "Perform a churn risk analysis for customer {{customer_name}} (ID: {{customer_id}}). Contract value: {{contract_value}}, renewal date: {{renewal_date}}, CSM: {{csm_name}}. Health score data: {{steps.fetch-health-score.output}}. Synthesize usage metrics, engagement signals, and support history from the data provided. Output two sections: (1) 'Churn Risk Narrative' — 4-6 sentences on why this account is at risk and what is driving disengagement; (2) 'Recommended Actions' — a prioritized bullet list of 3-5 specific actions the CSM should take in the next 7 days.",
+      "dependsOn": ["check-risk"],
+      "timeout": 240,
+      "budget": 0.20
+    },
+    {
+      "id": "draft-outreach",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Write a personalized re-engagement email to {{customer_name}} from their CSM {{csm_name}}. Context: the account shows signs of churn risk (score: {{steps.fetch-health-score.output.score}}, renewal: {{renewal_date}}). Risk analysis: {{steps.deep-analysis.output}}. The email should: acknowledge their recent usage patterns without being alarming, offer a specific value-add (executive review, training session, or feature deep-dive), and end with a single clear CTA. Keep it under 150 words. Tone: warm, consultative, not salesy.",
+      "dependsOn": ["deep-analysis"],
+      "timeout": 180,
+      "budget": 0.10
+    },
+    {
+      "id": "create-task",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CRM_API_KEY}}"
+      },
+      "externalBody": {
+        "customer_id": "{{customer_id}}",
+        "task_type": "churn_intervention",
+        "assigned_to": "{{csm_name}}",
+        "due_date": "{{renewal_date}}",
+        "priority": "high",
+        "notes": "{{steps.deep-analysis.output.recommended_actions}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/crm-{{runId}}"
+      },
+      "callbackKey": "crm-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "onTimeout": "skip",
+      "dependsOn": ["draft-outreach"]
+    },
+    {
+      "id": "notify-csm",
+      "type": "notify",
+      "notifyMsg": "Churn risk alert for {{customer_name}} (score: {{steps.fetch-health-score.output.score}}, renewal: {{renewal_date}}, value: {{contract_value}}).\n\nRisk Summary:\n{{steps.deep-analysis.output}}\n\nDraft Outreach Email:\n{{steps.draft-outreach.output}}\n\nCRM task created: {{steps.create-task.output.task_id}}. Assigned to: {{csm_name}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["create-task"]
+    }
+  ]
+}

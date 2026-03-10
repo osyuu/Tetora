@@ -1,0 +1,115 @@
+{
+  "name": "tpl-hotel-rate-optimization",
+  "description": "Hotel revenue management: fetch occupancy forecast from PMS, pull competitor rates, analyze and recommend rate changes, route large adjustments for human approval, then push rates to PMS and channel manager",
+  "variables": {
+    "property_id": "",
+    "forecast_window_days": "",
+    "comp_set_ids": "",
+    "rate_change_threshold_pct": ""
+  },
+  "steps": [
+    {
+      "id": "fetch-occupancy-forecast",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "property_id": "{{property_id}}",
+        "forecast_window_days": "{{forecast_window_days}}",
+        "data_types": ["occupancy_forecast", "current_rates", "pickup_pace", "on_books"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/pms-forecast-{{runId}}"
+      },
+      "callbackKey": "pms-forecast-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.fetch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "fetch-competitor-rates",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.RATE_SHOPPING_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "property_id": "{{property_id}}",
+        "comp_set_ids": "{{comp_set_ids}}",
+        "forecast_window_days": "{{forecast_window_days}}",
+        "channels": ["ota_best_available", "brand_direct", "gds"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/comp-rates-{{runId}}"
+      },
+      "callbackKey": "comp-rates-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.fetch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["fetch-occupancy-forecast"]
+    },
+    {
+      "id": "analyze-pricing",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a hotel revenue management analyst. Analyze occupancy forecasts and competitive positioning to generate rate recommendations.\n\nProperty ID: {{property_id}}\nForecast window: {{forecast_window_days}} days\nRate change approval threshold: {{rate_change_threshold_pct}}%\nPMS occupancy and rate data: {{steps.fetch-occupancy-forecast.output}}\nCompetitor rate data (comp set: {{comp_set_ids}}): {{steps.fetch-competitor-rates.output}}\n\nFor each date in the forecast window, evaluate: (1) occupancy forecast vs. target (typically 85%); (2) current BAR vs. comp set median; (3) pickup pace relative to same time last year; (4) day-of-week and event demand patterns.\n\nOutput plain text with labeled sections:\n- recommendation_summary: 2-3 sentence executive summary of the pricing opportunity\n- rate_adjustments: JSON array of objects with fields: date (YYYY-MM-DD), room_type, current_rate, recommended_rate, change_pct (as a number), rationale\n- max_change_pct: the single highest absolute change_pct across all recommended adjustments (as a number)\n- requires_approval: true if max_change_pct exceeds {{rate_change_threshold_pct}}, else false\n- yield_impact_estimate: estimated revenue impact of implementing all recommendations (string, e.g. '+$4,200 over forecast window')",
+      "timeout": 420,
+      "budget": 0.45,
+      "dependsOn": ["fetch-competitor-rates"]
+    },
+    {
+      "id": "check-approval-required",
+      "type": "condition",
+      "if": "{{steps.analyze-pricing.output.requires_approval}} == 'true'",
+      "then": "notify-approval-required",
+      "else": "push-rates",
+      "dependsOn": ["analyze-pricing"]
+    },
+    {
+      "id": "notify-approval-required",
+      "type": "notify",
+      "notifyMsg": "Rate adjustment approval required for property {{property_id}}.\n\nMax rate change: {{steps.analyze-pricing.output.max_change_pct}}% (threshold: {{rate_change_threshold_pct}}%)\nYield impact estimate: {{steps.analyze-pricing.output.yield_impact_estimate}}\nSummary: {{steps.analyze-pricing.output.recommendation_summary}}\n\nProposed adjustments: {{steps.analyze-pricing.output.rate_adjustments}}\n\nRevenue manager approval needed before rates are pushed to PMS and channel manager.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-approval-required"]
+    },
+    {
+      "id": "push-rates",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "property_id": "{{property_id}}",
+        "rate_adjustments": "{{steps.analyze-pricing.output.rate_adjustments}}",
+        "push_targets": ["pms", "channel_manager", "gds"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/rate-push-{{runId}}"
+      },
+      "callbackKey": "rate-push-{{runId}}",
+      "callbackTimeout": "20m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.push_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-approval-required"]
+    },
+    {
+      "id": "notify-yield-summary",
+      "type": "notify",
+      "notifyMsg": "Rate optimization complete for property {{property_id}} ({{forecast_window_days}}-day window).\n\nSummary: {{steps.analyze-pricing.output.recommendation_summary}}\nEstimated yield impact: {{steps.analyze-pricing.output.yield_impact_estimate}}\nPMS + channel manager push status: {{steps.push-rates.output.push_status}}\nChannels updated: {{steps.push-rates.output.channels_updated}}\nRates pushed: {{steps.push-rates.output.rates_updated_count}} date/room-type combinations.",
+      "notifyTo": "discord",
+      "dependsOn": ["push-rates"]
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+{
+  "name": "tpl-freight-dispatch",
+  "description": "Freight Dispatcher (物流調度員) — pull shipment manifest from TMS, AI-rank driver assignments, push to driver app, generate shipping label, monitor delivery status with exception handling. Replace TMS and driver-app externalUrl with your logistics provider endpoints (e.g. MercuryGate, McLeod, project44).",
+  "variables": {
+    "shipment_id": "",
+    "origin_depot": "",
+    "destination_address": "",
+    "weight_kg": "",
+    "delivery_window": ""
+  },
+  "steps": [
+    {
+      "id": "pull-tms-manifest",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.TMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "shipment_id": "{{shipment_id}}",
+        "origin_depot": "{{origin_depot}}",
+        "destination_address": "{{destination_address}}",
+        "weight_kg": "{{weight_kg}}",
+        "delivery_window": "{{delivery_window}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/tms-manifest-{{runId}}"
+      },
+      "callbackKey": "tms-manifest-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "rank-drivers",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a freight dispatch coordinator. Based on the TMS shipment manifest, rank the available drivers for assignment.\n\nShipment ID: {{shipment_id}}\nOrigin depot: {{origin_depot}}\nDestination: {{destination_address}}\nWeight: {{weight_kg}} kg\nDelivery window: {{delivery_window}}\n\nTMS manifest data:\n{{steps.pull-tms-manifest.output}}\n\nRank drivers from the available_drivers list in the manifest considering: (1) current location proximity to origin depot, (2) hours-of-service availability within the delivery window, (3) vehicle weight capacity vs shipment weight, (4) driver performance rating. Output a JSON object with fields: top_driver_id (string), top_driver_name (string), ranked_drivers (array of objects with driver_id, driver_name, score, reason), assignment_notes (string). Reply with only the JSON object.",
+      "timeout": 300,
+      "budget": 0.15,
+      "dependsOn": ["pull-tms-manifest"]
+    },
+    {
+      "id": "push-driver-assignment",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.DRIVER_APP_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "shipment_id": "{{shipment_id}}",
+        "driver_id": "{{steps.rank-drivers.output.top_driver_id}}",
+        "driver_name": "{{steps.rank-drivers.output.top_driver_name}}",
+        "origin_depot": "{{origin_depot}}",
+        "destination_address": "{{destination_address}}",
+        "weight_kg": "{{weight_kg}}",
+        "delivery_window": "{{delivery_window}}",
+        "assignment_notes": "{{steps.rank-drivers.output.assignment_notes}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/driver-accept-{{runId}}"
+      },
+      "callbackKey": "driver-accept-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.acceptance_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["rank-drivers"]
+    },
+    {
+      "id": "check-acceptance",
+      "type": "condition",
+      "if": "{{steps.push-driver-assignment.output.acceptance_status}} == 'accepted'",
+      "then": "generate-label",
+      "else": "notify-acceptance-failed",
+      "dependsOn": ["push-driver-assignment"]
+    },
+    {
+      "id": "notify-acceptance-failed",
+      "type": "notify",
+      "notifyMsg": "Driver acceptance failed for shipment {{shipment_id}}. Assigned driver: {{steps.rank-drivers.output.top_driver_name}} ({{steps.rank-drivers.output.top_driver_id}}). Acceptance status: {{steps.push-driver-assignment.output.acceptance_status}}. Origin: {{origin_depot}} → {{destination_address}}. Manual reassignment required — ranked alternatives: {{steps.rank-drivers.output.ranked_drivers}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-acceptance"]
+    },
+    {
+      "id": "generate-label",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.LABEL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "shipment_id": "{{shipment_id}}",
+        "driver_id": "{{steps.rank-drivers.output.top_driver_id}}",
+        "origin_depot": "{{origin_depot}}",
+        "destination_address": "{{destination_address}}",
+        "weight_kg": "{{weight_kg}}",
+        "delivery_window": "{{delivery_window}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/label-{{runId}}"
+      },
+      "callbackKey": "label-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-acceptance"]
+    },
+    {
+      "id": "wait-delivery-window",
+      "type": "delay",
+      "delayDuration": "4h",
+      "dependsOn": ["generate-label"]
+    },
+    {
+      "id": "query-delivery-status",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.TMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "shipment_id": "{{shipment_id}}",
+        "driver_id": "{{steps.rank-drivers.output.top_driver_id}}",
+        "label_id": "{{steps.generate-label.output.label_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/delivery-status-{{runId}}"
+      },
+      "callbackKey": "delivery-status-{{runId}}",
+      "callbackTimeout": "2h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.delivery_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["wait-delivery-window"]
+    },
+    {
+      "id": "check-delivery-exception",
+      "type": "condition",
+      "if": "{{steps.query-delivery-status.output.delivery_status}} == 'delivered'",
+      "then": "notify-delivered",
+      "else": "notify-exception",
+      "dependsOn": ["query-delivery-status"]
+    },
+    {
+      "id": "notify-delivered",
+      "type": "notify",
+      "notifyMsg": "Shipment {{shipment_id}} delivered successfully. Driver: {{steps.rank-drivers.output.top_driver_name}}. Origin: {{origin_depot}} → {{destination_address}}. Label: {{steps.generate-label.output.label_id}}. Delivered at: {{steps.query-delivery-status.output.delivered_at}}. POD reference: {{steps.query-delivery-status.output.pod_reference}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-delivery-exception"]
+    },
+    {
+      "id": "notify-exception",
+      "type": "notify",
+      "notifyMsg": "Delivery exception for shipment {{shipment_id}}. Status: {{steps.query-delivery-status.output.delivery_status}}. Driver: {{steps.rank-drivers.output.top_driver_name}} ({{steps.rank-drivers.output.top_driver_id}}). Route: {{origin_depot}} → {{destination_address}}. Exception details: {{steps.query-delivery-status.output.exception_reason}}. Last known location: {{steps.query-delivery-status.output.last_location}}. Dispatcher intervention required.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-delivery-exception"]
+    }
+  ]
+}

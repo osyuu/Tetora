@@ -1,0 +1,95 @@
+{
+  "name": "tpl-grant-application",
+  "description": "Grant application pipeline: funder research, fit scoring, application drafting, internal review, portal submission",
+  "variables": {
+    "funder_name": "",
+    "funder_url": "",
+    "grant_amount": "",
+    "program_name": "",
+    "org_mission": "",
+    "impact_metrics": "",
+    "deadline": ""
+  },
+  "steps": [
+    {
+      "id": "research-funder",
+      "type": "dispatch",
+      "agent": "kokuyou",
+      "prompt": "Research the grant funder: {{funder_name}} ({{funder_url}}). Our organization's mission: {{org_mission}}. Program applying for: {{program_name}} (requested amount: {{grant_amount}}, deadline: {{deadline}}). Investigate: (1) funder's stated priorities and funding history, (2) typical grantee profile and geographic/sector focus, (3) alignment signals between funder priorities and our program, (4) any known red flags or misalignments. Produce a funder research brief and assign a fit score from 1-10 with justification. Output must include a field 'fit_score' as an integer.",
+      "timeout": "20m",
+      "budget": 1.0
+    },
+    {
+      "id": "check-fit",
+      "type": "condition",
+      "if": "{{steps.research-funder.output.fit_score}} >= 7",
+      "then": "draft-application",
+      "else": "notify-low-fit",
+      "dependsOn": ["research-funder"]
+    },
+    {
+      "id": "notify-low-fit",
+      "type": "notify",
+      "notifyMsg": "Grant opportunity from {{funder_name}} scored below threshold (fit score: {{steps.research-funder.output.fit_score}}/10). Recommend skipping this application cycle. Funder brief: {{steps.research-funder.output}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-fit"]
+    },
+    {
+      "id": "draft-application",
+      "type": "dispatch",
+      "agent": "kokuyou",
+      "prompt": "Write a complete grant application for {{funder_name}} on behalf of our organization. Program: {{program_name}}. Requested amount: {{grant_amount}}. Deadline: {{deadline}}. Organization mission: {{org_mission}}. Impact metrics: {{impact_metrics}}. Funder research brief: {{steps.research-funder.output}}. Produce all four sections: (1) Executive Summary (250 words max) — hook with the problem, state our solution, quantify impact; (2) Program Narrative — problem statement, theory of change, implementation plan with timeline, organizational capacity; (3) Budget Justification — line-item rationale aligned to program activities, cost-effectiveness argument; (4) Evaluation Plan — SMART outcomes, data collection methods, reporting schedule. Mirror the funder's language and priorities throughout. Use formal grant-writing tone.",
+      "dependsOn": ["check-fit"],
+      "timeout": "30m",
+      "budget": 2.0
+    },
+    {
+      "id": "internal-review",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "funder_name": "{{funder_name}}",
+        "program_name": "{{program_name}}",
+        "grant_amount": "{{grant_amount}}",
+        "deadline": "{{deadline}}",
+        "draft_application": "{{steps.draft-application.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/internal-review-{{runId}}"
+      },
+      "callbackKey": "internal-review-{{runId}}",
+      "callbackTimeout": "72h",
+      "callbackAuth": "open",
+      "onTimeout": "stop",
+      "dependsOn": ["draft-application"]
+    },
+    {
+      "id": "submit-application",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "funder_name": "{{funder_name}}",
+        "program_name": "{{program_name}}",
+        "grant_amount": "{{grant_amount}}",
+        "final_application": "{{steps.internal-review.output.approved_text}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/grant-submit-{{runId}}"
+      },
+      "callbackKey": "grant-submit-{{runId}}",
+      "callbackTimeout": "1h",
+      "callbackAuth": "open",
+      "onTimeout": "stop",
+      "dependsOn": ["internal-review"]
+    },
+    {
+      "id": "notify-submitted",
+      "type": "notify",
+      "notifyMsg": "Grant application for {{funder_name}} submitted successfully. Program: {{program_name}}, Amount: {{grant_amount}}, Deadline: {{deadline}}. Submission confirmation: {{steps.submit-application.output.confirmation_id}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["submit-application"]
+    }
+  ]
+}

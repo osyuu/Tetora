@@ -1,0 +1,156 @@
+{
+  "name": "tpl-clinical-trial-screening",
+  "description": "Clinical trial patient screening: query EMR for candidates, screen against protocol eligibility criteria, notify investigator, receive screening decisions via EDC callback, draft consent appointment emails, send scheduling emails, and log outcomes to EDC",
+  "variables": {
+    "protocol_id": "",
+    "trial_name": "",
+    "site_id": "",
+    "investigator_id": ""
+  },
+  "steps": [
+    {
+      "id": "query-emr-candidates",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.EMR_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "protocol_id": "{{protocol_id}}",
+        "site_id": "{{site_id}}",
+        "query_type": "eligibility_candidate_search",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/emr-candidates-{{runId}}"
+      },
+      "callbackKey": "emr-candidates-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.query_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "screen-eligibility",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a clinical trial screening specialist. Evaluate EMR candidate data against the protocol eligibility criteria for this trial.\n\nProtocol ID: {{protocol_id}}\nTrial name: {{trial_name}}\nSite ID: {{site_id}}\nInvestigator ID: {{investigator_id}}\nEMR candidate data: {{steps.query-emr-candidates.output}}\n\nFor each candidate patient in the EMR data, apply the protocol's inclusion and exclusion criteria. Use only data available in the EMR record — do not make assumptions about missing values.\n\nOutput plain text with labeled sections:\n- eligible_candidates: JSON array of objects with fields: patient_id, patient_initials, age, key_qualifying_criteria (array of matched inclusion criteria), screening_notes\n- ineligible_candidates: JSON array of objects with fields: patient_id, exclusion_reason (specific criterion that disqualifies)\n- eligible_count: integer count of eligible candidates\n- screening_recommendation: 2-3 sentence summary for the investigator describing the eligible pool quality and any notable patterns in the ineligible exclusions",
+      "timeout": 480,
+      "budget": 0.60,
+      "dependsOn": ["query-emr-candidates"]
+    },
+    {
+      "id": "check-eligible-count",
+      "type": "condition",
+      "if": "{{steps.screen-eligibility.output.eligible_count}} == '0'",
+      "then": "notify-no-candidates",
+      "else": "notify-investigator",
+      "dependsOn": ["screen-eligibility"]
+    },
+    {
+      "id": "notify-no-candidates",
+      "type": "notify",
+      "notifyMsg": "Clinical trial screening complete — no eligible candidates found.\n\nTrial: {{trial_name}} (Protocol: {{protocol_id}})\nSite: {{site_id}} | Investigator: {{investigator_id}}\nCandidates evaluated: {{steps.query-emr-candidates.output.total_candidates_evaluated}}\nEligible: 0\n\nScreening recommendation: {{steps.screen-eligibility.output.screening_recommendation}}\n\nConsider broadening the EMR query parameters or reviewing protocol inclusion/exclusion criteria with the sponsor.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-eligible-count"]
+    },
+    {
+      "id": "notify-investigator",
+      "type": "notify",
+      "notifyMsg": "Clinical trial screening results ready for investigator review.\n\nTrial: {{trial_name}} (Protocol: {{protocol_id}})\nSite: {{site_id}} | Investigator: {{investigator_id}}\nEligible candidates: {{steps.screen-eligibility.output.eligible_count}}\n\nEligible candidate list: {{steps.screen-eligibility.output.eligible_candidates}}\nScreening recommendation: {{steps.screen-eligibility.output.screening_recommendation}}\n\nInvestigator decisions required in EDC to proceed with consent scheduling.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-eligible-count"]
+    },
+    {
+      "id": "receive-investigator-decisions",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.EDC_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "protocol_id": "{{protocol_id}}",
+        "site_id": "{{site_id}}",
+        "investigator_id": "{{investigator_id}}",
+        "eligible_candidates": "{{steps.screen-eligibility.output.eligible_candidates}}",
+        "request_type": "investigator_screening_decisions",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/edc-decisions-{{runId}}"
+      },
+      "callbackKey": "edc-decisions-{{runId}}",
+      "callbackTimeout": "72h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.decision_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["notify-investigator"]
+    },
+    {
+      "id": "draft-scheduling-emails",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Draft consent appointment scheduling emails for clinical trial candidates approved by the investigator.\n\nTrial: {{trial_name}} (Protocol: {{protocol_id}})\nSite: {{site_id}} | Investigator: {{investigator_id}}\nInvestigator decisions from EDC: {{steps.receive-investigator-decisions.output}}\nOriginal eligible candidates: {{steps.screen-eligibility.output.eligible_candidates}}\n\nFor each candidate that the investigator has approved for contact, draft a personalized scheduling email. Each email must: (1) introduce the trial by name and briefly explain the purpose in plain language (2-3 sentences, no jargon); (2) explain that participation is voluntary and they can ask any questions; (3) propose 2-3 appointment time slots for the initial informed consent visit; (4) provide site contact information and the investigator's name; (5) include a clear subject line referencing the trial name.\n\nFormat each email with a header block: --- PATIENT: [patient_initials] | SUBJECT: [subject line] --- followed by the email body. Do not include real patient names or identifiers beyond initials.",
+      "timeout": 420,
+      "budget": 0.50,
+      "dependsOn": ["receive-investigator-decisions"]
+    },
+    {
+      "id": "send-scheduling-emails",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.EMAIL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "protocol_id": "{{protocol_id}}",
+        "site_id": "{{site_id}}",
+        "email_campaign_type": "consent_scheduling",
+        "emails_content": "{{steps.draft-scheduling-emails.output}}",
+        "investigator_decisions": "{{steps.receive-investigator-decisions.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/emails-sent-{{runId}}"
+      },
+      "callbackKey": "emails-sent-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.send_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["draft-scheduling-emails"]
+    },
+    {
+      "id": "log-screening-outcomes",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.EDC_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "protocol_id": "{{protocol_id}}",
+        "site_id": "{{site_id}}",
+        "investigator_id": "{{investigator_id}}",
+        "eligible_candidates": "{{steps.screen-eligibility.output.eligible_candidates}}",
+        "ineligible_candidates": "{{steps.screen-eligibility.output.ineligible_candidates}}",
+        "investigator_decisions": "{{steps.receive-investigator-decisions.output}}",
+        "scheduling_email_status": "{{steps.send-scheduling-emails.output.send_status}}",
+        "log_type": "screening_log_21CFR11",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/edc-log-{{runId}}"
+      },
+      "callbackKey": "edc-log-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.log_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["send-scheduling-emails"]
+    }
+  ]
+}

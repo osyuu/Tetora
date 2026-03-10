@@ -1,0 +1,144 @@
+{
+  "name": "tpl-fund-trade-settlement",
+  "description": "Fund trade settlement: fetch trade blotter from OMS, fetch broker confirmations from SWIFT, match trades and analyze breaks, draft break resolution messages for counterparties, send via SWIFT, submit settlement instructions to custodian, and notify ops manager",
+  "variables": {
+    "settlement_date": "",
+    "fund_id": "",
+    "price_tolerance_bps": "",
+    "break_escalation_cutoff_minutes": ""
+  },
+  "steps": [
+    {
+      "id": "fetch-trade-blotter",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.OMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "fund_id": "{{fund_id}}",
+        "settlement_date": "{{settlement_date}}",
+        "data_types": ["trade_id", "isin", "broker_id", "side", "quantity", "trade_price", "settlement_amount", "currency", "settlement_instructions"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/blotter-{{runId}}"
+      },
+      "callbackKey": "blotter-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.fetch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "fetch-broker-confirmations",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SWIFT_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "fund_id": "{{fund_id}}",
+        "settlement_date": "{{settlement_date}}",
+        "message_types": ["MT515", "MT509"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/swift-confs-{{runId}}"
+      },
+      "callbackKey": "swift-confs-{{runId}}",
+      "callbackTimeout": "20m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.fetch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["fetch-trade-blotter"]
+    },
+    {
+      "id": "match-trades",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a fund settlement analyst. Match OMS trade blotter entries against broker SWIFT confirmations and identify any settlement breaks.\n\nFund ID: {{fund_id}}\nSettlement date: {{settlement_date}}\nPrice tolerance: {{price_tolerance_bps}} basis points\nBreak escalation cutoff: {{break_escalation_cutoff_minutes}} minutes\nOMS trade blotter: {{steps.fetch-trade-blotter.output}}\nBroker SWIFT confirmations (MT515/MT509): {{steps.fetch-broker-confirmations.output}}\n\nFor each trade in the blotter, attempt to match against a SWIFT confirmation by: trade_id or broker reference, ISIN, side (buy/sell), quantity, and settlement date. Apply price tolerance of {{price_tolerance_bps}} bps when comparing trade prices.\n\nOutput plain text with labeled sections:\n- matched_trades: JSON array of objects with fields: trade_id, isin, broker_id, quantity, oms_price, conf_price, price_diff_bps, settlement_amount, currency, match_status ('exact' or 'within_tolerance')\n- break_trades: JSON array of objects with fields: trade_id, isin, broker_id, break_type (one of: 'unmatched_oms', 'unmatched_conf', 'price_break', 'quantity_break', 'currency_break'), oms_value, conf_value, delta_description\n- break_count: integer count of break_trades\n- matched_count: integer count of matched_trades\n- total_settlement_value_usd: sum of settlement_amount for all matched trades (as a number)",
+      "timeout": 420,
+      "budget": 0.50,
+      "dependsOn": ["fetch-broker-confirmations"]
+    },
+    {
+      "id": "check-breaks",
+      "type": "condition",
+      "if": "{{steps.match-trades.output.break_count}} == '0'",
+      "then": "submit-settlement-instructions",
+      "else": "draft-break-messages",
+      "dependsOn": ["match-trades"]
+    },
+    {
+      "id": "draft-break-messages",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Draft break resolution messages to send to counterparty brokers for unresolved trade settlement breaks.\n\nFund ID: {{fund_id}}\nSettlement date: {{settlement_date}}\nBreak escalation cutoff: {{break_escalation_cutoff_minutes}} minutes\nBreak details: {{steps.match-trades.output.break_trades}}\nOriginal trade blotter: {{steps.fetch-trade-blotter.output}}\nBroker confirmations: {{steps.fetch-broker-confirmations.output}}\n\nFor each break, draft a concise SWIFT-ready message to the relevant broker. Each message must: (1) identify the trade by reference number, ISIN, and settlement date; (2) state the specific discrepancy (price, quantity, currency, or missing confirmation) with exact figures from both sides; (3) request the broker confirm, amend, or cancel within the escalation window of {{break_escalation_cutoff_minutes}} minutes; (4) include the fund's correct settlement details for reference.\n\nFormat each message with a header: --- BREAK: [trade_id] | BROKER: [broker_id] | TYPE: [break_type] --- followed by the message body. Keep language precise and professional — these are time-sensitive operational messages.",
+      "timeout": 360,
+      "budget": 0.40,
+      "dependsOn": ["check-breaks"]
+    },
+    {
+      "id": "send-break-messages-swift",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SWIFT_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "fund_id": "{{fund_id}}",
+        "settlement_date": "{{settlement_date}}",
+        "message_type": "MT599",
+        "break_messages": "{{steps.draft-break-messages.output}}",
+        "break_trades": "{{steps.match-trades.output.break_trades}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/swift-breaks-{{runId}}"
+      },
+      "callbackKey": "swift-breaks-{{runId}}",
+      "callbackTimeout": "2h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.send_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["draft-break-messages"]
+    },
+    {
+      "id": "submit-settlement-instructions",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CUSTODIAN_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "fund_id": "{{fund_id}}",
+        "settlement_date": "{{settlement_date}}",
+        "matched_trades": "{{steps.match-trades.output.matched_trades}}",
+        "total_settlement_value_usd": "{{steps.match-trades.output.total_settlement_value_usd}}",
+        "instruction_type": "DVP",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/custodian-settle-{{runId}}"
+      },
+      "callbackKey": "custodian-settle-{{runId}}",
+      "callbackTimeout": "1h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.instruction_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["send-break-messages-swift", "check-breaks"]
+    },
+    {
+      "id": "notify-ops-manager",
+      "type": "notify",
+      "notifyMsg": "Trade settlement run complete for fund {{fund_id}} — settlement date {{settlement_date}}.\n\nMatched trades: {{steps.match-trades.output.matched_count}}\nBreaks identified: {{steps.match-trades.output.break_count}}\nTotal settlement value: ${{steps.match-trades.output.total_settlement_value_usd}}\nBreak messages sent via SWIFT: {{steps.send-break-messages-swift.output.send_status}}\nCustodian settlement instructions: {{steps.submit-settlement-instructions.output.instruction_status}}\nCustodian reference: {{steps.submit-settlement-instructions.output.instruction_reference}}\n\nBreak details for follow-up: {{steps.match-trades.output.break_trades}}",
+      "notifyTo": "discord",
+      "dependsOn": ["submit-settlement-instructions"]
+    }
+  ]
+}

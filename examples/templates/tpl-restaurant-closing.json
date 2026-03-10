@@ -1,0 +1,123 @@
+{
+  "name": "tpl-restaurant-closing",
+  "description": "Restaurant Ops Manager (餐廳營運主管) — pull POS sales and cash drawer tally, AI-reconcile cash vs system, alert on variance, submit daily report to HQ, generate next-day prep tasks. Replace POS and HQ-report externalUrl with your system endpoints (e.g. Toast, Square, Oracle MICROS).",
+  "variables": {
+    "restaurant_id": "",
+    "location_name": "",
+    "reporting_date": "",
+    "variance_threshold_pct": ""
+  },
+  "steps": [
+    {
+      "id": "pull-pos-sales",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.POS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "restaurant_id": "{{restaurant_id}}",
+        "reporting_date": "{{reporting_date}}",
+        "report_type": "daily_summary",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/pos-sales-{{runId}}"
+      },
+      "callbackKey": "pos-sales-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "pull-cash-tally",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.POS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "restaurant_id": "{{restaurant_id}}",
+        "reporting_date": "{{reporting_date}}",
+        "report_type": "cash_drawer_tally",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/cash-tally-{{runId}}"
+      },
+      "callbackKey": "cash-tally-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["pull-pos-sales"]
+    },
+    {
+      "id": "reconcile-cash",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a restaurant operations analyst performing end-of-day cash reconciliation.\n\nRestaurant: {{location_name}} (ID: {{restaurant_id}})\nDate: {{reporting_date}}\nVariance threshold: {{variance_threshold_pct}}%\n\nPOS sales data:\n{{steps.pull-pos-sales.output}}\n\nCash drawer tally:\n{{steps.pull-cash-tally.output}}\n\nReconcile the cash transactions. Compare POS-recorded cash sales against the physical cash drawer tally. Account for the opening float, all cash sales, voids, refunds, and tips. Output a JSON object with fields: system_cash_expected (number), physical_cash_counted (number), variance_amount (number), variance_pct (number), variance_exceeds_threshold (boolean), discrepancy_breakdown (array of objects with category and amount), reconciliation_notes (string), recommended_action (string). Reply with only the JSON object.",
+      "timeout": 300,
+      "budget": 0.15,
+      "dependsOn": ["pull-cash-tally"]
+    },
+    {
+      "id": "check-variance",
+      "type": "condition",
+      "if": "{{steps.reconcile-cash.output.variance_exceeds_threshold}} == true",
+      "then": "notify-discrepancy",
+      "else": "submit-daily-report",
+      "dependsOn": ["reconcile-cash"]
+    },
+    {
+      "id": "notify-discrepancy",
+      "type": "notify",
+      "notifyMsg": "Cash variance alert at {{location_name}} ({{restaurant_id}}) for {{reporting_date}}. Expected: {{steps.reconcile-cash.output.system_cash_expected}}, Counted: {{steps.reconcile-cash.output.physical_cash_counted}}, Variance: {{steps.reconcile-cash.output.variance_amount}} ({{steps.reconcile-cash.output.variance_pct}}% — threshold: {{variance_threshold_pct}}%). Breakdown: {{steps.reconcile-cash.output.discrepancy_breakdown}}. Recommended action: {{steps.reconcile-cash.output.recommended_action}}. Manager sign-off required before HQ report submission.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-variance"]
+    },
+    {
+      "id": "submit-daily-report",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.HQ_REPORTING_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "restaurant_id": "{{restaurant_id}}",
+        "location_name": "{{location_name}}",
+        "reporting_date": "{{reporting_date}}",
+        "total_sales": "{{steps.pull-pos-sales.output.total_sales}}",
+        "total_covers": "{{steps.pull-pos-sales.output.total_covers}}",
+        "cash_expected": "{{steps.reconcile-cash.output.system_cash_expected}}",
+        "cash_counted": "{{steps.reconcile-cash.output.physical_cash_counted}}",
+        "variance_amount": "{{steps.reconcile-cash.output.variance_amount}}",
+        "variance_pct": "{{steps.reconcile-cash.output.variance_pct}}",
+        "reconciliation_notes": "{{steps.reconcile-cash.output.reconciliation_notes}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/hq-report-{{runId}}"
+      },
+      "callbackKey": "hq-report-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-variance"]
+    },
+    {
+      "id": "draft-prep-tasks",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "You are a restaurant operations assistant. Based on today's sales data, generate a prioritized next-day prep task list for the kitchen and front-of-house teams.\n\nRestaurant: {{location_name}}\nDate: {{reporting_date}}\n\nToday's sales summary:\n{{steps.pull-pos-sales.output}}\n\nHQ report submission status: {{steps.submit-daily-report.output.status}}\n\nCreate a concise, actionable next-day prep checklist. Include: (1) top-selling items that need restocking or extra prep based on sales velocity, (2) any items with low remaining stock flagged in the sales data, (3) standard opening tasks relevant to the day of week following {{reporting_date}}, (4) any follow-up actions from today's variance or anomalies. Format as a numbered list grouped by team (Kitchen Prep / FOH / Management). Keep each item to one line.",
+      "timeout": 300,
+      "budget": 0.20,
+      "dependsOn": ["submit-daily-report"]
+    }
+  ]
+}

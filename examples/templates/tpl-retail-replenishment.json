@@ -1,0 +1,117 @@
+{
+  "name": "tpl-retail-replenishment",
+  "description": "Retail store replenishment: pull inventory levels, forecast demand and calculate reorder quantities, fetch supplier lead times and MOQs, generate POs grouped by supplier, route large orders for manager approval, then submit POs via EDI",
+  "variables": {
+    "store_id": "",
+    "replenishment_run_date": "",
+    "coverage_target_days": "",
+    "approval_threshold_usd": ""
+  },
+  "steps": [
+    {
+      "id": "pull-inventory-levels",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.ERP_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "store_id": "{{store_id}}",
+        "run_date": "{{replenishment_run_date}}",
+        "data_types": ["on_hand_qty", "on_order_qty", "sales_velocity_30d", "reorder_point", "sku_list"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/inventory-{{runId}}"
+      },
+      "callbackKey": "inventory-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.fetch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "forecast-reorder-quantities",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a retail inventory planning analyst. Calculate reorder quantities for SKUs that need replenishment.\n\nStore ID: {{store_id}}\nReplenishment run date: {{replenishment_run_date}}\nCoverage target: {{coverage_target_days}} days\nInventory data: {{steps.pull-inventory-levels.output}}\n\nFor each SKU in the inventory data, calculate: (1) days of coverage remaining based on on_hand_qty + on_order_qty divided by sales_velocity_30d; (2) whether the SKU is below its reorder_point or will be below coverage target before next replenishment cycle; (3) reorder quantity to bring coverage back to {{coverage_target_days}} days.\n\nOutput plain text with labeled sections:\n- skus_to_reorder: JSON array of objects with fields: sku_id, supplier_id, on_hand_qty, days_coverage_remaining, reorder_qty, unit_cost, line_total_usd\n- total_reorder_value_usd: total sum of all line_total_usd values (as a number)\n- skus_adequate: count of SKUs with sufficient coverage (integer)\n- skus_flagged: count of SKUs requiring reorder (integer)",
+      "timeout": 360,
+      "budget": 0.35,
+      "dependsOn": ["pull-inventory-levels"]
+    },
+    {
+      "id": "fetch-supplier-terms",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SUPPLIER_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "store_id": "{{store_id}}",
+        "skus_to_reorder": "{{steps.forecast-reorder-quantities.output.skus_to_reorder}}",
+        "query_types": ["lead_time_days", "moq", "current_price", "availability_status"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/supplier-terms-{{runId}}"
+      },
+      "callbackKey": "supplier-terms-{{runId}}",
+      "callbackTimeout": "20m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.fetch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["forecast-reorder-quantities"]
+    },
+    {
+      "id": "generate-po-drafts",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a retail procurement analyst. Generate purchase order drafts grouped by supplier, applying MOQs and lead time constraints.\n\nStore ID: {{store_id}}\nRun date: {{replenishment_run_date}}\nCoverage target: {{coverage_target_days}} days\nSKUs to reorder: {{steps.forecast-reorder-quantities.output.skus_to_reorder}}\nSupplier terms (lead times, MOQs, prices, availability): {{steps.fetch-supplier-terms.output}}\n\nFor each supplier, consolidate all SKUs from that supplier into a single purchase order. Apply MOQ adjustments: if a SKU's reorder_qty is below the supplier's MOQ, round up to the MOQ. If a SKU shows as unavailable, flag it and exclude it from the PO.\n\nOutput plain text with labeled sections:\n- purchase_orders: JSON array of objects with fields: po_number (format: PO-{{store_id}}-SUPPID-RUNDATE), supplier_id, supplier_name, delivery_date (run date + lead_time_days), line_items (array of {sku_id, qty, unit_price, line_total}), po_total_usd\n- grand_total_usd: sum of all po_total_usd values (as a number)\n- requires_approval: true if grand_total_usd exceeds {{approval_threshold_usd}}, else false\n- unavailable_skus: comma-separated list of SKU IDs excluded due to unavailability (empty if none)",
+      "timeout": 420,
+      "budget": 0.40,
+      "dependsOn": ["fetch-supplier-terms"]
+    },
+    {
+      "id": "check-approval-threshold",
+      "type": "condition",
+      "if": "{{steps.generate-po-drafts.output.requires_approval}} == 'true'",
+      "then": "notify-approval-required",
+      "else": "submit-pos-edi",
+      "dependsOn": ["generate-po-drafts"]
+    },
+    {
+      "id": "notify-approval-required",
+      "type": "notify",
+      "notifyMsg": "Replenishment PO approval required for store {{store_id}} (run date: {{replenishment_run_date}}).\n\nGrand total: ${{steps.generate-po-drafts.output.grand_total_usd}} (threshold: ${{approval_threshold_usd}})\nSKUs flagged for reorder: {{steps.forecast-reorder-quantities.output.skus_flagged}}\nPurchase orders: {{steps.generate-po-drafts.output.purchase_orders}}\nUnavailable SKUs excluded: {{steps.generate-po-drafts.output.unavailable_skus}}\n\nStore manager approval required before POs are submitted to suppliers via EDI.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-approval-threshold"]
+    },
+    {
+      "id": "submit-pos-edi",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.EDI_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "store_id": "{{store_id}}",
+        "run_date": "{{replenishment_run_date}}",
+        "purchase_orders": "{{steps.generate-po-drafts.output.purchase_orders}}",
+        "transmission_type": "EDI_850",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/edi-submit-{{runId}}"
+      },
+      "callbackKey": "edi-submit-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.submission_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-approval-threshold"]
+    }
+  ]
+}

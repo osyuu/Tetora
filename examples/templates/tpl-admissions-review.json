@@ -1,0 +1,124 @@
+{
+  "name": "tpl-admissions-review",
+  "description": "Admissions screening: pull application, score with AI, route to auto-admit/committee/reject, draft decision letter, and send",
+  "variables": {
+    "applicant_name": "",
+    "applicant_email": "",
+    "program": "",
+    "application_id": "",
+    "term": ""
+  },
+  "steps": [
+    {
+      "id": "pull-application",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.ADMISSIONS_PORTAL_API_KEY}}"
+      },
+      "externalBody": {
+        "application_id": "{{application_id}}",
+        "applicant_email": "{{applicant_email}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/app-{{runId}}"
+      },
+      "callbackKey": "app-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "score-applicant",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "Evaluate the admissions application for {{applicant_name}} applying to the {{program}} program for {{term}}. Application data: {{steps.pull-application.output}}. Produce a structured assessment with: (1) numeric_score — a score from 0 to 100 based on GPA (30%), essay quality (30%), extracurricular depth (20%), and program fit (20%); (2) score_breakdown — one sentence per dimension; (3) recommendation — one of 'auto_admit', 'committee_review', or 'reject'; (4) notes — 2-3 sentences on the strongest and weakest aspects of this application. Output as plain text with labeled sections.",
+      "timeout": 300,
+      "budget": 0.30,
+      "dependsOn": ["pull-application"]
+    },
+    {
+      "id": "route-by-score",
+      "type": "condition",
+      "if": "{{steps.score-applicant.output.recommendation}} == 'auto_admit'",
+      "then": "draft-decision-letter",
+      "else": "check-for-reject",
+      "dependsOn": ["score-applicant"]
+    },
+    {
+      "id": "check-for-reject",
+      "type": "condition",
+      "if": "{{steps.score-applicant.output.recommendation}} == 'reject'",
+      "then": "draft-decision-letter",
+      "else": "committee-review",
+      "dependsOn": ["route-by-score"]
+    },
+    {
+      "id": "committee-review",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.ADMISSIONS_PORTAL_API_KEY}}"
+      },
+      "externalBody": {
+        "application_id": "{{application_id}}",
+        "applicant_name": "{{applicant_name}}",
+        "program": "{{program}}",
+        "ai_score": "{{steps.score-applicant.output.numeric_score}}",
+        "ai_notes": "{{steps.score-applicant.output.notes}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/committee-{{runId}}"
+      },
+      "callbackKey": "committee-{{runId}}",
+      "callbackTimeout": "5d",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.committee_decision",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["check-for-reject"]
+    },
+    {
+      "id": "draft-decision-letter",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Draft a formal admissions decision letter for {{applicant_name}} applying to the {{program}} program for {{term}} (application ID: {{application_id}}). AI recommendation: {{steps.score-applicant.output.recommendation}}. Committee decision (if applicable): {{steps.committee-review.output.committee_decision}}. Score breakdown: {{steps.score-applicant.output.score_breakdown}}. Write a professional, empathetic letter appropriate to the decision. For admissions: include congratulations, next steps, and enrollment deadline. For rejections: include an encouraging tone, brief non-specific reason, and information about reapplying. Length: 200-300 words.",
+      "timeout": 240,
+      "budget": 0.25,
+      "dependsOn": ["committee-review", "route-by-score"]
+    },
+    {
+      "id": "send-decision-letter",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.EMAIL_API_KEY}}"
+      },
+      "externalBody": {
+        "to": "{{applicant_email}}",
+        "subject": "Your {{program}} Application Decision — {{term}}",
+        "body": "{{steps.draft-decision-letter.output}}",
+        "application_id": "{{application_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/letter-sent-{{runId}}"
+      },
+      "callbackKey": "letter-sent-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.delivered",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["draft-decision-letter"]
+    },
+    {
+      "id": "notify-admissions-office",
+      "type": "notify",
+      "notifyMsg": "Admissions decision processed for {{applicant_name}} ({{applicant_email}}), application {{application_id}} — {{program}} {{term}}. AI score: {{steps.score-applicant.output.numeric_score}}/100. Final decision: {{steps.score-applicant.output.recommendation}}. Committee override: {{steps.committee-review.output.committee_decision}}. Letter delivered: {{steps.send-decision-letter.output.delivered}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["send-decision-letter"]
+    }
+  ]
+}

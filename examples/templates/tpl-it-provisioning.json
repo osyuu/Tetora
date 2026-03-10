@@ -1,0 +1,111 @@
+{
+  "name": "tpl-it-provisioning",
+  "description": "IT account provisioning: create AD/LDAP account, set up email + Slack, assign role permissions, notify IT and employee",
+  "variables": {
+    "employee_name": "",
+    "employee_email": "",
+    "department": "",
+    "role": "",
+    "start_date": ""
+  },
+  "steps": [
+    {
+      "id": "create-ad-account",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.LDAP_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "full_name": "{{employee_name}}",
+        "email": "{{employee_email}}",
+        "department": "{{department}}",
+        "role": "{{role}}",
+        "start_date": "{{start_date}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/ad-{{runId}}"
+      },
+      "callbackKey": "ad-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "setup-email-slack",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.WORKSPACE_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "email": "{{employee_email}}",
+        "full_name": "{{employee_name}}",
+        "department": "{{department}}",
+        "ad_username": "{{steps.create-ad-account.output.username}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/workspace-{{runId}}"
+      },
+      "callbackKey": "workspace-{{runId}}",
+      "callbackTimeout": "20m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["create-ad-account"]
+    },
+    {
+      "id": "check-provisioned",
+      "type": "condition",
+      "if": "{{steps.setup-email-slack.output.status}} == 'ready'",
+      "then": "assign-permissions",
+      "else": "notify-it-blocker",
+      "dependsOn": ["setup-email-slack"]
+    },
+    {
+      "id": "notify-it-blocker",
+      "type": "notify",
+      "notifyMsg": "IT provisioning failed for {{employee_name}} (starts {{start_date}}). AD account: {{steps.create-ad-account.output.status}}. Email/Slack setup status: {{steps.setup-email-slack.output.status}}. Error: {{steps.setup-email-slack.output.error}}. Manual intervention required before start date.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-provisioned"]
+    },
+    {
+      "id": "assign-permissions",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.IAM_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "username": "{{steps.create-ad-account.output.username}}",
+        "email": "{{employee_email}}",
+        "department": "{{department}}",
+        "role": "{{role}}",
+        "slack_user_id": "{{steps.setup-email-slack.output.slack_user_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/iam-{{runId}}"
+      },
+      "callbackKey": "iam-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-provisioned"]
+    },
+    {
+      "id": "notify-complete",
+      "type": "notify",
+      "notifyMsg": "IT provisioning complete for {{employee_name}} ({{role}}, {{department}}, starts {{start_date}}).\n\nAD username: {{steps.create-ad-account.output.username}}\nEmail: {{employee_email}} — status: {{steps.setup-email-slack.output.email_status}}\nSlack: {{steps.setup-email-slack.output.slack_user_id}}\nPermissions assigned: {{steps.assign-permissions.output.groups_assigned}}\n\nCredentials sent to {{employee_email}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["assign-permissions"]
+    }
+  ]
+}

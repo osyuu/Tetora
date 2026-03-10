@@ -1,0 +1,83 @@
+{
+  "name": "tpl-resume-screening",
+  "description": "HR Resume Screening Pipeline — screen resume against JD, run background check, draft offer or reject. Replace externalUrl with your background check provider (e.g. Checkr: https://api.checkr.com/v1/candidates).",
+  "variables": {
+    "resume_url": "",
+    "job_description": "",
+    "candidate_name": "",
+    "role_title": "",
+    "compensation_range": ""
+  },
+  "steps": [
+    {
+      "id": "screen-resume",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are an expert HR analyst. Review the resume at {{resume_url}} against the following job description:\n\n{{job_description}}\n\nCandidate: {{candidate_name}}, Role: {{role_title}}\n\nOutput a JSON object with fields: score (integer 1-10), strengths (array of strings), gaps (array of strings), summary (one sentence). Reply with only the JSON object.",
+      "timeout": "5m",
+      "budget": 0.10
+    },
+    {
+      "id": "check-threshold",
+      "type": "condition",
+      "if": "{{steps.screen-resume.output.score}} >= 7",
+      "then": "trigger-bgcheck",
+      "else": "notify-reject",
+      "dependsOn": ["screen-resume"]
+    },
+    {
+      "id": "trigger-bgcheck",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.BGCHECK_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "candidate_name": "{{candidate_name}}",
+        "role": "{{role_title}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/bgcheck-{{runId}}"
+      },
+      "callbackKey": "bgcheck-{{runId}}",
+      "callbackTimeout": "7d",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-threshold"]
+    },
+    {
+      "id": "check-bgcheck",
+      "type": "condition",
+      "if": "{{steps.trigger-bgcheck.output.status}} == 'clear'",
+      "then": "draft-offer",
+      "else": "notify-hold",
+      "dependsOn": ["trigger-bgcheck"]
+    },
+    {
+      "id": "draft-offer",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Draft a warm, professional offer letter for {{candidate_name}} for the {{role_title}} position. Compensation range: {{compensation_range}}. Reference their key strengths from the screening: {{steps.screen-resume.output.strengths}}. The letter should be enthusiastic but precise. Include: offer summary, role description, compensation, next steps.",
+      "timeout": "5m",
+      "budget": 0.10,
+      "dependsOn": ["check-bgcheck"]
+    },
+    {
+      "id": "notify-reject",
+      "type": "notify",
+      "notifyMsg": "Resume screening result for {{candidate_name}} ({{role_title}}): score {{steps.screen-resume.output.score}}/10 — below threshold. Gaps: {{steps.screen-resume.output.gaps}}. No further action.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-threshold"]
+    },
+    {
+      "id": "notify-hold",
+      "type": "notify",
+      "notifyMsg": "Background check returned non-clear status for {{candidate_name}} ({{role_title}}). Status: {{steps.trigger-bgcheck.output.status}}. Candidate placed on hold — manual review required.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-bgcheck"]
+    }
+  ]
+}

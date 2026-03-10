@@ -1,0 +1,104 @@
+{
+  "name": "tpl-sales-proposal",
+  "description": "Research prospect, draft full proposal, route through internal approval, then send for signature or flag revisions",
+  "variables": {
+    "prospect_name": "",
+    "prospect_url": "",
+    "deal_size": "",
+    "product_tier": "",
+    "pricing": "",
+    "ae_name": ""
+  },
+  "steps": [
+    {
+      "id": "research-prospect",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "Research the company {{prospect_name}} (website: {{prospect_url}}) for a sales proposal. Produce a structured intelligence brief with: (1) 'Company Overview' — size, industry, key products/services (3-4 sentences); (2) 'Pain Points' — 3-5 likely business challenges that {{product_tier}} could address, based on their public positioning; (3) 'Competitive Context' — who they likely use today and what gaps exist; (4) 'Key Stakeholders' — likely decision-maker titles for a {{deal_size}} deal. Be specific and actionable — AE {{ae_name}} will use this to write a proposal.",
+      "timeout": 300,
+      "budget": 0.30
+    },
+    {
+      "id": "draft-proposal",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Write a complete sales proposal for {{prospect_name}} based on the research brief below. AE: {{ae_name}}. Deal size: {{deal_size}}. Product tier: {{product_tier}}. Pricing: {{pricing}}.\n\nResearch brief:\n{{steps.research-prospect.output}}\n\nThe proposal must include these sections:\n1. Executive Summary (100 words max) — why this deal makes sense now\n2. Understanding Your Challenges — mirror their pain points from the research\n3. Our Solution — how {{product_tier}} addresses each pain point specifically\n4. ROI & Business Case — a concrete estimate with numbers where possible\n5. Pricing & Terms — present {{pricing}} clearly\n6. Next Steps — single clear CTA with timeline\n\nTone: authoritative but collaborative. No fluff. Target 600-800 words total.",
+      "dependsOn": ["research-prospect"],
+      "timeout": 360,
+      "budget": 0.30
+    },
+    {
+      "id": "internal-approval",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.APPROVAL_API_KEY}}"
+      },
+      "externalBody": {
+        "prospect_name": "{{prospect_name}}",
+        "deal_size": "{{deal_size}}",
+        "product_tier": "{{product_tier}}",
+        "pricing": "{{pricing}}",
+        "ae_name": "{{ae_name}}",
+        "proposal_content": "{{steps.draft-proposal.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/approval-{{runId}}"
+      },
+      "callbackKey": "approval-{{runId}}",
+      "callbackTimeout": "24h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.decision",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["draft-proposal"]
+    },
+    {
+      "id": "check-approval",
+      "type": "condition",
+      "if": "{{steps.internal-approval.output.decision}} == 'approved'",
+      "then": "send-for-signature",
+      "else": "notify-revisions",
+      "dependsOn": ["internal-approval"]
+    },
+    {
+      "id": "send-for-signature",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.DOCUSIGN_API_KEY}}"
+      },
+      "externalBody": {
+        "prospect_name": "{{prospect_name}}",
+        "deal_size": "{{deal_size}}",
+        "pricing": "{{pricing}}",
+        "proposal_content": "{{steps.draft-proposal.output}}",
+        "ae_name": "{{ae_name}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/signature-{{runId}}"
+      },
+      "callbackKey": "signature-{{runId}}",
+      "callbackTimeout": "14d",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-approval"]
+    },
+    {
+      "id": "notify-signed",
+      "type": "notify",
+      "notifyMsg": "Deal won! {{prospect_name}} signed the proposal. AE: {{ae_name}} | Deal size: {{deal_size}} | Product: {{product_tier}} | Envelope: {{steps.send-for-signature.output.envelope_id}}",
+      "notifyTo": "discord",
+      "dependsOn": ["send-for-signature"]
+    },
+    {
+      "id": "notify-revisions",
+      "type": "notify",
+      "notifyMsg": "Proposal for {{prospect_name}} requires revisions before sending. AE: {{ae_name}} | Decision: {{steps.internal-approval.output.decision}} | Reviewer notes: {{steps.internal-approval.output.notes}}",
+      "notifyTo": "discord",
+      "dependsOn": ["check-approval"]
+    }
+  ]
+}

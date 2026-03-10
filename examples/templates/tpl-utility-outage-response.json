@@ -1,0 +1,183 @@
+{
+  "name": "tpl-utility-outage-response",
+  "description": "Utility outage response: receive customer report, query SCADA/OMS for fault status, correlate with zone data, dispatch crew for area outages or log individual faults, send proactive SMS to affected customers, and poll for restoration confirmation",
+  "variables": {
+    "outage_report_id": "",
+    "meter_id": "",
+    "account_number": "",
+    "area_outage_threshold": ""
+  },
+  "steps": [
+    {
+      "id": "receive-outage-report",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CRM_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "outage_report_id": "{{outage_report_id}}",
+        "meter_id": "{{meter_id}}",
+        "account_number": "{{account_number}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/outage-report-{{runId}}"
+      },
+      "callbackKey": "outage-report-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.report_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "query-scada-oms",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.OMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "meter_id": "{{meter_id}}",
+        "outage_report_id": "{{outage_report_id}}",
+        "query_types": ["fault_status", "zone_outage_count", "estimated_restoration_time", "feeder_status"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/scada-query-{{runId}}"
+      },
+      "callbackKey": "scada-query-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.query_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["receive-outage-report"]
+    },
+    {
+      "id": "correlate-zone-data",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a utility operations analyst. Correlate the customer outage report with SCADA/OMS fault data to determine the appropriate response.\n\nOutage report ID: {{outage_report_id}}\nMeter ID: {{meter_id}}\nAccount number: {{account_number}}\nArea outage threshold (affected customers): {{area_outage_threshold}}\nCustomer report data: {{steps.receive-outage-report.output}}\nSCADA/OMS fault data: {{steps.query-scada-oms.output}}\n\nAnalyze and output plain text with labeled sections:\n- fault_type: one of 'area_outage' or 'individual_fault' — classify as 'area_outage' if the zone_outage_count from OMS equals or exceeds {{area_outage_threshold}}\n- zone_outage_count: the number of affected customers in the zone (from OMS data)\n- fault_location: description of the fault location or feeder from OMS\n- estimated_restoration_time: ISO 8601 timestamp of estimated restoration (from OMS)\n- customer_message: a clear, empathetic 2-sentence SMS-length message for affected customers that states the outage is known, gives estimated restoration time, and provides a reference number\n- crew_dispatch_priority: one of 'emergency', 'urgent', 'standard' based on fault type, affected count, and time of day",
+      "timeout": 240,
+      "budget": 0.25,
+      "dependsOn": ["query-scada-oms"]
+    },
+    {
+      "id": "check-outage-scope",
+      "type": "condition",
+      "if": "{{steps.correlate-zone-data.output.fault_type}} == 'area_outage'",
+      "then": "dispatch-crew",
+      "else": "log-individual-fault",
+      "dependsOn": ["correlate-zone-data"]
+    },
+    {
+      "id": "dispatch-crew",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.FIELD_OPS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "outage_report_id": "{{outage_report_id}}",
+        "fault_location": "{{steps.correlate-zone-data.output.fault_location}}",
+        "priority": "{{steps.correlate-zone-data.output.crew_dispatch_priority}}",
+        "affected_count": "{{steps.correlate-zone-data.output.zone_outage_count}}",
+        "fault_data": "{{steps.query-scada-oms.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/crew-dispatch-{{runId}}"
+      },
+      "callbackKey": "crew-dispatch-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.dispatch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-outage-scope"]
+    },
+    {
+      "id": "log-individual-fault",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.OMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "outage_report_id": "{{outage_report_id}}",
+        "meter_id": "{{meter_id}}",
+        "account_number": "{{account_number}}",
+        "fault_type": "individual",
+        "fault_data": "{{steps.query-scada-oms.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/fault-log-{{runId}}"
+      },
+      "callbackKey": "fault-log-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.log_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["check-outage-scope"]
+    },
+    {
+      "id": "send-customer-sms",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "account_number": "{{account_number}}",
+        "outage_report_id": "{{outage_report_id}}",
+        "message": "{{steps.correlate-zone-data.output.customer_message}}",
+        "estimated_restoration": "{{steps.correlate-zone-data.output.estimated_restoration_time}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/sms-sent-{{runId}}"
+      },
+      "callbackKey": "sms-sent-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.sms_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["dispatch-crew", "log-individual-fault"]
+    },
+    {
+      "id": "wait-restoration-window",
+      "type": "delay",
+      "delayDuration": "30m",
+      "dependsOn": ["send-customer-sms"]
+    },
+    {
+      "id": "poll-restoration-status",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.OMS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "outage_report_id": "{{outage_report_id}}",
+        "meter_id": "{{meter_id}}",
+        "query_type": "restoration_status",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/restoration-{{runId}}"
+      },
+      "callbackKey": "restoration-{{runId}}",
+      "callbackTimeout": "4h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.restoration_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["wait-restoration-window"]
+    }
+  ]
+}

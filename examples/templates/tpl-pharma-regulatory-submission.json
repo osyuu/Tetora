@@ -1,0 +1,137 @@
+{
+  "name": "tpl-pharma-regulatory-submission",
+  "description": "Pharma RA Specialist (藥廠法規事務專員) — poll regulatory portal for authority queries, AI classify query type and draft response, route to medical director or RA reviewer, delay for SME review, receive finalized response, submit to regulatory portal, confirm submission. Replace portal externalUrl with your regulatory authority endpoint (e.g. FDA ESG, EMA CESP, PMDA eCTD gateway).",
+  "variables": {
+    "submission_id": "",
+    "product_name": "",
+    "authority_code": "",
+    "response_deadline": ""
+  },
+  "steps": [
+    {
+      "id": "poll-regulatory-portal",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.REGULATORY_PORTAL_API_KEY}}",
+        "Content-Type": "application/json",
+        "X-Authority-Code": "{{authority_code}}"
+      },
+      "externalBody": {
+        "submission_id": "{{submission_id}}",
+        "product_name": "{{product_name}}",
+        "authority_code": "{{authority_code}}",
+        "query_type": "pending_queries",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/portal-query-{{runId}}"
+      },
+      "callbackKey": "portal-query-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "classify-and-draft",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a pharmaceutical regulatory affairs specialist. Classify the incoming regulatory authority query and draft an initial response.\n\nSubmission ID: {{submission_id}}\nProduct: {{product_name}}\nAuthority: {{authority_code}}\nResponse deadline: {{response_deadline}}\n\nQuery data from portal:\n{{steps.poll-regulatory-portal.output}}\n\nFirst, classify the query: query_type — one of 'clinical_safety' (involves adverse events, benefit-risk, clinical trial data), 'chemistry_manufacturing' (CMC, formulation, stability, manufacturing process), or 'regulatory_administrative' (labelling, dossier format, procedural questions). Then draft a technically accurate initial response that: (1) directly addresses each question posed by the authority; (2) cites relevant sections of the submission dossier (module and section numbers); (3) provides supporting data references where applicable; (4) proposes any commitment to provide additional data if needed. Output a JSON object with fields: query_type (string), query_summary (string, 2-3 sentences), draft_response (string, the full draft response text), requires_clinical_data (boolean), confidence_level (one of 'high', 'medium', 'low'). Reply with only the JSON object.",
+      "timeout": 600,
+      "budget": 0.75,
+      "dependsOn": ["poll-regulatory-portal"]
+    },
+    {
+      "id": "route-by-query-type",
+      "type": "condition",
+      "if": "{{steps.classify-and-draft.output.query_type}} == 'clinical_safety'",
+      "then": "notify-medical-director",
+      "else": "notify-ra-reviewer",
+      "dependsOn": ["classify-and-draft"]
+    },
+    {
+      "id": "notify-medical-director",
+      "type": "notify",
+      "notifyMsg": "Regulatory query routed to Medical Director for review. Submission: {{submission_id}} ({{product_name}}), Authority: {{authority_code}}. Query type: CLINICAL/SAFETY. Deadline: {{response_deadline}}. Query summary: {{steps.classify-and-draft.output.query_summary}}. Confidence: {{steps.classify-and-draft.output.confidence_level}}. Draft response prepared — please review, amend, and confirm via the portal callback within 3 days.",
+      "notifyTo": "discord",
+      "dependsOn": ["route-by-query-type"]
+    },
+    {
+      "id": "notify-ra-reviewer",
+      "type": "notify",
+      "notifyMsg": "Regulatory query routed to RA team for review. Submission: {{submission_id}} ({{product_name}}), Authority: {{authority_code}}. Query type: {{steps.classify-and-draft.output.query_type}}. Deadline: {{response_deadline}}. Query summary: {{steps.classify-and-draft.output.query_summary}}. Confidence: {{steps.classify-and-draft.output.confidence_level}}. Draft response prepared — please review and confirm via the portal callback within 3 days.",
+      "notifyTo": "discord",
+      "dependsOn": ["route-by-query-type"]
+    },
+    {
+      "id": "wait-sme-review",
+      "type": "delay",
+      "delayDuration": "72h",
+      "dependsOn": ["notify-medical-director", "notify-ra-reviewer"]
+    },
+    {
+      "id": "receive-finalized-response",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.REGULATORY_PORTAL_API_KEY}}",
+        "Content-Type": "application/json",
+        "X-Authority-Code": "{{authority_code}}"
+      },
+      "externalBody": {
+        "submission_id": "{{submission_id}}",
+        "product_name": "{{product_name}}",
+        "authority_code": "{{authority_code}}",
+        "action": "fetch_finalized_response",
+        "query_type": "{{steps.classify-and-draft.output.query_type}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/finalized-response-{{runId}}"
+      },
+      "callbackKey": "finalized-response-{{runId}}",
+      "callbackTimeout": "2h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["wait-sme-review"]
+    },
+    {
+      "id": "submit-to-portal",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.REGULATORY_PORTAL_API_KEY}}",
+        "Content-Type": "application/json",
+        "X-Authority-Code": "{{authority_code}}"
+      },
+      "externalBody": {
+        "submission_id": "{{submission_id}}",
+        "product_name": "{{product_name}}",
+        "authority_code": "{{authority_code}}",
+        "response_deadline": "{{response_deadline}}",
+        "query_type": "{{steps.classify-and-draft.output.query_type}}",
+        "finalized_response": "{{steps.receive-finalized-response.output.response_text}}",
+        "supporting_documents": "{{steps.receive-finalized-response.output.attachments}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/portal-submit-{{runId}}"
+      },
+      "callbackKey": "portal-submit-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.submission_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["receive-finalized-response"]
+    },
+    {
+      "id": "notify-submission-confirmed",
+      "type": "notify",
+      "notifyMsg": "Regulatory response submitted to {{authority_code}} for {{product_name}} ({{submission_id}}). Query type: {{steps.classify-and-draft.output.query_type}}. Submission status: {{steps.submit-to-portal.output.submission_status}}. Portal reference: {{steps.submit-to-portal.output.submission_reference}}. Deadline was: {{response_deadline}}. Submitted at: {{steps.submit-to-portal.output.submitted_at}}. RA file updated and regulatory timeline tracker notified.",
+      "notifyTo": "discord",
+      "dependsOn": ["submit-to-portal"]
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+{
+  "name": "tpl-order-fulfillment",
+  "description": "E-commerce order processing: payment verification, inventory check, warehouse pick-pack, shipping label, and delivery tracking",
+  "variables": {
+    "order_id": "",
+    "customer_email": "",
+    "items": "",
+    "shipping_address": "",
+    "payment_method": ""
+  },
+  "steps": [
+    {
+      "id": "verify-payment",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PAYMENT_API_KEY}}"
+      },
+      "externalBody": {
+        "order_id": "{{order_id}}",
+        "payment_method": "{{payment_method}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/pay-{{runId}}"
+      },
+      "callbackKey": "pay-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "check-payment",
+      "type": "condition",
+      "if": "{{steps.verify-payment.output.status}} == 'captured'",
+      "then": "check-inventory",
+      "else": "payment-failed",
+      "dependsOn": ["verify-payment"]
+    },
+    {
+      "id": "payment-failed",
+      "type": "notify",
+      "notifyMsg": "Order {{order_id}} payment failed ({{steps.verify-payment.output.status}}). Customer: {{customer_email}}",
+      "notifyTo": "discord",
+      "dependsOn": ["check-payment"]
+    },
+    {
+      "id": "check-inventory",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.INVENTORY_API_KEY}}"
+      },
+      "externalBody": {
+        "order_id": "{{order_id}}",
+        "items": "{{items}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/inv-{{runId}}"
+      },
+      "callbackKey": "inv-{{runId}}",
+      "callbackTimeout": "2m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.available",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-payment"]
+    },
+    {
+      "id": "check-stock",
+      "type": "condition",
+      "if": "{{steps.check-inventory.output.available}} == 'true'",
+      "then": "warehouse-pick",
+      "else": "backorder-notify",
+      "dependsOn": ["check-inventory"]
+    },
+    {
+      "id": "backorder-notify",
+      "type": "notify",
+      "notifyMsg": "Order {{order_id}} items out of stock. Backordered. Customer {{customer_email}} will be notified.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-stock"]
+    },
+    {
+      "id": "warehouse-pick",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.WMS_API_KEY}}"
+      },
+      "externalBody": {
+        "order_id": "{{order_id}}",
+        "items": "{{items}}",
+        "warehouse": "auto",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/wms-{{runId}}"
+      },
+      "callbackKey": "wms-{{runId}}",
+      "callbackTimeout": "4h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.pick_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-stock"]
+    },
+    {
+      "id": "create-shipping-label",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SHIPPING_API_KEY}}"
+      },
+      "externalBody": {
+        "order_id": "{{order_id}}",
+        "address": "{{shipping_address}}",
+        "weight": "{{steps.warehouse-pick.output.total_weight}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/ship-{{runId}}"
+      },
+      "callbackKey": "ship-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.label_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["warehouse-pick"]
+    },
+    {
+      "id": "notify-shipped",
+      "type": "notify",
+      "notifyMsg": "Order {{order_id}} shipped! Tracking: {{steps.create-shipping-label.output.tracking_number}} via {{steps.create-shipping-label.output.carrier}}. Customer: {{customer_email}}",
+      "notifyTo": "discord",
+      "dependsOn": ["create-shipping-label"]
+    }
+  ]
+}

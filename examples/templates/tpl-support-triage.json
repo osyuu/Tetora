@@ -1,0 +1,111 @@
+{
+  "name": "tpl-support-triage",
+  "description": "Support Ticket Auto-Triage — classify ticket intent, route refunds through manager approval, draft replies for other intents. Replace approval externalUrl with your internal approval system. Replace refund externalUrl with your payment/ERP refund endpoint.",
+  "variables": {
+    "ticket_id": "",
+    "ticket_body": "",
+    "customer_name": "",
+    "account_tier": ""
+  },
+  "steps": [
+    {
+      "id": "classify-ticket",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a support triage specialist. Classify the following support ticket and extract key facts.\n\nCustomer: {{customer_name}} (tier: {{account_tier}})\nTicket ID: {{ticket_id}}\nTicket body:\n{{ticket_body}}\n\nOutput a JSON object with fields: intent (one of: refund, bug, billing, how-to, other), key_facts (array of strings, max 5), urgency (integer 1-5, where 5 is most urgent), one_line_summary (string). Reply with only the JSON object.",
+      "timeout": "3m",
+      "budget": 0.05
+    },
+    {
+      "id": "route-intent",
+      "type": "condition",
+      "if": "{{steps.classify-ticket.output.intent}} == 'refund'",
+      "then": "request-approval",
+      "else": "draft-reply",
+      "dependsOn": ["classify-ticket"]
+    },
+    {
+      "id": "request-approval",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.APPROVAL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "ticket_id": "{{ticket_id}}",
+        "customer_name": "{{customer_name}}",
+        "account_tier": "{{account_tier}}",
+        "summary": "{{steps.classify-ticket.output.one_line_summary}}",
+        "urgency": "{{steps.classify-ticket.output.urgency}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/approval-{{runId}}"
+      },
+      "callbackKey": "approval-{{runId}}",
+      "callbackTimeout": "24h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "decision",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["route-intent"]
+    },
+    {
+      "id": "check-approval",
+      "type": "condition",
+      "if": "{{steps.request-approval.output.decision}} == 'approved'",
+      "then": "process-refund",
+      "else": "draft-decline",
+      "dependsOn": ["request-approval"]
+    },
+    {
+      "id": "process-refund",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.REFUND_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "ticket_id": "{{ticket_id}}",
+        "customer_name": "{{customer_name}}",
+        "approved_by": "{{steps.request-approval.output.approver}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/refund-{{runId}}"
+      },
+      "callbackKey": "refund-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-approval"]
+    },
+    {
+      "id": "draft-reply",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "You are a support agent. Write an empathetic, helpful reply to the following support ticket.\n\nCustomer: {{customer_name}} (tier: {{account_tier}})\nIntent: {{steps.classify-ticket.output.intent}}\nKey facts: {{steps.classify-ticket.output.key_facts}}\nOriginal message:\n{{ticket_body}}\n\nWrite a clear, warm reply that addresses their issue. Do not promise outcomes you cannot guarantee. Keep it under 200 words.",
+      "timeout": "3m",
+      "budget": 0.05,
+      "dependsOn": ["route-intent"]
+    },
+    {
+      "id": "draft-decline",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "You are a support agent. Write a professional, empathetic decline message for a refund request that was not approved.\n\nCustomer: {{customer_name}} (tier: {{account_tier}})\nTicket ID: {{ticket_id}}\nOriginal message:\n{{ticket_body}}\n\nExplain that the refund cannot be processed at this time. Offer alternative assistance. Be respectful and maintain goodwill. Keep it under 200 words.",
+      "timeout": "3m",
+      "budget": 0.05,
+      "dependsOn": ["check-approval"]
+    },
+    {
+      "id": "notify-done",
+      "type": "notify",
+      "notifyMsg": "Ticket {{ticket_id}} ({{customer_name}}, {{account_tier}}) triaged. Intent: {{steps.classify-ticket.output.intent}}, urgency: {{steps.classify-ticket.output.urgency}}. Refund status: {{steps.process-refund.output.status}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["process-refund"]
+    }
+  ]
+}

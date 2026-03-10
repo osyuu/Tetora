@@ -1,0 +1,98 @@
+{
+  "name": "tpl-real-estate-listing",
+  "description": "Real estate listing activation: draft copy, submit to MLS, publish social posts, notify client",
+  "variables": {
+    "address": "",
+    "price": "",
+    "bedrooms": "",
+    "bathrooms": "",
+    "sqft": "",
+    "key_features": "",
+    "agent_name": "",
+    "client_name": ""
+  },
+  "steps": [
+    {
+      "id": "draft-listing",
+      "type": "dispatch",
+      "agent": "kokuyou",
+      "prompt": "Create listing content for the property at {{address}}. Property details: ${{price}}, {{bedrooms}} bed / {{bathrooms}} bath, {{sqft}} sq ft. Key features: {{key_features}}. Listing agent: {{agent_name}}. Produce three outputs: (1) MLS Public Remarks (500 chars max) — compelling buyer-facing description, lead with the strongest feature, close with a call to action; (2) Agent Remarks (internal MLS field, 500 chars max) — showing instructions, lockbox info placeholder, offer instructions; (3) Three social media posts — one for Instagram (visual, emoji-friendly, 3 hashtags), one for Facebook (conversational, neighborhood focus), one for LinkedIn (professional, investment angle). Return as structured JSON with keys: mls_remarks, agent_remarks, social_instagram, social_facebook, social_linkedin.",
+      "timeout": "10m",
+      "budget": 0.5
+    },
+    {
+      "id": "submit-mls",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "address": "{{address}}",
+        "price": "{{price}}",
+        "bedrooms": "{{bedrooms}}",
+        "bathrooms": "{{bathrooms}}",
+        "sqft": "{{sqft}}",
+        "public_remarks": "{{steps.draft-listing.output.mls_remarks}}",
+        "agent_remarks": "{{steps.draft-listing.output.agent_remarks}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/mls-{{runId}}"
+      },
+      "callbackKey": "mls-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "onTimeout": "stop",
+      "dependsOn": ["draft-listing"]
+    },
+    {
+      "id": "check-mls",
+      "type": "condition",
+      "if": "{{steps.submit-mls.output.status}} == 'active'",
+      "then": "publish-social",
+      "else": "notify-mls-error",
+      "dependsOn": ["submit-mls"]
+    },
+    {
+      "id": "notify-mls-error",
+      "type": "notify",
+      "notifyMsg": "MLS submission failed for {{address}}. Error: {{steps.submit-mls.output.error}}. MLS listing ID attempted: {{steps.submit-mls.output.listing_id}}. Manual review required.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-mls"]
+    },
+    {
+      "id": "publish-social",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "instagram": "{{steps.draft-listing.output.social_instagram}}",
+        "facebook": "{{steps.draft-listing.output.social_facebook}}",
+        "linkedin": "{{steps.draft-listing.output.social_linkedin}}",
+        "schedule": "now",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/social-{{runId}}"
+      },
+      "callbackKey": "social-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "onTimeout": "skip",
+      "dependsOn": ["check-mls"]
+    },
+    {
+      "id": "notify-client",
+      "type": "dispatch",
+      "agent": "kokuyou",
+      "prompt": "The listing for {{client_name}}'s property at {{address}} is now live on MLS. MLS listing ID: {{steps.submit-mls.output.listing_id}}. MLS link: {{steps.submit-mls.output.listing_url}}. Social posts published: {{steps.publish-social.output.published_count}} platforms. Write a warm, personalized 'Your home is live!' message to {{client_name}} from agent {{agent_name}}. Include: (1) congratulations on going live, (2) MLS link, (3) what happens next (showings process, offer timeline expectations), (4) how to reach the agent with questions. Tone: excited but professional.",
+      "dependsOn": ["publish-social"],
+      "timeout": "5m",
+      "budget": 0.25
+    },
+    {
+      "id": "send-notification",
+      "type": "notify",
+      "notifyMsg": "{{steps.notify-client.output}}",
+      "notifyTo": "discord",
+      "dependsOn": ["notify-client"]
+    }
+  ]
+}

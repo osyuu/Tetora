@@ -1,0 +1,145 @@
+{
+  "name": "tpl-customs-clearance",
+  "description": "Customs clearance: fetch commercial invoice and packing list, classify HS codes per line item, route restricted items for compliance review, calculate duties via tariff API, prepare and submit customs declaration, then notify on clearance or query",
+  "variables": {
+    "shipment_ref": "",
+    "importer_name": "",
+    "importer_tax_id": "",
+    "port_of_entry": ""
+  },
+  "steps": [
+    {
+      "id": "fetch-shipping-documents",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.TRADE_DOCS_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "shipment_ref": "{{shipment_ref}}",
+        "importer_name": "{{importer_name}}",
+        "document_types": ["commercial_invoice", "packing_list", "bill_of_lading", "certificate_of_origin"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/docs-fetch-{{runId}}"
+      },
+      "callbackKey": "docs-fetch-{{runId}}",
+      "callbackTimeout": "20m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.fetch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "classify-hs-codes",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a licensed customs broker. Classify each line item in the commercial invoice with the correct Harmonized System (HS) tariff code for import at {{port_of_entry}}.\n\nShipment reference: {{shipment_ref}}\nImporter: {{importer_name}} (Tax ID: {{importer_tax_id}})\nPort of entry: {{port_of_entry}}\nShipping documents: {{steps.fetch-shipping-documents.output}}\n\nFor each line item in the commercial invoice, determine: (1) the 6-digit or 10-digit HS code most appropriate for the described goods; (2) whether the goods fall under any restricted, controlled, or prohibited category (e.g., CITES, dual-use, sanctions list items, food/agricultural restrictions, chemical precursors).\n\nOutput plain text with labeled sections:\n- line_item_classifications: JSON array of objects with fields: line_number, description, quantity, unit_value_usd, hs_code, hs_description, country_of_origin, restricted (boolean), restriction_reason (empty string if not restricted)\n- has_restricted_items: true if any line item has restricted = true, else false\n- restricted_item_count: integer count of restricted line items\n- total_shipment_value_usd: sum of all (quantity * unit_value_usd) across all line items (as a number)",
+      "timeout": 480,
+      "budget": 0.55,
+      "dependsOn": ["fetch-shipping-documents"]
+    },
+    {
+      "id": "check-restricted-items",
+      "type": "condition",
+      "if": "{{steps.classify-hs-codes.output.has_restricted_items}} == 'true'",
+      "then": "notify-compliance-review",
+      "else": "calculate-duties",
+      "dependsOn": ["classify-hs-codes"]
+    },
+    {
+      "id": "notify-compliance-review",
+      "type": "notify",
+      "notifyMsg": "Customs clearance HOLD — restricted items detected in shipment {{shipment_ref}}.\n\nImporter: {{importer_name}} (Tax ID: {{importer_tax_id}})\nPort of entry: {{port_of_entry}}\nRestricted items: {{steps.classify-hs-codes.output.restricted_item_count}} of the classified line items\n\nLine item classifications: {{steps.classify-hs-codes.output.line_item_classifications}}\n\nCompliance officer review required before duty calculation and declaration submission. Do not release shipment.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-restricted-items"]
+    },
+    {
+      "id": "calculate-duties",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.TARIFF_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "port_of_entry": "{{port_of_entry}}",
+        "importer_tax_id": "{{importer_tax_id}}",
+        "line_items": "{{steps.classify-hs-codes.output.line_item_classifications}}",
+        "total_shipment_value_usd": "{{steps.classify-hs-codes.output.total_shipment_value_usd}}",
+        "calculation_types": ["import_duty", "mpf", "hmf", "vat_if_applicable"],
+        "callback_url": "https://your-tetora.example.com/api/callbacks/duty-calc-{{runId}}"
+      },
+      "callbackKey": "duty-calc-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.calc_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-restricted-items"]
+    },
+    {
+      "id": "prepare-declaration",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a licensed customs broker preparing a formal customs entry declaration package.\n\nShipment reference: {{shipment_ref}}\nImporter: {{importer_name}} (Tax ID: {{importer_tax_id}})\nPort of entry: {{port_of_entry}}\nOriginal shipping documents: {{steps.fetch-shipping-documents.output}}\nHS code classifications: {{steps.classify-hs-codes.output.line_item_classifications}}\nDuty calculations: {{steps.calculate-duties.output}}\n\nPrepare the complete customs declaration package with the following labeled sections:\n- entry_type: the appropriate CBP entry type (e.g., Type 01 Formal Entry, Type 11 Informal Entry) based on shipment value\n- entry_summary: structured summary of all line items, HS codes, quantities, values, duty rates, and calculated duty amounts\n- importer_of_record: formatted importer details block\n- supporting_documents_checklist: list of documents attached and required for this entry type\n- total_duties_payable_usd: total of all duty and fee amounts from the duty calculation\n- broker_notes: any special handling instructions, free trade agreement applicability, or first sale valuation notes\n\nFormat as a professional customs entry package ready for portal submission.",
+      "timeout": 420,
+      "budget": 0.45,
+      "dependsOn": ["calculate-duties"]
+    },
+    {
+      "id": "submit-declaration",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CUSTOMS_PORTAL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "shipment_ref": "{{shipment_ref}}",
+        "importer_tax_id": "{{importer_tax_id}}",
+        "port_of_entry": "{{port_of_entry}}",
+        "entry_type": "{{steps.prepare-declaration.output.entry_type}}",
+        "entry_summary": "{{steps.prepare-declaration.output.entry_summary}}",
+        "total_duties_payable_usd": "{{steps.prepare-declaration.output.total_duties_payable_usd}}",
+        "line_item_classifications": "{{steps.classify-hs-codes.output.line_item_classifications}}",
+        "duty_calculations": "{{steps.calculate-duties.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/customs-submit-{{runId}}"
+      },
+      "callbackKey": "customs-submit-{{runId}}",
+      "callbackTimeout": "48h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.clearance_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["prepare-declaration"]
+    },
+    {
+      "id": "check-clearance-status",
+      "type": "condition",
+      "if": "{{steps.submit-declaration.output.clearance_status}} == 'cleared'",
+      "then": "notify-warehouse-release",
+      "else": "notify-query-raised",
+      "dependsOn": ["submit-declaration"]
+    },
+    {
+      "id": "notify-warehouse-release",
+      "type": "notify",
+      "notifyMsg": "Customs cleared — shipment {{shipment_ref}} released for warehouse delivery.\n\nImporter: {{importer_name}} | Port: {{port_of_entry}}\nEntry reference: {{steps.submit-declaration.output.entry_number}}\nTotal duties paid: ${{steps.prepare-declaration.output.total_duties_payable_usd}}\nRelease date: {{steps.submit-declaration.output.release_date}}\n\nWarehouse team notified to expect delivery.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-clearance-status"]
+    },
+    {
+      "id": "notify-query-raised",
+      "type": "notify",
+      "notifyMsg": "Customs query raised for shipment {{shipment_ref}} — broker action required.\n\nImporter: {{importer_name}} | Port: {{port_of_entry}}\nEntry reference: {{steps.submit-declaration.output.entry_number}}\nQuery type: {{steps.submit-declaration.output.query_type}}\nQuery details: {{steps.submit-declaration.output.query_details}}\nResponse deadline: {{steps.submit-declaration.output.response_deadline}}\n\nBroker must respond to customs query before shipment can be released.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-clearance-status"]
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "name": "tpl-insurance-claim",
+  "description": "Insurance claim processing: submit to clearinghouse, adjudicate, handle denial with appeal, post payment",
+  "variables": {
+    "claim_id": "",
+    "patient_name": "",
+    "procedure_codes": "",
+    "diagnosis_codes": "",
+    "provider_npi": "",
+    "payer_id": ""
+  },
+  "steps": [
+    {
+      "id": "submit-claim",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "claim_id": "{{claim_id}}",
+        "patient_name": "{{patient_name}}",
+        "procedure_codes": "{{procedure_codes}}",
+        "diagnosis_codes": "{{diagnosis_codes}}",
+        "provider_npi": "{{provider_npi}}",
+        "payer_id": "{{payer_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/claim-ack-{{runId}}"
+      },
+      "callbackKey": "claim-ack-{{runId}}",
+      "callbackTimeout": "1h",
+      "callbackAuth": "open",
+      "onTimeout": "stop"
+    },
+    {
+      "id": "check-ack",
+      "type": "condition",
+      "if": "{{steps.submit-claim.output.status}} == 'accepted'",
+      "then": "wait-adjudication",
+      "else": "analyze-rejection",
+      "dependsOn": ["submit-claim"]
+    },
+    {
+      "id": "analyze-rejection",
+      "type": "dispatch",
+      "agent": "kokuyou",
+      "prompt": "Claim {{claim_id}} for patient {{patient_name}} was rejected by payer {{payer_id}}. Rejection data: {{steps.submit-claim.output}}. Interpret all rejection reason codes, identify correctable errors vs. non-correctable denials, and provide a structured list of recommended corrections for resubmission.",
+      "dependsOn": ["check-ack"],
+      "timeout": "10m",
+      "budget": 0.5
+    },
+    {
+      "id": "wait-adjudication",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "claim_id": "{{claim_id}}",
+        "payer_id": "{{payer_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/era-{{runId}}"
+      },
+      "callbackKey": "era-{{runId}}",
+      "callbackTimeout": "72h",
+      "callbackAuth": "open",
+      "onTimeout": "skip",
+      "dependsOn": ["check-ack"]
+    },
+    {
+      "id": "analyze-result",
+      "type": "condition",
+      "if": "{{steps.wait-adjudication.output.status}} == 'paid'",
+      "then": "post-payment",
+      "else": "draft-appeal",
+      "dependsOn": ["wait-adjudication"]
+    },
+    {
+      "id": "draft-appeal",
+      "type": "dispatch",
+      "agent": "kokuyou",
+      "prompt": "Claim {{claim_id}} for patient {{patient_name}} (procedures: {{procedure_codes}}, diagnoses: {{diagnosis_codes}}, provider NPI: {{provider_npi}}) was denied by payer {{payer_id}}. ERA denial data: {{steps.wait-adjudication.output}}. Read all denial reason codes (CARC/RARC), draft a formal appeal letter with: (1) clear statement of dispute, (2) clinical justification citing applicable coverage policy, (3) supporting documentation checklist, (4) requested resolution. Format the letter as a professional medical billing appeal.",
+      "dependsOn": ["analyze-result"],
+      "timeout": "20m",
+      "budget": 1.0
+    },
+    {
+      "id": "post-payment",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "claim_id": "{{claim_id}}",
+        "era_data": "{{steps.wait-adjudication.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/posting-{{runId}}"
+      },
+      "callbackKey": "posting-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "onTimeout": "stop",
+      "dependsOn": ["analyze-result"]
+    },
+    {
+      "id": "notify-result",
+      "type": "notify",
+      "notifyMsg": "Claim {{claim_id}} (patient: {{patient_name}}) processing complete. Adjudication status: {{steps.wait-adjudication.output.status}}. Payment posting: {{steps.post-payment.output.status}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["post-payment", "draft-appeal"]
+    }
+  ]
+}

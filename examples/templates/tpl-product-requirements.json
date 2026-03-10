@@ -1,0 +1,103 @@
+{
+  "name": "tpl-product-requirements",
+  "description": "Feature request triage: AI scores impact/effort, route high-value features to ticket creation, draft release notes, publish to changelog",
+  "variables": {
+    "feature_title": "",
+    "feature_description": "",
+    "requester": "",
+    "priority": "",
+    "target_release": ""
+  },
+  "steps": [
+    {
+      "id": "analyze-feature",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "A feature request has been submitted for the {{target_release}} release.\n\nTitle: {{feature_title}}\nDescription: {{feature_description}}\nRequester: {{requester}}\nPriority: {{priority}}\n\nAnalyze this feature request and produce a structured triage assessment with the following labeled sections:\n- impact_score: integer 1-10 (user value, business alignment, strategic fit)\n- effort_score: integer 1-10 (engineering complexity, dependencies, risk; lower = less effort)\n- recommendation: one of 'accept', 'defer', 'reject'\n- rationale: 3-4 sentences explaining the scores and recommendation, noting any trade-offs or risks\n- acceptance_criteria: 3-5 bullet points defining what 'done' looks like for this feature\n\nOutput plain text with labeled sections.",
+      "timeout": 240,
+      "budget": 0.15
+    },
+    {
+      "id": "check-score",
+      "type": "condition",
+      "if": "{{steps.analyze-feature.output.recommendation}} == 'accept'",
+      "then": "create-ticket",
+      "else": "notify-deferred",
+      "dependsOn": ["analyze-feature"]
+    },
+    {
+      "id": "notify-deferred",
+      "type": "notify",
+      "notifyMsg": "Feature request deferred/rejected for {{target_release}}.\n\nFeature: {{feature_title}}\nRequester: {{requester}}\nImpact score: {{steps.analyze-feature.output.impact_score}} | Effort score: {{steps.analyze-feature.output.effort_score}}\nRecommendation: {{steps.analyze-feature.output.recommendation}}\nRationale: {{steps.analyze-feature.output.rationale}}\n\nConsider resubmitting for a future release with additional context.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-score"]
+    },
+    {
+      "id": "create-ticket",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.LINEAR_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "title": "{{feature_title}}",
+        "description": "{{feature_description}}\n\n---\nRequester: {{requester}}\nImpact: {{steps.analyze-feature.output.impact_score}}/10\nEffort: {{steps.analyze-feature.output.effort_score}}/10\nAcceptance criteria:\n{{steps.analyze-feature.output.acceptance_criteria}}",
+        "priority": "{{priority}}",
+        "label": "feature",
+        "milestone": "{{target_release}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/ticket-{{runId}}"
+      },
+      "callbackKey": "ticket-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-score"]
+    },
+    {
+      "id": "draft-release-notes",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "A new feature has been accepted for {{target_release}}.\n\nFeature title: {{feature_title}}\nFeature description: {{feature_description}}\nImpact score: {{steps.analyze-feature.output.impact_score}}/10\nAcceptance criteria: {{steps.analyze-feature.output.acceptance_criteria}}\nTicket ID: {{steps.create-ticket.output.ticket_id}}\n\nWrite polished, user-facing release notes for this feature. The tone should be enthusiastic but concise. Include:\n1. A one-sentence headline (action-oriented, benefit-focused)\n2. A short paragraph (50-80 words) explaining what changed and why users will love it\n3. A 'How to use it' section with 2-3 bullet points\n\nDo not use technical jargon. Write for end users, not engineers.",
+      "timeout": 180,
+      "budget": 0.10,
+      "dependsOn": ["create-ticket"]
+    },
+    {
+      "id": "publish-changelog",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CHANGELOG_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "title": "{{feature_title}}",
+        "content": "{{steps.draft-release-notes.output}}",
+        "release": "{{target_release}}",
+        "ticket_id": "{{steps.create-ticket.output.ticket_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/changelog-{{runId}}"
+      },
+      "callbackKey": "changelog-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["draft-release-notes"]
+    },
+    {
+      "id": "notify-stakeholders",
+      "type": "notify",
+      "notifyMsg": "Feature accepted and triaged for {{target_release}}.\n\nFeature: {{feature_title}}\nRequester: {{requester}}\nImpact: {{steps.analyze-feature.output.impact_score}}/10 | Effort: {{steps.analyze-feature.output.effort_score}}/10\nTicket: {{steps.create-ticket.output.ticket_url}}\nChangelog published: {{steps.publish-changelog.output.changelog_url}}\n\nRelease notes preview:\n{{steps.draft-release-notes.output}}",
+      "notifyTo": "discord",
+      "dependsOn": ["publish-changelog"]
+    }
+  ]
+}

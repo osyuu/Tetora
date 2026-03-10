@@ -1,0 +1,99 @@
+{
+  "name": "tpl-media-rights-clearance",
+  "description": "Media rights clearance: query rights management system, audit usage against license terms, alert on critical violations, draft renewal request letters, and send via email API",
+  "variables": {
+    "publication_date": "",
+    "asset_ids_csv": "",
+    "expiry_warning_days": ""
+  },
+  "steps": [
+    {
+      "id": "query-rights-system",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.RIGHTS_MGMT_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "asset_ids": "{{asset_ids_csv}}",
+        "publication_date": "{{publication_date}}",
+        "expiry_warning_days": "{{expiry_warning_days}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/rights-query-{{runId}}"
+      },
+      "callbackKey": "rights-query-{{runId}}",
+      "callbackTimeout": "15m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.query_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "audit-usage",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are a media rights compliance specialist. Audit the following asset usage data against their license terms.\n\nAsset IDs: {{asset_ids_csv}}\nPublication date: {{publication_date}}\nExpiry warning window: {{expiry_warning_days}} days\nRights management system data: {{steps.query-rights-system.output}}\n\nFor each asset, verify: (1) usage falls within licensed territory and media type; (2) license expiry date relative to publication date and warning window; (3) usage quantity does not exceed licensed volume; (4) sublicensing or derivative rights where applicable.\n\nOutput plain text with labeled sections:\n- violation_level: one of 'critical', 'warning', or 'clear' — use 'critical' if any asset is expired or territory/media type is violated, 'warning' if any asset is within the expiry warning window\n- critical_assets: comma-separated asset IDs with critical violations (empty if none)\n- warning_assets: comma-separated asset IDs approaching expiry (empty if none)\n- violation_details: bullet list of each violation with asset ID, license term breached, and recommended action\n- renewal_candidates: comma-separated asset IDs that should be renewed (expired or within warning window)",
+      "timeout": 300,
+      "budget": 0.30,
+      "dependsOn": ["query-rights-system"]
+    },
+    {
+      "id": "check-violation-level",
+      "type": "condition",
+      "if": "{{steps.audit-usage.output.violation_level}} == 'critical'",
+      "then": "alert-legal",
+      "else": "draft-renewal-letters",
+      "dependsOn": ["audit-usage"]
+    },
+    {
+      "id": "alert-legal",
+      "type": "notify",
+      "notifyMsg": "CRITICAL media rights violation detected. Publication date: {{publication_date}}.\n\nAffected assets: {{steps.audit-usage.output.critical_assets}}\nViolation details: {{steps.audit-usage.output.violation_details}}\n\nLegal team notified. Do not publish or distribute these assets until rights are cleared. Renewal candidates: {{steps.audit-usage.output.renewal_candidates}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-violation-level"]
+    },
+    {
+      "id": "draft-renewal-letters",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Draft license renewal request letters for media assets that are expiring or have expired.\n\nAsset IDs requiring renewal: {{steps.audit-usage.output.renewal_candidates}}\nViolation/warning details: {{steps.audit-usage.output.violation_details}}\nRights system data: {{steps.query-rights-system.output}}\nPublication date context: {{publication_date}}\n\nFor each rights holder identified in the rights system data, draft a professional renewal request letter that includes: (1) identification of the specific assets and current license terms; (2) the intended continued usage (territory, media type, duration); (3) a request for a renewal quote or confirmation; (4) proposed renewal period of 2 years; (5) urgency note if any asset is already expired or critical.\n\nFormat each letter with a clear header identifying the rights holder and asset IDs. Tone: professional and concise.",
+      "timeout": 360,
+      "budget": 0.50,
+      "dependsOn": ["check-violation-level", "alert-legal"]
+    },
+    {
+      "id": "send-renewal-requests",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.EMAIL_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "campaign_type": "rights_renewal",
+        "asset_ids": "{{steps.audit-usage.output.renewal_candidates}}",
+        "letters_content": "{{steps.draft-renewal-letters.output}}",
+        "rights_data": "{{steps.query-rights-system.output}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/renewal-send-{{runId}}"
+      },
+      "callbackKey": "renewal-send-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.send_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip",
+      "dependsOn": ["draft-renewal-letters"]
+    },
+    {
+      "id": "notify-renewal-summary",
+      "type": "notify",
+      "notifyMsg": "Media rights clearance run complete for publication date {{publication_date}}.\n\nAssets audited: {{asset_ids_csv}}\nViolation level: {{steps.audit-usage.output.violation_level}}\nCritical assets: {{steps.audit-usage.output.critical_assets}}\nWarning assets: {{steps.audit-usage.output.warning_assets}}\nRenewal requests sent: {{steps.audit-usage.output.renewal_candidates}}\nEmail dispatch status: {{steps.send-renewal-requests.output.send_status}}\n\nReview violation details in the rights management system.",
+      "notifyTo": "discord",
+      "dependsOn": ["send-renewal-requests"]
+    }
+  ]
+}

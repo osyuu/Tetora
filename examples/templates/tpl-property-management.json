@@ -1,0 +1,163 @@
+{
+  "name": "tpl-property-management",
+  "description": "Lease renewal analysis + offer + DocuSign, with a parallel maintenance dispatch sub-flow for urgent contractor routing",
+  "variables": {
+    "property_id": "",
+    "unit_number": "",
+    "tenant_name": "",
+    "tenant_email": "",
+    "lease_end_date": "",
+    "current_rent": ""
+  },
+  "steps": [
+    {
+      "id": "analyze-lease",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "Review the lease renewal situation for unit {{unit_number}} (property {{property_id}}). Tenant: {{tenant_name}}, current rent: {{current_rent}}, lease end date: {{lease_end_date}}. Perform a market rate analysis and produce: (1) recommended_rent — a specific dollar amount based on comparable units; (2) renewal_justification — 2-3 sentences explaining the pricing rationale; (3) negotiation_floor — the minimum acceptable rent to retain this tenant. Output as plain text with labeled sections.",
+      "timeout": 300,
+      "budget": 0.20
+    },
+    {
+      "id": "send-renewal-offer",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PROPERTY_MGMT_API_KEY}}"
+      },
+      "externalBody": {
+        "tenant_email": "{{tenant_email}}",
+        "tenant_name": "{{tenant_name}}",
+        "unit_number": "{{unit_number}}",
+        "current_rent": "{{current_rent}}",
+        "offered_rent": "{{steps.analyze-lease.output.recommended_rent}}",
+        "lease_end_date": "{{lease_end_date}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/renewal-{{runId}}"
+      },
+      "callbackKey": "renewal-{{runId}}",
+      "callbackTimeout": "7d",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.tenant_response",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["analyze-lease"]
+    },
+    {
+      "id": "check-tenant-response",
+      "type": "condition",
+      "if": "{{steps.send-renewal-offer.output.tenant_response}} == 'accepted'",
+      "then": "generate-new-lease",
+      "else": "notify-owner-negotiation",
+      "dependsOn": ["send-renewal-offer"]
+    },
+    {
+      "id": "notify-owner-negotiation",
+      "type": "notify",
+      "notifyMsg": "Lease renewal for {{tenant_name}} at unit {{unit_number}} (property {{property_id}}) requires attention. Tenant response: {{steps.send-renewal-offer.output.tenant_response}}. Offered rent: {{steps.analyze-lease.output.recommended_rent}}. Negotiation floor: {{steps.analyze-lease.output.negotiation_floor}}. Please follow up directly with tenant ({{tenant_email}}).",
+      "notifyTo": "discord",
+      "dependsOn": ["check-tenant-response"]
+    },
+    {
+      "id": "generate-new-lease",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.DOCUSIGN_API_KEY}}"
+      },
+      "externalBody": {
+        "recipient_email": "{{tenant_email}}",
+        "recipient_name": "{{tenant_name}}",
+        "property_id": "{{property_id}}",
+        "unit_number": "{{unit_number}}",
+        "new_rent": "{{steps.analyze-lease.output.recommended_rent}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/lease-sign-{{runId}}"
+      },
+      "callbackKey": "lease-sign-{{runId}}",
+      "callbackTimeout": "3d",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.envelope_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-tenant-response"]
+    },
+    {
+      "id": "notify-renewal-complete",
+      "type": "notify",
+      "notifyMsg": "Lease renewal complete for {{tenant_name}}, unit {{unit_number}} (property {{property_id}}). New rent: {{steps.analyze-lease.output.recommended_rent}}. DocuSign envelope: {{steps.generate-new-lease.output.envelope_id}} — status: {{steps.generate-new-lease.output.envelope_status}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["generate-new-lease"]
+    },
+    {
+      "id": "receive-maintenance-request",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PROPERTY_MGMT_API_KEY}}"
+      },
+      "externalBody": {
+        "property_id": "{{property_id}}",
+        "unit_number": "{{unit_number}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/maint-{{runId}}"
+      },
+      "callbackKey": "maint-{{runId}}",
+      "callbackTimeout": "24h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.urgency",
+        "dataPath": "data"
+      },
+      "onTimeout": "skip"
+    },
+    {
+      "id": "check-urgency",
+      "type": "condition",
+      "if": "{{steps.receive-maintenance-request.output.urgency}} == 'emergency'",
+      "then": "dispatch-contractor",
+      "else": "notify-scheduled-maintenance",
+      "dependsOn": ["receive-maintenance-request"]
+    },
+    {
+      "id": "notify-scheduled-maintenance",
+      "type": "notify",
+      "notifyMsg": "Non-urgent maintenance request received for unit {{unit_number}} (property {{property_id}}). Issue: {{steps.receive-maintenance-request.output.description}}. Scheduled for next available slot. Tenant {{tenant_name}} ({{tenant_email}}) has been notified.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-urgency"]
+    },
+    {
+      "id": "dispatch-contractor",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CONTRACTOR_API_KEY}}"
+      },
+      "externalBody": {
+        "property_id": "{{property_id}}",
+        "unit_number": "{{unit_number}}",
+        "issue_type": "{{steps.receive-maintenance-request.output.issue_type}}",
+        "urgency": "emergency",
+        "tenant_contact": "{{tenant_email}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/contractor-{{runId}}"
+      },
+      "callbackKey": "contractor-{{runId}}",
+      "callbackTimeout": "2h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.dispatch_status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-urgency"]
+    },
+    {
+      "id": "notify-maintenance-dispatched",
+      "type": "notify",
+      "notifyMsg": "Emergency maintenance dispatched for unit {{unit_number}} (property {{property_id}}). Issue: {{steps.receive-maintenance-request.output.issue_type}}. Contractor: {{steps.dispatch-contractor.output.contractor_name}}, ETA: {{steps.dispatch-contractor.output.eta}}. Tenant {{tenant_name}} and property owner have been notified.",
+      "notifyTo": "discord",
+      "dependsOn": ["dispatch-contractor"]
+    }
+  ]
+}

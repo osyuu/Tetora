@@ -1,0 +1,107 @@
+{
+  "name": "tpl-vendor-onboarding",
+  "description": "Assess vendor risk, route to contract or escalation, then provision via DocuSign + ERP",
+  "variables": {
+    "vendor_name": "",
+    "vendor_email": "",
+    "documents_url": "",
+    "contract_template": ""
+  },
+  "steps": [
+    {
+      "id": "assess-vendor",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "Review the vendor documents for {{vendor_name}} (email: {{vendor_email}}) at {{documents_url}}. Produce a structured assessment with: (1) risk_level — one of 'low', 'medium', 'high'; (2) compliance_gaps — a bullet list of any missing certifications, insurance, or legal clauses; (3) summary — 3-5 sentences on overall suitability. Output as plain text with labeled sections.",
+      "timeout": 300,
+      "budget": 0.25
+    },
+    {
+      "id": "check-risk",
+      "type": "condition",
+      "if": "{{steps.assess-vendor.output.risk_level}} == 'low'",
+      "then": "send-contract",
+      "else": "escalate-review",
+      "dependsOn": ["assess-vendor"]
+    },
+    {
+      "id": "escalate-review",
+      "type": "notify",
+      "notifyMsg": "Vendor {{vendor_name}} requires manual review before onboarding. Risk level: {{steps.assess-vendor.output.risk_level}}. Compliance gaps: {{steps.assess-vendor.output.compliance_gaps}}. Full assessment: {{steps.assess-vendor.output.summary}}",
+      "notifyTo": "discord",
+      "dependsOn": ["check-risk"]
+    },
+    {
+      "id": "send-contract",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.DOCUSIGN_API_KEY}}"
+      },
+      "externalBody": {
+        "recipient_email": "{{vendor_email}}",
+        "recipient_name": "{{vendor_name}}",
+        "template_id": "{{contract_template}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/contract-{{runId}}"
+      },
+      "callbackKey": "contract-{{runId}}",
+      "callbackTimeout": "7d",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-risk"]
+    },
+    {
+      "id": "verify-bank",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.BANK_VERIFY_API_KEY}}"
+      },
+      "externalBody": {
+        "vendor_name": "{{vendor_name}}",
+        "vendor_email": "{{vendor_email}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/bank-{{runId}}"
+      },
+      "callbackKey": "bank-{{runId}}",
+      "callbackTimeout": "1h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.verified",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["send-contract"]
+    },
+    {
+      "id": "activate-vendor",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.ERP_API_KEY}}"
+      },
+      "externalBody": {
+        "vendor_name": "{{vendor_name}}",
+        "vendor_email": "{{vendor_email}}",
+        "bank_verified": "{{steps.verify-bank.output.verified}}",
+        "contract_id": "{{steps.send-contract.output.envelope_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/erp-{{runId}}"
+      },
+      "callbackKey": "erp-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "onTimeout": "stop",
+      "dependsOn": ["verify-bank"]
+    },
+    {
+      "id": "notify-onboarded",
+      "type": "notify",
+      "notifyMsg": "Vendor {{vendor_name}} ({{vendor_email}}) has been fully onboarded. Contract: {{steps.send-contract.output.envelope_id}} | Bank verified: {{steps.verify-bank.output.verified}} | ERP vendor ID: {{steps.activate-vendor.output.vendor_id}}",
+      "notifyTo": "discord",
+      "dependsOn": ["activate-vendor"]
+    }
+  ]
+}

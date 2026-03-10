@@ -1,0 +1,93 @@
+{
+  "name": "tpl-invoice-reconciliation",
+  "description": "Invoice-to-Payment Reconciliation — OCR invoice, AI line-item matching against PO, auto-approve exact matches, escalate discrepancies, trigger payment. Replace OCR externalUrl with your provider (e.g. AWS Textract, Google Document AI). Replace payment externalUrl with your bank/ERP endpoint (e.g. SAP, NetSuite).",
+  "variables": {
+    "invoice_url": "",
+    "invoice_number": "",
+    "vendor_name": "",
+    "po_number": "",
+    "po_line_items": ""
+  },
+  "steps": [
+    {
+      "id": "ocr-invoice",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.OCR_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "document_url": "{{invoice_url}}",
+        "output_format": "structured",
+        "document_type": "invoice",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/ocr-{{runId}}"
+      },
+      "callbackKey": "ocr-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "match-po",
+      "type": "dispatch",
+      "agent": "hisui",
+      "prompt": "You are an accounts payable specialist. Compare the invoice line items to the purchase order and identify any discrepancies.\n\nVendor: {{vendor_name}}\nInvoice number: {{invoice_number}}\nPO number: {{po_number}}\n\nInvoice data (from OCR):\n{{steps.ocr-invoice.output.line_items}}\n\nPO line items:\n{{po_line_items}}\n\nFor each invoice line, check: item description matches, quantity matches, unit price matches, total matches. Output a JSON object with fields: match_status (one of: exact, minor_discrepancy, major_discrepancy), total_invoice_amount (number), total_po_amount (number), discrepancies (array of objects with fields: line_item, invoice_value, po_value, delta, severity), recommendation (string). Reply with only the JSON object.",
+      "timeout": "5m",
+      "budget": 0.10,
+      "dependsOn": ["ocr-invoice"]
+    },
+    {
+      "id": "check-match",
+      "type": "condition",
+      "if": "{{steps.match-po.output.match_status}} == 'exact'",
+      "then": "approve-payment",
+      "else": "escalate",
+      "dependsOn": ["match-po"]
+    },
+    {
+      "id": "escalate",
+      "type": "notify",
+      "notifyMsg": "Invoice reconciliation requires AP manager review. Invoice: {{invoice_number}}, Vendor: {{vendor_name}}, PO: {{po_number}}. Match status: {{steps.match-po.output.match_status}}. Invoice total: {{steps.match-po.output.total_invoice_amount}}, PO total: {{steps.match-po.output.total_po_amount}}. Discrepancies: {{steps.match-po.output.discrepancies}}. Recommendation: {{steps.match-po.output.recommendation}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-match"]
+    },
+    {
+      "id": "approve-payment",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PAYMENT_API_KEY}}",
+        "Content-Type": "application/json"
+      },
+      "externalBody": {
+        "invoice_number": "{{invoice_number}}",
+        "vendor_name": "{{vendor_name}}",
+        "po_number": "{{po_number}}",
+        "amount": "{{steps.match-po.output.total_invoice_amount}}",
+        "auto_approved": true,
+        "callback_url": "https://your-tetora.example.com/api/callbacks/payment-{{runId}}"
+      },
+      "callbackKey": "payment-{{runId}}",
+      "callbackTimeout": "1h",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-match"]
+    },
+    {
+      "id": "notify-paid",
+      "type": "notify",
+      "notifyMsg": "Payment processed for invoice {{invoice_number}} ({{vendor_name}}, PO: {{po_number}}). Amount: {{steps.match-po.output.total_invoice_amount}}. Transaction ref: {{steps.approve-payment.output.transaction_id}}. Status: {{steps.approve-payment.output.status}}.",
+      "notifyTo": "discord",
+      "dependsOn": ["approve-payment"]
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "name": "tpl-cicd-deploy",
+  "description": "Trigger CI/CD pipeline, deploy to staging on success, summarize failure with root cause on failure",
+  "variables": {
+    "repo": "",
+    "branch": "",
+    "commit_sha": "",
+    "pr_title": "",
+    "author": ""
+  },
+  "steps": [
+    {
+      "id": "trigger-pipeline",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.CICD_API_KEY}}"
+      },
+      "externalBody": {
+        "repo": "{{repo}}",
+        "branch": "{{branch}}",
+        "commit_sha": "{{commit_sha}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/pipeline-{{runId}}"
+      },
+      "callbackKey": "pipeline-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.status",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "check-build",
+      "type": "condition",
+      "if": "{{steps.trigger-pipeline.output.status}} == 'success'",
+      "then": "deploy-staging",
+      "else": "summarize-failure",
+      "dependsOn": ["trigger-pipeline"]
+    },
+    {
+      "id": "summarize-failure",
+      "type": "dispatch",
+      "agent": "kokuyou",
+      "prompt": "The CI/CD pipeline failed for PR '{{pr_title}}' (commit {{commit_sha}}) by {{author}} on branch {{branch}} of repo {{repo}}. Test output: {{steps.trigger-pipeline.output.logs}}. Read the test output carefully and write a concise failure summary (3-5 sentences) that includes: the most likely root cause, which tests failed, and a concrete first step to fix it. Output plain text, no markdown headers.",
+      "dependsOn": ["check-build"],
+      "timeout": 120,
+      "budget": 0.10
+    },
+    {
+      "id": "deploy-staging",
+      "type": "external",
+      "externalUrl": "https://httpbin.org/post",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.DEPLOY_API_KEY}}"
+      },
+      "externalBody": {
+        "repo": "{{repo}}",
+        "branch": "{{branch}}",
+        "commit_sha": "{{commit_sha}}",
+        "environment": "staging",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/deploy-{{runId}}"
+      },
+      "callbackKey": "deploy-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "callbackResponseMap": {
+        "statusPath": "data.health",
+        "dataPath": "data"
+      },
+      "onTimeout": "stop",
+      "dependsOn": ["check-build"]
+    },
+    {
+      "id": "check-deploy",
+      "type": "condition",
+      "if": "{{steps.deploy-staging.output.health}} == 'healthy'",
+      "then": "notify-ready",
+      "else": "rollback-notify",
+      "dependsOn": ["deploy-staging"]
+    },
+    {
+      "id": "notify-ready",
+      "type": "notify",
+      "notifyMsg": "Staging is ready. PR: {{pr_title}} | Commit: {{commit_sha}} | Author: {{author}} | URL: {{steps.deploy-staging.output.staging_url}}",
+      "notifyTo": "discord",
+      "dependsOn": ["check-deploy"]
+    },
+    {
+      "id": "rollback-notify",
+      "type": "notify",
+      "notifyMsg": "Deploy to staging failed for commit {{commit_sha}} ({{pr_title}} by {{author}}). Reason: {{steps.deploy-staging.output.error}}. Rollback triggered automatically.",
+      "notifyTo": "discord",
+      "dependsOn": ["check-deploy"]
+    }
+  ]
+}
