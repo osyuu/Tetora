@@ -129,6 +129,12 @@ func executeWorkflow(ctx context.Context, cfg *Config, w *Workflow, vars map[str
 		}
 	}
 
+	// Register canceller for the cancel API.
+	execCtx, cancelRun := context.WithCancel(execCtx)
+	defer cancelRun()
+	runCancellers.Store(runID, cancelRun)
+	defer runCancellers.Delete(runID)
+
 	// Publish workflow started event.
 	exec.publishEvent("workflow_started", map[string]any{
 		"runId":    runID,
@@ -545,6 +551,10 @@ func (e *workflowExecutor) runStepOnce(ctx context.Context, step *WorkflowStep, 
 			result.Status = "success"
 			result.Output = fmt.Sprintf("[DRY-RUN] Would delay: %s", step.Delay)
 			return
+		case "external":
+			result.Status = "success"
+			result.Output = fmt.Sprintf("[DRY-RUN] Would call external URL: %s (callback mode: %s)", step.ExternalURL, step.CallbackMode)
+			return
 		case "notify":
 			msg := resolveTemplate(step.NotifyMsg, wCtx)
 			result.Status = "success"
@@ -585,6 +595,8 @@ func (e *workflowExecutor) runStepOnce(ctx context.Context, step *WorkflowStep, 
 		e.runDelayStep(ctx, step, result)
 	case "notify":
 		e.runNotifyStep(step, result, wCtx)
+	case "external":
+		e.runExternalStep(ctx, step, result)
 	default:
 		result.Status = "error"
 		result.Error = fmt.Sprintf("unknown step type: %s", step.Type)

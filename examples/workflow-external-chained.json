@@ -1,0 +1,52 @@
+{
+  "name": "order-fulfillment",
+  "description": "Process order payment, then trigger shipping via external APIs",
+  "variables": {
+    "order_id": "",
+    "customer_email": ""
+  },
+  "steps": [
+    {
+      "id": "process-payment",
+      "type": "external",
+      "externalUrl": "https://payment.example.com/api/charge",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.PAYMENT_API_KEY}}",
+        "X-Idempotency-Key": "{{order_id}}-{{runId}}"
+      },
+      "externalBody": {
+        "order_id": "{{order_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/payment-{{runId}}"
+      },
+      "callbackKey": "payment-{{runId}}",
+      "callbackTimeout": "10m",
+      "callbackAuth": "open",
+      "onTimeout": "stop"
+    },
+    {
+      "id": "trigger-shipping",
+      "type": "external",
+      "externalUrl": "https://shipping.example.com/api/ship",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.SHIPPING_API_KEY}}"
+      },
+      "externalBody": {
+        "order_id": "{{order_id}}",
+        "payment_ref": "{{steps.process-payment.output.reference_id}}",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/shipping-{{runId}}"
+      },
+      "callbackKey": "shipping-{{runId}}",
+      "callbackTimeout": "2h",
+      "callbackAuth": "open",
+      "onTimeout": "skip",
+      "dependsOn": ["process-payment"]
+    },
+    {
+      "id": "notify-customer",
+      "type": "dispatch",
+      "agent": "kohaku",
+      "prompt": "Send a friendly notification email to {{customer_email}} about order {{order_id}}. Payment ref: {{steps.process-payment.output.reference_id}}. Shipping tracking: {{steps.trigger-shipping.output.tracking_number}}. Write a warm, professional message.",
+      "dependsOn": ["trigger-shipping"]
+    }
+  ]
+}

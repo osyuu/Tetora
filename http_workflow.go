@@ -4,9 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
@@ -122,6 +127,13 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 			}
 			json.NewDecoder(r.Body).Decode(&body)
 
+			// Sanitize: strip internal-namespace variables to prevent injection.
+			for k := range body.Variables {
+				if strings.HasPrefix(k, "__") {
+					delete(body.Variables, k)
+				}
+			}
+
 			auditLog(cfg.HistoryDB, "workflow.run", "http",
 				fmt.Sprintf("name=%s", name), clientIP(r))
 
@@ -173,15 +185,44 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("/workflow-runs/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method != http.MethodGet {
-			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
-			return
+
+		path := strings.TrimPrefix(r.URL.Path, "/workflow-runs/")
+		parts := strings.SplitN(path, "/", 2)
+		runID := parts[0]
+		action := ""
+		if len(parts) > 1 {
+			action = parts[1]
 		}
-		runID := strings.TrimPrefix(r.URL.Path, "/workflow-runs/")
+
 		if runID == "" {
 			http.Error(w, `{"error":"run ID required"}`, http.StatusBadRequest)
 			return
 		}
+
+		// POST /workflow-runs/{id}/cancel
+		if action == "cancel" && r.Method == http.MethodPost {
+			if cancel, ok := runCancellers.Load(runID); ok {
+				cancel.(context.CancelFunc)()
+				runCancellers.Delete(runID)
+			}
+			// Also update DB.
+			if _, err := queryDB(cfg.HistoryDB, fmt.Sprintf(
+				`UPDATE workflow_runs SET status='cancelled', finished_at=datetime('now') WHERE id='%s' AND status IN ('running','waiting')`,
+				escapeSQLite(runID),
+			)); err != nil {
+				logWarn("cancel workflow run failed", "runID", runID, "error", err)
+			}
+			auditLog(cfg.HistoryDB, "workflow.cancel", "http",
+				fmt.Sprintf("runID=%s", runID), clientIP(r))
+			json.NewEncoder(w).Encode(map[string]string{"status": "cancelled", "runId": runID})
+			return
+		}
+
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET or POST .../cancel"}`, http.StatusMethodNotAllowed)
+			return
+		}
+
 		run, err := queryWorkflowRunByID(cfg.HistoryDB, runID)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
@@ -211,6 +252,50 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 		triggerEngine = newWorkflowTriggerEngine(cfg, state, sem, childSem, state.broker)
 	}
 
+	// --- Skill list for editor dropdowns ---
+	mux.HandleFunc("/api/skills", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		type SkillInfo struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		dir := skillsDir(cfg)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			json.NewEncoder(w).Encode([]SkillInfo{})
+			return
+		}
+		var skills []SkillInfo
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			desc := ""
+			metaPath := filepath.Join(dir, name, "metadata.json")
+			if data, rerr := os.ReadFile(metaPath); rerr == nil {
+				var meta struct {
+					Description string `json:"description"`
+				}
+				if json.Unmarshal(data, &meta) == nil {
+					desc = meta.Description
+				}
+			}
+			skills = append(skills, SkillInfo{Name: name, Description: desc})
+		}
+		if skills == nil {
+			skills = []SkillInfo{}
+		}
+		sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+		json.NewEncoder(w).Encode(skills)
+	})
+
+	// /api/tools is registered in http_tools.go (registerToolRoutes)
+
 	mux.HandleFunc("/api/triggers", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodGet {
@@ -229,6 +314,154 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 			"triggers": infos,
 			"count":    len(infos),
 		})
+	})
+
+	// --- External Step: List pending callbacks ---
+	mux.HandleFunc("/api/callbacks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		sql := `SELECT key, run_id, step_id, mode, auth_mode, status, timeout_at, post_sent, created_at
+				FROM workflow_callbacks WHERE status='waiting' ORDER BY created_at DESC LIMIT 100`
+		rows, err := queryDB(cfg.HistoryDB, sql)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if rows == nil {
+			rows = []map[string]any{}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"callbacks": rows, "count": len(rows)})
+	})
+
+	// --- External Step: Callback endpoint ---
+	mux.HandleFunc("/api/callbacks/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Extract callback key from path.
+		key := strings.TrimPrefix(r.URL.Path, "/api/callbacks/")
+		if key == "" {
+			http.Error(w, `{"error":"callback key required"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Validate key format to prevent path traversal and injection.
+		if !isValidCallbackKey(key) {
+			http.Error(w, `{"error":"invalid callback key format"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Look up callback record in DB for auth mode.
+		record := queryPendingCallback(cfg.HistoryDB, key)
+		if record == nil {
+			// Check if it was already delivered or completed.
+			existing := queryPendingCallbackByKey(cfg.HistoryDB, key)
+			if existing != nil && (existing.Status == "delivered" || existing.Status == "completed") {
+				json.NewEncoder(w).Encode(map[string]string{"status": "already_delivered"})
+				return
+			}
+			http.Error(w, `{"error":"callback not found or expired"}`, http.StatusNotFound)
+			return
+		}
+
+		// Read body upfront (1MB limit) — used by both auth verification and callback result.
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
+		if err != nil {
+			http.Error(w, `{"error":"failed to read body"}`, http.StatusBadRequest)
+			return
+		}
+		if len(body) > 1<<20 {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			json.NewEncoder(w).Encode(map[string]string{"error": "callback body exceeds 1MB"})
+			return
+		}
+
+		// Auth check based on callback auth mode.
+		switch record.AuthMode {
+		case "bearer":
+			auth := r.Header.Get("Authorization")
+			if auth == "" || auth != "Bearer "+cfg.APIToken {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+		case "signature":
+			// HMAC-SHA256 signature verification.
+			sig := r.Header.Get("X-Callback-Signature")
+			if sig == "" {
+				http.Error(w, `{"error":"missing X-Callback-Signature header"}`, http.StatusUnauthorized)
+				return
+			}
+			secret := callbackSignatureSecret(cfg.APIToken, key)
+			if !verifyCallbackSignature(body, secret, sig) {
+				http.Error(w, `{"error":"invalid signature"}`, http.StatusUnauthorized)
+				return
+			}
+		case "open":
+			// No auth required.
+		default:
+			// Default to bearer.
+			auth := r.Header.Get("Authorization")
+			if cfg.APIToken != "" && (auth == "" || auth != "Bearer "+cfg.APIToken) {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+		}
+
+		cbResult := CallbackResult{
+			Status:      200,
+			Body:        string(body),
+			ContentType: r.Header.Get("Content-Type"),
+			RecvAt:      time.Now().Format(time.RFC3339),
+		}
+
+		// Path A: try in-memory delivery first (skip HasChannel pre-check to avoid TOCTOU).
+		if callbackMgr != nil {
+			out := callbackMgr.DeliverAndSeq(key, cbResult)
+			switch out.Result {
+			case DeliverOK:
+				status := "delivered"
+				if out.Mode == "streaming" {
+					status = "accumulated"
+					// Persist streaming callback immediately for crash recovery (#6).
+					// Seq allocated atomically with Deliver to prevent race (#R2-1).
+					appendStreamingCallback(cfg.HistoryDB, key, out.Seq, cbResult)
+				}
+				auditLog(cfg.HistoryDB, "callback."+status, "http",
+					fmt.Sprintf("key=%s", key), clientIP(r))
+				json.NewEncoder(w).Encode(map[string]string{"status": status})
+				return
+			case DeliverDup:
+				// Single mode: already delivered — idempotent.
+				json.NewEncoder(w).Encode(map[string]string{"status": "already_delivered"})
+				return
+			case DeliverFull:
+				// Streaming buffer full — store to DB with seq allocated atomically (#R2-2).
+				appendStreamingCallback(cfg.HistoryDB, key, out.Seq, cbResult)
+				w.WriteHeader(http.StatusTooManyRequests)
+				json.NewEncoder(w).Encode(map[string]string{"error": "streaming buffer full, stored to DB"})
+				return
+			case DeliverNoEntry:
+				// Channel not registered — fall through to Path B (DB-only).
+			}
+		}
+
+		// Path B: channel not alive — record to DB for recovery.
+		// Re-check status to avoid overwriting completed/delivered records (#R2-8).
+		current := queryPendingCallbackByKey(cfg.HistoryDB, key)
+		if current != nil && (current.Status == "completed" || current.Status == "delivered") {
+			json.NewEncoder(w).Encode(map[string]string{"status": "already_delivered"})
+			return
+		}
+		markCallbackDelivered(cfg.HistoryDB, key, 0, cbResult)
+		auditLog(cfg.HistoryDB, "callback.stored", "http",
+			fmt.Sprintf("key=%s (no active channel)", key), clientIP(r))
+		json.NewEncoder(w).Encode(map[string]string{"status": "stored"})
 	})
 
 	mux.HandleFunc("/api/triggers/", func(w http.ResponseWriter, r *http.Request) {

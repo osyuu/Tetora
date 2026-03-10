@@ -25,6 +25,9 @@ func main() {
 		case "doctor":
 			cmdDoctor()
 			return
+		case "health":
+			cmdHealth(os.Args[2:])
+			return
 		case "service":
 			cmdService(os.Args[2:])
 			return
@@ -334,6 +337,8 @@ func main() {
 			if err := initProjectsDB(cfg.HistoryDB); err != nil {
 				logWarn("init projects failed", "error", err)
 			}
+			// Init workflow callbacks table (external steps).
+			initCallbackTable(cfg.HistoryDB)
 		}
 
 		// --- P23.1: User Profile & Emotional Memory ---
@@ -542,6 +547,7 @@ func main() {
 							logWarn("retention cleanup error", "table", r.Table, "error", r.Error)
 						}
 					}
+					cleanupExpiredCallbacks(cfg.HistoryDB)
 				}
 			}
 		}()
@@ -955,6 +961,9 @@ func main() {
 			}
 		}
 
+		// Initialize callback manager for external workflow steps.
+		callbackMgr = NewCallbackManager(cfg.HistoryDB)
+
 		// P28.1: Collect all services into App container.
 		app := &App{
 			Cfg:         cfg,
@@ -1002,6 +1011,12 @@ func main() {
 			drainCh:          drainCh,
 		}
 		srv := startHTTPServer(srvInstance)
+
+		// Recover pending external step workflows.
+		go recoverPendingWorkflows(cfg, state, sem, childSem)
+
+		// Cleanup expired callbacks (timeout marking + old streaming records).
+		cleanupExpiredCallbacks(cfg.HistoryDB)
 
 		// Cleanup zombie sessions AFTER the HTTP server starts.
 		// Delayed so that if port binding fails (os.Exit in goroutine),
@@ -1173,10 +1188,19 @@ func main() {
 			discordBot.terminal.stopAllSessions()
 		}
 
-		// Shut down HTTP server.
+		// Shut down HTTP server first (5s drain for in-flight callbacks).
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
 		srv.Shutdown(shutCtx)
+
+		// Cancel all running workflows AFTER HTTP drain to let final callbacks deliver.
+		runCancellers.Range(func(key, value any) bool {
+			if cancel, ok := value.(context.CancelFunc); ok {
+				cancel()
+			}
+			runCancellers.Delete(key)
+			return true
+		})
 
 		logInfo("tetora stopped")
 

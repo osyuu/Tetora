@@ -62,6 +62,29 @@ type WorkflowStep struct {
 	Delay     string            `json:"delay,omitempty"`     // for type="delay" (e.g. "30s", "5m")
 	NotifyMsg string            `json:"notifyMsg,omitempty"` // for type="notify"
 	NotifyTo  string            `json:"notifyTo,omitempty"`  // notification channel hint
+
+	// External step fields (type="external").
+	ExternalURL         string            `json:"externalUrl,omitempty"`         // POST target URL
+	ExternalHeaders     map[string]string `json:"externalHeaders,omitempty"`     // custom headers (supports template vars)
+	ExternalBody        map[string]string `json:"externalBody,omitempty"`        // request body KV (supports template vars)
+	ExternalRawBody     string            `json:"externalRawBody,omitempty"`     // raw body (XML / custom, mutually exclusive with ExternalBody)
+	ExternalContentType string            `json:"externalContentType,omitempty"` // default: application/json
+	CallbackKey         string            `json:"callbackKey,omitempty"`         // callback matching key (supports template vars)
+	CallbackTimeout     string            `json:"callbackTimeout,omitempty"`     // wait timeout (default 1h, max 30d)
+	CallbackMode        string            `json:"callbackMode,omitempty"`        // "single" (default) or "streaming"
+	CallbackAccumulate  bool              `json:"callbackAccumulate,omitempty"`  // streaming: true=accumulate all results as JSON array
+	CallbackAuth        string            `json:"callbackAuth,omitempty"`        // "bearer" (default), "open", "signature"
+	CallbackContentType string            `json:"callbackContentType,omitempty"` // callback content type, default application/json
+	CallbackResponseMap *ResponseMapping  `json:"callbackResponseMap,omitempty"` // extract status/data from webhook body
+	OnTimeout           string            `json:"onTimeout,omitempty"`           // timeout behavior: stop / skip
+}
+
+// ResponseMapping extracts structured data from arbitrary webhook bodies.
+type ResponseMapping struct {
+	StatusPath string `json:"statusPath,omitempty"` // JSONPath-like: "data.object.status"
+	DataPath   string `json:"dataPath,omitempty"`   // JSONPath-like: "data.object"
+	DonePath   string `json:"donePath,omitempty"`   // streaming: field path to check for completion
+	DoneValue  string `json:"doneValue,omitempty"`  // streaming: DonePath value that indicates done
 }
 
 // workflowDir returns the workflows directory under baseDir.
@@ -192,6 +215,17 @@ func validateWorkflow(w *Workflow) []string {
 		errs = append(errs, validateStep(s, ids)...)
 	}
 
+	// Check for duplicate static callbackKey across external steps.
+	cbKeys := make(map[string]string) // key -> stepID
+	for _, s := range w.Steps {
+		if s.Type == "external" && s.CallbackKey != "" && !strings.Contains(s.CallbackKey, "{{") {
+			if prev, dup := cbKeys[s.CallbackKey]; dup {
+				errs = append(errs, fmt.Sprintf("steps %q and %q share the same callbackKey %q", prev, s.ID, s.CallbackKey))
+			}
+			cbKeys[s.CallbackKey] = s.ID
+		}
+	}
+
 	// DAG cycle detection.
 	if cycle := detectCycle(w.Steps); cycle != "" {
 		errs = append(errs, fmt.Sprintf("dependency cycle detected: %s", cycle))
@@ -271,8 +305,34 @@ func validateStep(s WorkflowStep, allIDs map[string]bool) []string {
 		if s.NotifyMsg == "" {
 			errs = append(errs, fmt.Sprintf("step %q: notify step requires a notifyMsg", s.ID))
 		}
+	case "external":
+		if s.ExternalBody != nil && s.ExternalRawBody != "" {
+			errs = append(errs, fmt.Sprintf("step %q: externalBody and externalRawBody are mutually exclusive", s.ID))
+		}
+		if s.CallbackMode != "" && s.CallbackMode != "single" && s.CallbackMode != "streaming" {
+			errs = append(errs, fmt.Sprintf("step %q: callbackMode must be \"single\" or \"streaming\"", s.ID))
+		}
+		if s.CallbackAuth != "" && s.CallbackAuth != "bearer" && s.CallbackAuth != "open" && s.CallbackAuth != "signature" {
+			errs = append(errs, fmt.Sprintf("step %q: callbackAuth must be \"bearer\", \"open\", or \"signature\"", s.ID))
+		}
+		if s.OnTimeout != "" && s.OnTimeout != "stop" && s.OnTimeout != "skip" {
+			errs = append(errs, fmt.Sprintf("step %q: onTimeout must be \"stop\" or \"skip\"", s.ID))
+		}
+		if s.CallbackTimeout != "" {
+			if d, err := parseDurationWithDays(s.CallbackTimeout); err != nil {
+				errs = append(errs, fmt.Sprintf("step %q: invalid callbackTimeout %q: %v", s.ID, s.CallbackTimeout, err))
+			} else if d < time.Second {
+				errs = append(errs, fmt.Sprintf("step %q: callbackTimeout must be at least 1s", s.ID))
+			}
+		}
+		if s.CallbackKey != "" && !strings.Contains(s.CallbackKey, "{{") {
+			// Only validate static keys (not template expressions).
+			if !isValidCallbackKey(s.CallbackKey) {
+				errs = append(errs, fmt.Sprintf("step %q: invalid callbackKey format %q", s.ID, s.CallbackKey))
+			}
+		}
 	default:
-		errs = append(errs, fmt.Sprintf("step %q: unknown type %q (use dispatch, skill, condition, parallel, handoff, tool_call, delay, notify)", s.ID, stepType))
+		errs = append(errs, fmt.Sprintf("step %q: unknown type %q (use dispatch, skill, condition, parallel, handoff, tool_call, delay, notify, external)", s.ID, stepType))
 	}
 
 	// Validate dependency references.

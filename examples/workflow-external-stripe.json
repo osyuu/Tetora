@@ -1,0 +1,50 @@
+{
+  "name": "stripe-refund",
+  "description": "Process Stripe refund and notify based on status",
+  "variables": {
+    "charge_id": "",
+    "refund_amount": ""
+  },
+  "steps": [
+    {
+      "id": "create-refund",
+      "type": "external",
+      "externalUrl": "https://api.stripe.com/v1/refunds",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.STRIPE_SECRET_KEY}}"
+      },
+      "externalContentType": "application/x-www-form-urlencoded",
+      "externalRawBody": "charge={{charge_id}}&amount={{refund_amount}}",
+      "callbackKey": "stripe-refund-{{runId}}",
+      "callbackTimeout": "30m",
+      "callbackAuth": "bearer",
+      "callbackResponseMap": {
+        "statusPath": "data.object.status",
+        "dataPath": "data.object"
+      },
+      "onTimeout": "stop"
+    },
+    {
+      "id": "check-status",
+      "type": "condition",
+      "if": "{{steps.create-refund.output.status}} == 'succeeded'",
+      "then": "notify-success",
+      "else": "notify-failure",
+      "dependsOn": ["create-refund"]
+    },
+    {
+      "id": "notify-success",
+      "type": "notify",
+      "notifyMsg": "Refund succeeded for charge {{charge_id}}: {{steps.create-refund.output.amount}} refunded",
+      "notifyTo": "discord",
+      "dependsOn": ["check-status"]
+    },
+    {
+      "id": "notify-failure",
+      "type": "notify",
+      "notifyMsg": "Refund failed for charge {{charge_id}}: {{steps.create-refund.output.failure_reason}}",
+      "notifyTo": "discord",
+      "dependsOn": ["check-status"]
+    }
+  ]
+}

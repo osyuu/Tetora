@@ -1,0 +1,34 @@
+{
+  "name": "ocr-pipeline",
+  "description": "Send image for OCR, wait for callback, notify with result",
+  "variables": {
+    "image_url": "",
+    "notify_channel": "discord"
+  },
+  "steps": [
+    {
+      "id": "send-ocr",
+      "type": "external",
+      "externalUrl": "https://ocr-service.example.com/api/recognize",
+      "externalHeaders": {
+        "Authorization": "Bearer {{env.OCR_API_KEY}}"
+      },
+      "externalBody": {
+        "image_url": "{{image_url}}",
+        "language": "zh-TW",
+        "callback_url": "https://your-tetora.example.com/api/callbacks/ocr-{{runId}}"
+      },
+      "callbackKey": "ocr-{{runId}}",
+      "callbackTimeout": "5m",
+      "callbackAuth": "open",
+      "onTimeout": "stop"
+    },
+    {
+      "id": "notify-result",
+      "type": "notify",
+      "notifyMsg": "OCR completed: {{steps.send-ocr.output}}",
+      "notifyTo": "{{notify_channel}}",
+      "dependsOn": ["send-ocr"]
+    }
+  ]
+}
