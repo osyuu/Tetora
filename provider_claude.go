@@ -104,6 +104,17 @@ func (p *ClaudeProvider) Execute(ctx context.Context, req ProviderRequest) (*Pro
 	if ctx.Err() == context.DeadlineExceeded {
 		pr.IsError = true
 		pr.Error = fmt.Sprintf("timed out after %v", req.Timeout)
+		if s := strings.TrimSpace(stderr.String()); s != "" {
+			if len(s) > 2000 {
+				s = s[:2000]
+			}
+			logWarn("claude CLI timed out with stderr",
+				"sessionId", req.SessionID, "timeout", req.Timeout, "stderr", s)
+		} else {
+			logWarn("claude CLI timed out with no output",
+				"sessionId", req.SessionID, "timeout", req.Timeout,
+				"stdout_len", stdout.Len(), "exitCode", exitCode)
+		}
 	} else if ctx.Err() != nil {
 		pr.IsError = true
 		pr.Error = "cancelled"
@@ -251,6 +262,16 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 	if ctx.Err() == context.DeadlineExceeded {
 		pr.IsError = true
 		pr.Error = fmt.Sprintf("timed out after %v", req.Timeout)
+		if s := strings.TrimSpace(stderr.String()); s != "" {
+			if len(s) > 2000 {
+				s = s[:2000]
+			}
+			logWarn("claude CLI streaming timed out with stderr",
+				"sessionId", req.SessionID, "timeout", req.Timeout, "stderr", s)
+		} else {
+			logWarn("claude CLI streaming timed out with no output",
+				"sessionId", req.SessionID, "timeout", req.Timeout, "exitCode", exitCode)
+		}
 	} else if ctx.Err() != nil {
 		pr.IsError = true
 		pr.Error = "cancelled"

@@ -27,8 +27,9 @@ type RetentionConfig struct {
 	Versions    int      `json:"versions,omitempty"`    // days to keep config_versions (default 180)
 	Outputs     int      `json:"outputs,omitempty"`     // days to keep output files (default 30)
 	Uploads     int      `json:"uploads,omitempty"`     // days to keep upload files (default 7)
-	Memory      int      `json:"memory,omitempty"`      // days before stale memory archival (default 30)
-	PIIPatterns []string `json:"piiPatterns,omitempty"` // regex patterns for PII redaction
+	Memory         int      `json:"memory,omitempty"`         // days before stale memory archival (default 30)
+	ClaudeSessions int      `json:"claudeSessions,omitempty"` // days to keep Claude CLI session artifacts (default 3)
+	PIIPatterns    []string `json:"piiPatterns,omitempty"`     // regex patterns for PII redaction
 }
 
 // retentionDays returns the configured value, or the fallback if not set.
@@ -193,6 +194,59 @@ func cleanupLogFiles(logDir string, days int) int {
 			if os.Remove(filepath.Join(logDir, name)) == nil {
 				removed++
 			}
+		}
+	}
+	return removed
+}
+
+// --- Claude CLI Session Artifact Cleanup ---
+
+// cleanupClaudeSessions removes old Claude Code CLI session artifacts from
+// ~/.claude/projects/. When many session dirs/JSONL files accumulate, concurrent
+// `claude --print` instances can hang during startup scanning.
+func cleanupClaudeSessions(days int) (removed int) {
+	if days <= 0 {
+		return 0
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return 0
+	}
+	projectsDir := filepath.Join(home, ".claude", "projects")
+	projEntries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return 0
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -days)
+
+	for _, proj := range projEntries {
+		if !proj.IsDir() {
+			continue
+		}
+		projPath := filepath.Join(projectsDir, proj.Name())
+		entries, err := os.ReadDir(projPath)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			base := strings.TrimSuffix(name, ".jsonl")
+			// Only touch UUID-named entries (session artifacts).
+			if len(base) != 36 || strings.Count(base, "-") != 4 {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
+			target := filepath.Join(projPath, name)
+			if e.IsDir() {
+				os.RemoveAll(target)
+			} else {
+				os.Remove(target)
+			}
+			removed++
 		}
 	}
 	return removed
@@ -382,6 +436,11 @@ func runRetention(cfg *Config) []RetentionResult {
 	} else {
 		results = append(results, RetentionResult{Table: "memory", Deleted: memArchived})
 	}
+
+	// Claude CLI session artifacts (prevent startup hang from too many sessions)
+	days = retentionDays(cfg.Retention.ClaudeSessions, 3)
+	csRemoved := cleanupClaudeSessions(days)
+	results = append(results, RetentionResult{Table: "claude_sessions", Deleted: csRemoved})
 
 	logInfo("retention cleanup completed", "tables", len(results))
 	return results

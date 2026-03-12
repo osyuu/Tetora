@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -757,6 +758,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		cfg := s.Cfg() // Read latest config (may have been reloaded via SIGHUP).
 
 		maskSecret := func(s string) string {
 			if s == "" {
@@ -819,9 +821,10 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				"dashboardAuth": cfg.DashboardAuth.Enabled,
 			},
 			"taskBoard": map[string]any{
-				"enabled":      cfg.TaskBoard.Enabled,
-				"autoDispatch": cfg.TaskBoard.AutoDispatch.Enabled,
-				"maxRetries":   cfg.TaskBoard.MaxRetries,
+				"enabled":         cfg.TaskBoard.Enabled,
+				"autoDispatch":    cfg.TaskBoard.AutoDispatch.Enabled,
+				"maxRetries":      cfg.TaskBoard.MaxRetries,
+				"defaultWorkflow": cfg.TaskBoard.DefaultWorkflow,
 			},
 			"heartbeat": map[string]any{
 				"enabled":          cfg.Heartbeat.Enabled,
@@ -846,24 +849,39 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 		var req struct {
 			Key   string `json:"key"`
-			Value bool   `json:"value"`
+			Value any    `json:"value"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 			return
 		}
 
-		// Whitelist of toggleable keys.
-		allowed := map[string]bool{
-			"taskBoard.enabled":              true,
-			"taskBoard.autoDispatch.enabled":  true,
-			"heartbeat.enabled":              true,
-			"heartbeat.autoCancel":           true,
-			"heartbeat.notifyOnStall":        true,
+		// Whitelist of settable keys: "bool" for toggles, "string" for text fields.
+		allowed := map[string]string{
+			"taskBoard.enabled":              "bool",
+			"taskBoard.autoDispatch.enabled":  "bool",
+			"taskBoard.defaultWorkflow":       "string",
+			"heartbeat.enabled":              "bool",
+			"heartbeat.autoCancel":           "bool",
+			"heartbeat.notifyOnStall":        "bool",
 		}
-		if !allowed[req.Key] {
-			http.Error(w, fmt.Sprintf(`{"error":"key %q not toggleable"}`, req.Key), http.StatusBadRequest)
+		kind, ok := allowed[req.Key]
+		if !ok {
+			http.Error(w, fmt.Sprintf(`{"error":"key %q not settable"}`, req.Key), http.StatusBadRequest)
 			return
+		}
+		// Type-check the value.
+		switch kind {
+		case "bool":
+			if _, ok := req.Value.(bool); !ok {
+				http.Error(w, fmt.Sprintf(`{"error":"key %q requires bool value"}`, req.Key), http.StatusBadRequest)
+				return
+			}
+		case "string":
+			if _, ok := req.Value.(string); !ok {
+				http.Error(w, fmt.Sprintf(`{"error":"key %q requires string value"}`, req.Key), http.StatusBadRequest)
+				return
+			}
 		}
 
 		configPath := findConfigPath()
@@ -908,10 +926,18 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			return
 		}
 
+		// Reload config in-memory via SIGHUP.
+		syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
+
 		auditLog(cfg.HistoryDB, "config.toggle", "dashboard",
 			fmt.Sprintf("%s=%v", req.Key, req.Value), "")
 
-		w.Write([]byte(fmt.Sprintf(`{"status":"ok","key":"%s","value":%v}`, req.Key, req.Value)))
+		respVal, err := json.Marshal(req.Value)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"marshal: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(fmt.Sprintf(`{"status":"ok","key":"%s","value":%s}`, req.Key, respVal)))
 	})
 
 	// --- P18.2: OAuth 2.0 Framework ---

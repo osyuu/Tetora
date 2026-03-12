@@ -25,6 +25,12 @@ type Workflow struct {
 	Timeout     string            `json:"timeout,omitempty"`   // overall workflow timeout, e.g. "30m"
 	OnSuccess   string            `json:"onSuccess,omitempty"` // notification template
 	OnFailure   string            `json:"onFailure,omitempty"` // notification template
+
+	// Git worktree isolation (opt-in). When enabled, creates an isolated worktree
+	// for the entire workflow run. All steps share the same branch.
+	GitWorktree bool   `json:"gitWorktree,omitempty"` // enable worktree isolation
+	Branch      string `json:"branch,omitempty"`      // explicit branch name (auto: "wf/{name}")
+	Workdir     string `json:"workdir,omitempty"`     // repo directory (falls back to cfg.DefaultWorkdir)
 }
 
 // WorkflowStep is a single step in a workflow.

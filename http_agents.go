@@ -152,10 +152,12 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		project := r.URL.Query().Get("project")
-		assignee := r.URL.Query().Get("assignee")
-		priority := r.URL.Query().Get("priority")
-		board, err := taskBoardEngine.GetBoardView(project, assignee, priority)
+		board, err := taskBoardEngine.GetBoardView(BoardFilter{
+			Project:  r.URL.Query().Get("project"),
+			Assignee: r.URL.Query().Get("assignee"),
+			Priority: r.URL.Query().Get("priority"),
+			Workflow: r.URL.Query().Get("workflow"),
+		})
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return

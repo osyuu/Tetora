@@ -87,6 +87,9 @@ tetora workflow status <run-id>
 | `timeout` | string | | Overall timeout in Go duration format (e.g. `"30m"`, `"1h"`) |
 | `onSuccess` | string | | Notification template on success (reserved — not yet implemented) |
 | `onFailure` | string | | Notification template on failure (reserved — not yet implemented) |
+| `gitWorktree` | bool | | Enable git worktree isolation for the entire run. Default `false` |
+| `branch` | string | | Explicit branch name. Auto-generated as `wf/{name}` if omitted |
+| `workdir` | string | | Repository directory. Falls back to `defaultWorkdir` from config |
 
 ### WorkflowStep Fields
 
@@ -474,6 +477,40 @@ Executes LLM calls normally but does not record to task history or session logs.
 tetora workflow run my-workflow --shadow
 ```
 
+## Git Worktree Isolation
+
+When `gitWorktree: true` is set, the workflow executor creates an isolated git worktree before the DAG starts. All dispatch and handoff steps run inside this worktree, preventing file conflicts with the main working tree or other concurrent workflows.
+
+### Behavior
+
+- **On success**: the worktree branch is merged back to main and the worktree is cleaned up.
+- **On failure**: the worktree is kept for manual inspection and debugging.
+- **Dry-run/shadow modes**: worktree creation is skipped (no side effects).
+
+### Example
+
+```json
+{
+  "name": "feature-pipeline",
+  "gitWorktree": true,
+  "branch": "feat/{{agent}}-auto-review",
+  "workdir": "/path/to/repo",
+  "timeout": "1h",
+  "steps": [...]
+}
+```
+
+If `branch` is omitted, it defaults to `wf/{workflow-name}` (e.g. `wf/feature-pipeline`). If `workdir` is omitted, it falls back to `defaultWorkdir` from `config.json`.
+
+### When to use
+
+| Situation | Use worktree? |
+|-----------|:------------:|
+| Multi-agent workflow modifying code | Yes |
+| Single-agent quick task | No (faster) |
+| Parallel workflows on same repo | Yes (prevents conflicts) |
+| Read-only workflows (research, review) | No |
+
 ## CLI Reference
 
 ```
@@ -521,7 +558,10 @@ tetora workflow <command> [options]
 | DELETE | `/workflows/{name}` | Delete a workflow |
 | POST | `/workflows/{name}/validate` | Validate a workflow |
 | POST | `/workflows/{name}/run` | Run a workflow |
+| POST | `/workflows/{name}/dry-run` | Dry-run a workflow (synchronous, no LLM calls) |
 | GET | `/workflows/{name}/runs` | Get run history for a workflow |
+| GET | `/workflows/{name}/versions` | Get version history |
+| POST | `/workflows/{name}/rollback` | Rollback to a version (body: `{"versionId":"..."}`) |
 
 #### POST /workflows/{name}/run Body
 
@@ -535,21 +575,41 @@ tetora workflow <command> [options]
 
 > The `run` endpoint returns `202 Accepted` immediately. The workflow executes asynchronously. Poll `/workflow-runs/{id}` for completion status.
 
+#### POST /workflows/{name}/dry-run Body
+
+Same as `run`. Returns the full run result synchronously — no LLM calls are made, each step shows estimated cost and execution order.
+
 ### Workflow Runs
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/workflow-runs` | List all run records (add `?workflow=name` to filter) |
-| GET | `/workflow-runs/{id}` | Get run details (includes handoffs + agent messages) |
+| GET | `/workflow-runs/{id}` | Get run details (includes step results, handoffs, callbacks) |
 
 ### Triggers
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/triggers` | List all trigger statuses |
+| GET | `/api/triggers` | List all trigger configs and statuses |
+| POST | `/api/triggers` | Create a new trigger (body: WorkflowTriggerConfig JSON) |
+| PUT | `/api/triggers/{name}` | Update a trigger |
+| DELETE | `/api/triggers/{name}` | Delete a trigger |
+| POST | `/api/triggers/{name}/toggle` | Toggle trigger enabled/disabled |
 | POST | `/api/triggers/{name}/fire` | Manually fire a trigger |
 | GET | `/api/triggers/{name}/runs` | View trigger run history (add `?limit=N`) |
 | POST | `/api/triggers/webhook/{id}` | Webhook trigger (body: JSON key-value variables) |
+
+Trigger mutations (create/update/delete/toggle) automatically persist to `config.json` and hot-reload the trigger engine via SIGHUP.
+
+### Templates
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/templates` | List all built-in templates (name, description, step count) |
+| GET | `/api/templates/{name}` | Get full template JSON |
+| POST | `/api/templates/{name}/install` | Install template as a user workflow (body: `{"newName":"..."}`) |
+
+36 industry templates are bundled, covering HR, finance, DevOps, healthcare, logistics, and more. Browse them in the dashboard's Template Gallery or via the API.
 
 ## Version Management
 
@@ -582,3 +642,90 @@ The system validates before both `create` and `run`:
 - Condition `then`/`else` must reference existing step IDs
 - Handoff `handoffFrom` must reference an existing step ID
 - Parallel sub-steps are validated recursively with the same rules as top-level steps (unique IDs, valid types, required fields, valid duration strings, etc.)
+
+## Dashboard UI
+
+The web dashboard at `http://localhost:PORT` provides a visual interface for all workflow operations.
+
+### Workflow Editor
+
+- **Create/Edit**: Visual editor with JSON editing, step list, and DAG preview
+- **Run**: Execute workflows with variable overrides from the toolbar
+- **Dry Run**: Test execution order and cost estimates without LLM calls
+- **Version History**: Browse, compare, and rollback to previous versions
+
+### Run Detail
+
+When viewing a workflow run:
+
+- **DAG Visualization**: Live-updating node graph showing step status (green=success, red=error, blue=running, yellow=waiting)
+- **Step Results List**: Collapsible cards below the DAG showing each step's output, duration, cost, and error details
+- **Cost Breakdown Bar**: Horizontal stacked bar showing per-step cost distribution
+- **Live SSE Updates**: Step status changes stream in real-time via Server-Sent Events
+- **External Step UX**: Waiting steps show callback URL, timeout countdown, and manual resolve controls
+
+### Trigger Management
+
+- **Trigger Cards**: View all triggers with type badges (cron/event/webhook), next run time, and action buttons
+- **Create/Edit Modal**: Configure trigger name, type, workflow, variables, cooldown, and type-specific fields
+- **Quick Actions**: Toggle enabled/disabled, Fire Now, view recent runs, copy webhook URL
+
+### Template Gallery
+
+- **Browse**: Grid of 36 industry workflow templates with descriptions and step counts
+- **Search/Filter**: Text filter with category extraction (HR, finance, DevOps, etc.)
+- **Preview**: View full template JSON before installing
+- **Install**: One-click install with optional rename, immediately available in the editor
+
+## Example: Development Workflow
+
+Tetora includes a `standard-dev` workflow designed for agent-driven development with built-in quality gates. This is how agents like Kokuyou (黒曜) execute implementation tasks autonomously.
+
+### Flow
+
+```
+read-spec → plan → implement → build-test → self-review → quality-review → [fix-issues] → commit
+```
+
+### How It Works
+
+1. **read-spec** — Agent reads the task spec from `tasks/specs.md` and extracts requirements + acceptance criteria
+2. **plan** — Agent creates an implementation plan: files to change, approach, risks
+3. **implement** — Agent executes the plan, writing actual code changes
+4. **build-test** — Runs `go build` + `go test`, auto-retries up to 2 times on failure
+5. **self-review** — Agent reviews its own `git diff` against the spec, flags concerns
+6. **quality-review** — A separate agent (Ruri/琉璃) performs staff-engineer-level code review with an 8-point checklist, returning one of:
+   - `approve` — Production-ready, proceed to commit
+   - `fix` — Specific issues listed, agent fixes them autonomously
+   - `escalate` — Requires human judgment (ambiguous spec, production risk)
+7. **fix-issues** — If verdict is `fix`, agent addresses all review comments and re-verifies build
+8. **commit** — Creates a git commit with task ID and title
+
+### Usage
+
+```bash
+# Run via CLI
+tetora workflow run standard-dev --var taskId="T-042" --var taskTitle="Add webhook retry logic"
+
+# Run via dashboard
+# Open Workflows → standard-dev → Run → fill in taskId and taskTitle
+
+# Dry-run first to see execution order and cost estimates
+tetora workflow run standard-dev --dry-run --var taskId="T-042" --var taskTitle="test"
+```
+
+### Customization
+
+The workflow uses `{{agent}}` as a variable (default: `kokuyou`), so any agent can run it:
+
+```bash
+tetora workflow run standard-dev --var agent=hisui --var taskId="T-043" --var taskTitle="Research API options"
+```
+
+### Key Design Decisions
+
+- **Three-verdict review**: `approve`/`fix`/`escalate` prevents infinite fix loops — `escalate` is the escape hatch for genuinely ambiguous situations
+- **Separate reviewer**: Quality review uses a different agent (Ruri) with a senior engineer persona, avoiding self-confirmation bias
+- **Build-test retries**: Flaky builds get 2 auto-retries before failing the workflow
+- **Budget caps**: Each step has a cost limit to prevent runaway spending
+- **No auto-push**: Commit only, never push — human reviews the commit before pushing

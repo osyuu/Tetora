@@ -87,6 +87,9 @@ tetora workflow status <run-id>
 | `timeout` | string | | 整體逾時，Go duration 格式（如 `"30m"`、`"1h"`） |
 | `onSuccess` | string | | 成功時的通知模板 |
 | `onFailure` | string | | 失敗時的通知模板 |
+| `gitWorktree` | bool | | 啟用 git worktree 隔離。預設 `false` |
+| `branch` | string | | 指定分支名稱。省略時自動產生 `wf/{name}` |
+| `workdir` | string | | 目標 repo 路徑。省略時使用 config 的 `defaultWorkdir` |
 
 ### WorkflowStep 欄位
 
@@ -517,7 +520,10 @@ tetora workflow <command> [options]
 | DELETE | `/workflows/{name}` | 刪除 workflow |
 | POST | `/workflows/{name}/validate` | 驗證 workflow |
 | POST | `/workflows/{name}/run` | 執行 workflow（非同步，立即回傳 `202 Accepted`） |
+| POST | `/workflows/{name}/dry-run` | Dry-run（同步，不呼叫 LLM，回傳成本估算） |
 | GET | `/workflows/{name}/runs` | 取得該 workflow 的執行紀錄 |
+| GET | `/workflows/{name}/versions` | 取得版本歷史 |
+| POST | `/workflows/{name}/rollback` | 還原版本（body: `{"versionId":"..."}`) |
 
 #### POST /workflows/{name}/run body
 
@@ -529,21 +535,41 @@ tetora workflow <command> [options]
 }
 ```
 
+#### POST /workflows/{name}/dry-run body
+
+同 `run`。同步回傳完整執行結果 — 不呼叫 LLM，每個步驟顯示預估成本和執行順序。
+
 ### Workflow Runs
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
 | GET | `/workflow-runs` | 列出所有執行紀錄（可加 `?workflow=name` 篩選） |
-| GET | `/workflow-runs/{id}` | 取得單次執行詳情（含 handoffs + agent messages） |
+| GET | `/workflow-runs/{id}` | 取得單次執行詳情（含 step results、handoffs、callbacks） |
 
 ### Triggers
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
-| GET | `/api/triggers` | 列出所有觸發器狀態 |
+| GET | `/api/triggers` | 列出所有觸發器設定和狀態 |
+| POST | `/api/triggers` | 建立觸發器（body: WorkflowTriggerConfig JSON） |
+| PUT | `/api/triggers/{name}` | 更新觸發器 |
+| DELETE | `/api/triggers/{name}` | 刪除觸發器 |
+| POST | `/api/triggers/{name}/toggle` | 啟用/停用觸發器 |
 | POST | `/api/triggers/{name}/fire` | 手動觸發 |
 | GET | `/api/triggers/{name}/runs` | 查看觸發執行紀錄（可加 `?limit=N`） |
 | POST | `/api/triggers/webhook/{id}` | Webhook 觸發（body 為 JSON 鍵值變數） |
+
+觸發器的異動（建立/更新/刪除/切換）會自動寫入 `config.json` 並透過 SIGHUP 熱載入觸發引擎。
+
+### Templates 範本
+
+| Method | 路徑 | 說明 |
+|--------|------|------|
+| GET | `/api/templates` | 列出所有內建範本（名稱、描述、步驟數） |
+| GET | `/api/templates/{name}` | 取得完整範本 JSON |
+| POST | `/api/templates/{name}/install` | 安裝範本為使用者 workflow（body: `{"newName":"..."}`) |
+
+內建 36 個產業範本，涵蓋 HR、財務、DevOps、醫療、物流等。可在 Dashboard 的範本庫或 API 瀏覽。
 
 ## 版本管理
 
@@ -575,3 +601,89 @@ tetora workflow diff <version-id-1> <version-id-2>
 - `onError` 僅接受 `stop`、`skip`、`retry`
 - condition 的 `then`/`else` 引用的步驟 ID 必須存在
 - handoff 的 `handoffFrom` 引用的步驟 ID 必須存在
+- parallel 子步驟會遞迴驗證（唯一 ID、合法類型、必填欄位、合法 duration 格式等）
+
+## Dashboard UI
+
+Dashboard（`http://localhost:PORT`）提供 workflow 所有操作的視覺化介面。
+
+### Workflow 編輯器
+
+- **建立/編輯**：JSON 編輯器、步驟列表、DAG 預覽
+- **執行**：從工具列直接執行，可覆蓋變數
+- **Dry Run**：測試執行順序和成本估算，不呼叫 LLM
+- **版本歷史**：瀏覽、比較、還原到歷史版本
+
+### 執行詳情
+
+- **DAG 圖**：即時更新節點狀態（綠=成功、紅=錯誤、藍=執行中、黃=等待中）
+- **步驟結果列表**：DAG 下方可展開的卡片，顯示每個步驟的 output、耗時、成本、錯誤
+- **成本分佈條**：水平堆疊圖，顯示各步驟成本佔比
+- **SSE 即時更新**：步驟狀態變更透過 Server-Sent Events 即時推送
+- **External 步驟 UX**：等待中步驟顯示 callback URL、倒數計時、手動回覆控制
+
+### 觸發器管理
+
+- **觸發器卡片**：顯示類型標籤（cron/event/webhook）、下次執行時間、操作按鈕
+- **建立/編輯 Modal**：設定名稱、類型、workflow、變數、冷卻時間、類型專屬欄位
+- **快速操作**：啟用/停用、手動觸發、查看歷史紀錄、複製 webhook URL
+
+### 範本庫
+
+- **瀏覽**：36 個產業範本的網格，含描述和步驟數
+- **搜尋/篩選**：文字搜尋，自動分類（HR、財務、DevOps 等）
+- **預覽**：安裝前查看完整 JSON
+- **安裝**：一鍵安裝並可重新命名，立即可在編輯器中使用
+
+## 範例：開發用 Workflow
+
+Tetora 內建 `standard-dev` workflow，為 agent 驅動開發設計，包含自動品質關卡。黒曜（Kokuyou）等 agent 用這個流程自主執行實作任務。
+
+### 流程
+
+```
+read-spec → plan → implement → build-test → self-review → quality-review → [fix-issues] → commit
+```
+
+### 運作方式
+
+1. **read-spec** — Agent 從 `tasks/specs.md` 讀取任務 spec，整理需求和驗收條件
+2. **plan** — 擬定實作計畫：要改的檔案、方法、風險
+3. **implement** — 按計畫實作，寫出實際程式碼
+4. **build-test** — 執行 `go build` + `go test`，失敗自動重試 2 次
+5. **self-review** — Agent 自我 review `git diff`，對照 spec 找出疑慮
+6. **quality-review** — 獨立 agent（琉璃/Ruri）進行 staff engineer 等級的 code review（8 項檢查清單），回傳：
+   - `approve` — 可上線，進入 commit
+   - `fix` — 列出具體問題，agent 自主修復
+   - `escalate` — 需要人工判斷（spec 不明確、生產風險無法確認）
+7. **fix-issues** — verdict 為 `fix` 時，agent 修復所有 review 意見並重新驗證 build
+8. **commit** — 建立 git commit（包含 taskId 和標題）
+
+### 使用方式
+
+```bash
+# CLI 執行
+tetora workflow run standard-dev --var taskId="T-042" --var taskTitle="Add webhook retry logic"
+
+# Dashboard 執行
+# 開啟 Workflows → standard-dev → Run → 填入 taskId 和 taskTitle
+
+# 先 dry-run 確認執行順序和成本
+tetora workflow run standard-dev --dry-run --var taskId="T-042" --var taskTitle="test"
+```
+
+### 自訂
+
+workflow 使用 `{{agent}}` 變數（預設：kokuyou），任何 agent 都能執行：
+
+```bash
+tetora workflow run standard-dev --var agent=hisui --var taskId="T-043" --var taskTitle="Research API options"
+```
+
+### 設計決策
+
+- **三元裁決**：`approve`/`fix`/`escalate` 避免無限修復迴圈 — `escalate` 是真正模糊情況的逃生口
+- **獨立 reviewer**：品質 review 使用不同 agent（琉璃），避免自我確認偏誤
+- **Build 重試**：不穩定的 build 自動重試 2 次再判定失敗
+- **成本上限**：每個步驟設有 budget 防止失控
+- **不自動 push**：只 commit，不 push — 人工確認後再推送

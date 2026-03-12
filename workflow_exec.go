@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,11 @@ type workflowExecutor struct {
 	broker   *sseBroker
 	mode     WorkflowRunMode
 	mu       sync.Mutex
+
+	// Git worktree isolation (populated when workflow.GitWorktree is true).
+	worktreeDir string           // active worktree path (empty = no isolation)
+	repoDir     string           // original repo dir (for merge/cleanup)
+	worktreeMgr *WorktreeManager // worktree manager reference
 }
 
 // executeWorkflow runs a full workflow and returns the completed run.
@@ -143,6 +149,39 @@ func executeWorkflow(ctx context.Context, cfg *Config, w *Workflow, vars map[str
 		"stepDefs": buildStepSummaries(w.Steps),
 	})
 
+	// --- Worktree isolation (opt-in) ---
+	if w.GitWorktree && runMode == WorkflowModeLive {
+		repoDir := w.Workdir
+		if repoDir == "" {
+			repoDir = cfg.DefaultWorkdir
+		}
+		if repoDir != "" && isGitRepo(repoDir) {
+			branch := w.Branch
+			if branch == "" {
+				branch = "wf/" + slugifyBranch(w.Name)
+			}
+			// Resolve template variables in branch name.
+			branch = resolveTemplate(branch, wCtx)
+
+			wtBaseDir := filepath.Join(cfg.RuntimeDir, "worktrees")
+			wm := NewWorktreeManager(wtBaseDir)
+			wtDir, wtErr := wm.Create(repoDir, runID, branch)
+			if wtErr != nil {
+				logWarn("workflow worktree: creation failed, continuing without isolation",
+					"workflow", w.Name, "error", wtErr)
+			} else {
+				exec.worktreeDir = wtDir
+				exec.repoDir = repoDir
+				exec.worktreeMgr = wm
+				logInfo("workflow worktree: created",
+					"workflow", w.Name, "runID", runID[:8], "path", wtDir, "branch", branch)
+			}
+		}
+	}
+
+	// Record running state to DB so dashboard can see it immediately.
+	recordWorkflowRun(cfg.HistoryDB, run)
+
 	// Execute DAG.
 	err := exec.executeDAG(execCtx)
 
@@ -188,6 +227,28 @@ func executeWorkflow(ctx context.Context, cfg *Config, w *Workflow, vars map[str
 		"durationMs": run.DurationMs,
 		"totalCost":  run.TotalCost,
 	})
+
+	// --- Worktree finalization ---
+	if exec.worktreeDir != "" && exec.worktreeMgr != nil {
+		if run.Status == "success" {
+			// Merge worktree branch back to main.
+			diffSummary, mergeErr := exec.worktreeMgr.MergeBranchOnly(exec.repoDir, exec.worktreeDir)
+			if mergeErr != nil {
+				logWarn("workflow worktree: merge failed, keeping for inspection",
+					"workflow", w.Name, "path", exec.worktreeDir, "error", mergeErr)
+			} else {
+				if diffSummary != "" {
+					logInfo("workflow worktree: merged", "workflow", w.Name, "diff", diffSummary)
+				}
+				// Cleanup worktree after successful merge.
+				exec.worktreeMgr.Remove(exec.repoDir, exec.worktreeDir)
+			}
+		} else {
+			// Keep worktree on failure for debugging.
+			logInfo("workflow worktree: keeping for inspection (workflow failed)",
+				"workflow", w.Name, "path", exec.worktreeDir, "status", run.Status)
+		}
+	}
 
 	// Prefix status for non-live modes.
 	switch runMode {
@@ -449,10 +510,12 @@ func (e *workflowExecutor) executeStep(ctx context.Context, step *WorkflowStep) 
 		StartedAt: start.Format(time.RFC3339),
 	}
 
-	// Mark as running.
+	// Mark as running and checkpoint to DB so dashboard sees it immediately.
 	e.mu.Lock()
 	e.run.StepResults[step.ID].Status = "running"
+	e.run.StepResults[step.ID].StartedAt = start.Format(time.RFC3339)
 	e.mu.Unlock()
+	checkpointRun(e)
 
 	e.publishEvent("step_started", map[string]any{
 		"runId":  e.run.ID,
@@ -510,6 +573,9 @@ func (e *workflowExecutor) executeStep(ctx context.Context, step *WorkflowStep) 
 		"durationMs": result.DurationMs,
 		"costUsd":    result.CostUSD,
 	})
+
+	// Checkpoint run state to DB after each step for dashboard visibility.
+	checkpointRun(e)
 
 	return result
 }
@@ -610,6 +676,11 @@ func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowSt
 	task := buildStepTask(step, wCtx, e.workflow.Name)
 	fillDefaults(e.cfg, &task)
 
+	// Override workdir with worktree path when isolation is active.
+	if e.worktreeDir != "" {
+		task.Workdir = e.worktreeDir
+	}
+
 	result.TaskID = task.ID
 	result.SessionID = task.SessionID
 
@@ -621,6 +692,10 @@ func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowSt
 		Status: "active",
 		Title:  fmt.Sprintf("%s / %s", e.workflow.Name, step.ID),
 	})
+
+	// Enable streaming when broker is available.
+	task.sseBroker = e.broker
+	task.workflowRunID = e.run.ID
 
 	// Execute using runSingleTask (respects semaphore).
 	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, task.Agent)
@@ -883,6 +958,11 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 	}
 	fillDefaults(e.cfg, &task)
 
+	// Override workdir with worktree path when isolation is active.
+	if e.worktreeDir != "" {
+		task.Workdir = e.worktreeDir
+	}
+
 	result.TaskID = task.ID
 	result.SessionID = toSessionID
 
@@ -899,6 +979,10 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 
 	// Update handoff to active.
 	updateHandoffStatus(e.cfg.HistoryDB, handoffID, "active")
+
+	// Enable streaming when broker is available.
+	task.sseBroker = e.broker
+	task.workflowRunID = e.run.ID
 
 	// Execute.
 	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, resolvedAgent)

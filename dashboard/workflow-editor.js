@@ -18,6 +18,8 @@ var wfEd = {
   NODE_W: 180, NODE_H: 64,
   skills: [],           // cached from /api/skills
   tools: [],            // cached from /api/tools
+  agents: [],           // cached from /api/agents
+  models: ['sonnet','opus','haiku','claude-sonnet-4-6','claude-opus-4-6','claude-haiku-4-5','gpt-4o','o3','o4-mini','gemini-2.5-pro','gemini-2.5-flash'],
 };
 
 // ---- Workflow Definitions List ----
@@ -129,9 +131,10 @@ function openWorkflowEditorWithData(wf) {
     });
   }
 
-  // Pre-load skills and tools for dropdowns
+  // Pre-load skills, tools, and agents for dropdowns
   wfLoadSkills();
   wfLoadTools();
+  wfLoadAgents();
 
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -390,7 +393,6 @@ function renderEditorCanvas() {
 function wedNodeMousedown(e) {
   if (e.target.classList.contains('wed-port')) return; // handled by port handler
   if (e.button === 1) return; // middle click → let SVG handle pan
-  if (wfEd.spaceDown) return; // pan mode takes priority
   e.preventDefault();
   e.stopPropagation();
   var g = e.currentTarget;
@@ -427,8 +429,8 @@ function wedPortMousedown(e) {
 // ---- SVG Mouse Events ----
 
 function wedSVGMousedown(e) {
-  // Pan mode: space+drag or middle button
-  if (wfEd.spaceDown || e.button === 1) {
+  // Middle button always pans
+  if (e.button === 1) {
     e.preventDefault();
     var wrap = document.getElementById('wf-editor-canvas-wrap');
     if (wrap) wrap.style.cursor = 'grabbing';
@@ -441,14 +443,23 @@ function wedSVGMousedown(e) {
     return;
   }
 
-  if (e.target === e.currentTarget || e.target.tagName === 'svg' || e.target.id === 'wed-bg') {
-    // Click on empty canvas → deselect
-    if (!wfEd.drag && !wfEd.connStart) {
-      wfEd.selected = null;
-      renderPropertyPanel(null);
-      var svg = document.getElementById('wf-editor-svg');
-      svg.querySelectorAll('.wed-node').forEach(function(n) { n.classList.remove('selected'); });
-    }
+  // Left click on empty canvas → pan (click position decides: empty=pan, node=drag node)
+  if (e.button === 0 && (e.target === e.currentTarget || e.target.tagName === 'svg' || e.target.id === 'wed-bg')) {
+    e.preventDefault();
+    var wrap = document.getElementById('wf-editor-canvas-wrap');
+    if (wrap) wrap.style.cursor = 'grabbing';
+    wfEd.panDrag = {
+      startMX: e.clientX,
+      startMY: e.clientY,
+      origPanX: wfEd.panX,
+      origPanY: wfEd.panY,
+    };
+    // Deselect node
+    wfEd.selected = null;
+    renderPropertyPanel(null);
+    var svg = document.getElementById('wf-editor-svg');
+    svg.querySelectorAll('.wed-node').forEach(function(n) { n.classList.remove('selected'); });
+    return;
   }
 }
 
@@ -591,6 +602,9 @@ function findNodeAtPoint(x, y) {
 
 // ---- Property Panel ----
 
+// Encode a JS value for use inside an HTML attribute (e.g. onclick="fn(HERE)").
+function jsAttr(v) { return JSON.stringify(v).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+
 function renderPropertyPanel(stepId) {
   var panel = document.getElementById('wf-prop-panel');
   if (!panel) return;
@@ -607,34 +621,34 @@ function renderPropertyPanel(stepId) {
   }
 
   var fields = [
-    { key: 'id', label: 'ID', type: 'text', required: true },
-    { key: 'type', label: 'Type', type: 'select', options: ['dispatch','skill','condition','parallel','tool_call','delay','notify','external','handoff'] },
-    { key: 'agent', label: 'Agent', type: 'text', placeholder: 'e.g. kokuyou' },
-    { key: 'prompt', label: 'Prompt', type: 'textarea' },
-    { key: 'skill', label: 'Skill', type: 'skill-select' },
-    { key: 'model', label: 'Model', type: 'text', placeholder: 'claude-sonnet-4-6' },
-    { key: 'timeout', label: 'Timeout', type: 'text', placeholder: '30m' },
-    { key: 'budget', label: 'Budget ($)', type: 'number' },
-    { key: 'dependsOn', label: 'Depends On', type: 'depends' },
-    { key: 'if', label: 'Condition (if)', type: 'text' },
-    { key: 'then', label: 'Then (step ID)', type: 'text' },
-    { key: 'else', label: 'Else (step ID)', type: 'text' },
-    { key: 'handoffFrom', label: 'Handoff From', type: 'text' },
-    { key: 'toolName', label: 'Tool Name', type: 'tool-select' },
-    { key: 'delay', label: 'Delay', type: 'delay' },
-    { key: 'notifyMsg', label: 'Notify Message', type: 'text' },
-    { key: 'externalUrl', label: 'External URL', type: 'text', placeholder: 'https://api.example.com/endpoint' },
+    { key: 'id', label: 'ID', type: 'text', required: true, hint: 'Unique step identifier (alphanumeric + hyphens)' },
+    { key: 'type', label: 'Type', type: 'type-select', options: ['dispatch','skill','condition','parallel','tool_call','delay','notify','external','handoff'], hint: 'dispatch=Agent task, skill=Run skill, condition=Branch, handoff=Agent relay' },
+    { key: 'agent', label: 'Agent', type: 'agent-select', hint: 'Which agent executes this step' },
+    { key: 'prompt', label: 'Prompt', type: 'textarea', hint: 'Task instructions for the agent. Supports {{variables}}' },
+    { key: 'skill', label: 'Skill', type: 'skill-select', hint: 'Pre-defined skill to execute' },
+    { key: 'model', label: 'Model', type: 'model-select', hint: 'Override model (leave empty for default)' },
+    { key: 'timeout', label: 'Timeout', type: 'text', placeholder: '30m', hint: 'Max duration: 30s, 5m, 1h' },
+    { key: 'budget', label: 'Budget ($)', type: 'number', hint: 'Max cost in USD for this step' },
+    { key: 'dependsOn', label: 'Depends On', type: 'depends', hint: 'Steps that must complete before this one starts' },
+    { key: 'if', label: 'Condition', type: 'textarea', placeholder: '{{steps.analyze.output}} contains "approved"', hint: 'Expression to evaluate. Supports {{steps.ID.output}} and {{variables}}' },
+    { key: 'then', label: 'Then → Step', type: 'step-select', hint: 'Step to run when condition is true' },
+    { key: 'else', label: 'Else → Step', type: 'step-select', hint: 'Step to run when condition is false' },
+    { key: 'handoffFrom', label: 'Handoff From', type: 'step-select', hint: 'Source step whose output is passed to this agent' },
+    { key: 'toolName', label: 'Tool Name', type: 'tool-select', hint: 'Registered tool to invoke' },
+    { key: 'delay', label: 'Delay', type: 'delay', hint: 'Wait duration before proceeding: 30s, 5m, 1h' },
+    { key: 'notifyMsg', label: 'Notify Message', type: 'text', hint: 'Message to send as notification. Supports {{variables}}' },
+    { key: 'externalUrl', label: 'External URL', type: 'text', placeholder: 'https://api.example.com/endpoint', hint: 'HTTP endpoint to call' },
     { key: 'externalContentType', label: 'Content Type', type: 'select', options: ['application/json', 'application/xml', 'text/xml', 'application/x-www-form-urlencoded', 'text/plain'] },
-    { key: 'externalBody', label: 'Body (JSON KV)', type: 'json-map', placeholder: '{"key": "value"}' },
-    { key: 'externalRawBody', label: 'Raw Body', type: 'textarea', placeholder: 'XML or raw body (mutually exclusive with Body KV)' },
-    { key: 'callbackKey', label: 'Callback Key', type: 'text', placeholder: 'my-service-{{runId}}' },
-    { key: 'callbackTimeout', label: 'Callback Timeout', type: 'text', placeholder: '5m (max 30d)' },
-    { key: 'callbackMode', label: 'Callback Mode', type: 'select', options: ['', 'single', 'streaming'] },
-    { key: 'callbackAuth', label: 'Callback Auth', type: 'select', options: ['', 'bearer', 'open', 'signature'] },
-    { key: 'callbackAccumulate', label: 'Accumulate Results', type: 'checkbox' },
-    { key: 'onTimeout', label: 'On Timeout', type: 'select', options: ['', 'stop', 'skip'] },
-    { key: 'retryMax', label: 'Max Retries', type: 'number' },
-    { key: 'onError', label: 'On Error', type: 'select', options: ['', 'stop', 'skip', 'retry'] },
+    { key: 'externalBody', label: 'Body (JSON KV)', type: 'json-map', placeholder: '{"key": "value"}', hint: 'Key-value pairs sent as request body' },
+    { key: 'externalRawBody', label: 'Raw Body', type: 'textarea', placeholder: 'XML or raw body', hint: 'Raw body content (mutually exclusive with JSON KV)' },
+    { key: 'callbackKey', label: 'Callback Key', type: 'text', placeholder: 'my-service-{{runId}}', hint: 'Unique key for async callback. Use {{runId}} for uniqueness' },
+    { key: 'callbackTimeout', label: 'Callback Timeout', type: 'text', placeholder: '5m', hint: 'How long to wait for callback: 5m, 1h (max 30d)' },
+    { key: 'callbackMode', label: 'Callback Mode', type: 'select', options: ['', 'single', 'streaming'], hint: 'single=One response, streaming=Multiple responses' },
+    { key: 'callbackAuth', label: 'Callback Auth', type: 'select', options: ['', 'bearer', 'open', 'signature'], hint: 'Authentication method for incoming callbacks' },
+    { key: 'callbackAccumulate', label: 'Accumulate Results', type: 'checkbox', hint: 'Collect all streaming responses into one result' },
+    { key: 'onTimeout', label: 'On Timeout', type: 'select', options: ['', 'stop', 'skip'], hint: 'What to do when step times out' },
+    { key: 'retryMax', label: 'Max Retries', type: 'number', hint: 'Number of retry attempts on failure (0 = no retry)' },
+    { key: 'onError', label: 'On Error', type: 'select', options: ['', 'stop', 'skip', 'retry'], hint: 'stop=Abort workflow, skip=Continue, retry=Retry up to max' },
   ];
 
   var visibleFields = fields;
@@ -678,7 +692,7 @@ function renderPropertyPanel(stepId) {
   var html = '<div style="padding:12px">';
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
   html += '<strong style="color:var(--accent);font-size:14px">' + esc(step.id) + '</strong>';
-  html += '<button class="btn btn-danger" style="font-size:11px;padding:2px 8px" onclick="deleteStepById(' + JSON.stringify(stepId) + ')">Delete</button>';
+  html += '<button class="btn btn-danger" style="font-size:11px;padding:2px 8px" onclick="deleteStepById(' + jsAttr(stepId) + ')">Delete</button>';
   html += '</div>';
 
   visibleFields.forEach(function(f) {
@@ -686,27 +700,34 @@ function renderPropertyPanel(stepId) {
     html += '<label class="wfed-prop-label">' + esc(f.label) + '</label>';
     var val = step[f.key];
 
-    if (f.type === 'select') {
-      html += '<select class="wfed-prop-input" onchange="updateStepProp(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.value)">';
+    if (f.type === 'type-select') {
+      html += '<select class="wfed-prop-input" onchange="wedChangeStepType(' + jsAttr(stepId) + ',this.value)">';
+      f.options.forEach(function(opt) {
+        var sel = (val === opt || (!val && opt === 'dispatch')) ? ' selected' : '';
+        html += '<option value="' + escAttr(opt) + '"' + sel + '>' + esc(opt) + '</option>';
+      });
+      html += '</select>';
+    } else if (f.type === 'select') {
+      html += '<select class="wfed-prop-input" onchange="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)">';
       f.options.forEach(function(opt) {
         var sel = (val === opt || (!val && opt === '')) ? ' selected' : '';
         html += '<option value="' + escAttr(opt) + '"' + sel + '>' + esc(opt || '(default)') + '</option>';
       });
       html += '</select>';
     } else if (f.type === 'textarea') {
-      html += '<textarea class="wfed-prop-input wfed-prop-textarea" rows="3" onblur="updateStepProp(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.value)"' +
+      html += '<textarea class="wfed-prop-input wfed-prop-textarea" rows="3" onblur="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)"' +
         (f.placeholder ? ' placeholder="' + escAttr(f.placeholder) + '"' : '') + '>' +
         esc(val || '') + '</textarea>';
     } else if (f.type === 'checkbox') {
       var checked = !!val;
       html += '<input type="checkbox" class="wfed-prop-checkbox"' + (checked ? ' checked' : '') +
-        ' onchange="updateStepProp(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.checked)">';
+        ' onchange="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.checked)">';
     } else if (f.type === 'json-map') {
       var mapStr = '';
       if (val && typeof val === 'object') {
         try { mapStr = JSON.stringify(val, null, 2); } catch(e) { mapStr = '{}'; }
       }
-      html += '<textarea class="wfed-prop-input wfed-prop-textarea" rows="3" onblur="updateStepPropJSON(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.value)"' +
+      html += '<textarea class="wfed-prop-input wfed-prop-textarea" rows="3" onblur="updateStepPropJSON(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)"' +
         (f.placeholder ? ' placeholder="' + escAttr(f.placeholder) + '"' : '') + '>' +
         esc(mapStr) + '</textarea>';
     } else if (f.type === 'depends') {
@@ -720,7 +741,7 @@ function renderPropertyPanel(stepId) {
           var isChk = deps.includes(s.id);
           html += '<label class="wfed-dep-item">' +
             '<input type="checkbox"' + (isChk ? ' checked' : '') +
-            ' onchange="toggleDependsOn(' + JSON.stringify(stepId) + ',' + JSON.stringify(s.id) + ',this.checked)"> ' +
+            ' onchange="toggleDependsOn(' + jsAttr(stepId) + ',' + jsAttr(s.id) + ',this.checked)"> ' +
             esc(s.id) + ' <span style="color:var(--muted);font-size:10px">(' +
             esc(s.type || 'dispatch') + (s.agent ? ', ' + esc(s.agent) : '') + ')</span>' +
             '</label>';
@@ -728,7 +749,7 @@ function renderPropertyPanel(stepId) {
         html += '</div>';
       }
     } else if (f.type === 'skill-select') {
-      html += '<select class="wfed-prop-input" onchange="updateStepProp(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.value)">';
+      html += '<select class="wfed-prop-input" onchange="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)">';
       html += '<option value="">-- select skill --</option>';
       wfEd.skills.forEach(function(sk) {
         var sel = val === sk.name ? ' selected' : '';
@@ -737,7 +758,7 @@ function renderPropertyPanel(stepId) {
       });
       html += '</select>';
     } else if (f.type === 'tool-select') {
-      html += '<select class="wfed-prop-input" onchange="updateStepProp(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.value)">';
+      html += '<select class="wfed-prop-input" onchange="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)">';
       html += '<option value="">-- select tool --</option>';
       wfEd.tools.forEach(function(t) {
         var sel = val === t.name ? ' selected' : '';
@@ -745,25 +766,68 @@ function renderPropertyPanel(stepId) {
         html += '<option value="' + escAttr(t.name) + '"' + sel + '>' + esc(label) + '</option>';
       });
       html += '</select>';
+    } else if (f.type === 'step-select') {
+      var otherSteps = (wfEd.workflow.steps || []).filter(function(s) { return s.id !== stepId; });
+      html += '<select class="wfed-prop-input" onchange="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)">';
+      html += '<option value="">-- select step --</option>';
+      otherSteps.forEach(function(s) {
+        var sel = val === s.id ? ' selected' : '';
+        var label = s.id + ' (' + (s.type || 'dispatch') + (s.agent ? ', ' + s.agent : '') + ')';
+        html += '<option value="' + escAttr(s.id) + '"' + sel + '>' + esc(label) + '</option>';
+      });
+      html += '</select>';
+    } else if (f.type === 'agent-select') {
+      html += '<div style="display:flex;gap:4px;align-items:center">';
+      html += '<select class="wfed-prop-input" style="flex:1" onchange="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)">';
+      html += '<option value="">-- select agent --</option>';
+      var agentInList = false;
+      wfEd.agents.forEach(function(a) {
+        var name = a.name || a;
+        var sel = val === name ? ' selected' : '';
+        if (val === name) agentInList = true;
+        html += '<option value="' + escAttr(name) + '"' + sel + '>' + esc(name) + '</option>';
+      });
+      if (val && !agentInList) {
+        html += '<option value="' + escAttr(val) + '" selected>' + esc(val) + '</option>';
+      }
+      html += '</select>';
+      html += '<button class="btn" style="padding:2px 6px;font-size:13px;white-space:nowrap" onclick="wedAddAgent(' + jsAttr(stepId) + ')" title="Add new agent">+</button>';
+      html += '</div>';
+    } else if (f.type === 'model-select') {
+      html += '<select class="wfed-prop-input" onchange="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)">';
+      html += '<option value="">-- default --</option>';
+      var modelInList = false;
+      wfEd.models.forEach(function(m) {
+        var sel = val === m ? ' selected' : '';
+        if (val === m) modelInList = true;
+        html += '<option value="' + escAttr(m) + '"' + sel + '>' + esc(m) + '</option>';
+      });
+      if (val && !modelInList) {
+        html += '<option value="' + escAttr(val) + '" selected>' + esc(val) + '</option>';
+      }
+      html += '</select>';
     } else if (f.type === 'delay') {
       html += '<input class="wfed-prop-input" type="text" value="' + escAttr(String(val || '')) + '"' +
         ' placeholder="30s / 5m / 1h"' +
         ' oninput="wfDelayValidate(this)"' +
-        ' onblur="wfDelayBlur(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this)"/>';
+        ' onblur="wfDelayBlur(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this)"/>';
       html += '<div class="wfed-delay-hint">Format: 30s / 5m / 1h</div>';
     } else if (f.type === 'tags') {
       var tagsVal = Array.isArray(val) ? val.join(', ') : (val || '');
       html += '<input class="wfed-prop-input" type="text" value="' + escAttr(tagsVal) + '"' +
         ' placeholder="comma-separated IDs"' +
-        ' onblur="updateStepPropTags(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.value)"/>';
+        ' onblur="updateStepPropTags(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)"/>';
     } else if (f.type === 'number') {
       html += '<input class="wfed-prop-input" type="number" value="' + escAttr(String(val || '')) + '"' +
         (f.placeholder ? ' placeholder="' + escAttr(f.placeholder) + '"' : '') +
-        ' onblur="updateStepPropNum(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.value)"/>';
+        ' onblur="updateStepPropNum(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)"/>';
     } else {
       html += '<input class="wfed-prop-input" type="text" value="' + escAttr(String(val || '')) + '"' +
         (f.placeholder ? ' placeholder="' + escAttr(f.placeholder) + '"' : '') +
-        ' onblur="updateStepProp(' + JSON.stringify(stepId) + ',' + JSON.stringify(f.key) + ',this.value)"/>';
+        ' onblur="updateStepProp(' + jsAttr(stepId) + ',' + jsAttr(f.key) + ',this.value)"/>';
+    }
+    if (f.hint) {
+      html += '<div class="wfed-hint">' + esc(f.hint) + '</div>';
     }
     html += '</div>';
   });
@@ -772,32 +836,47 @@ function renderPropertyPanel(stepId) {
   panel.innerHTML = html;
 }
 
+function wedChangeStepType(stepId, newType) {
+  try {
+    var step = (wfEd.workflow.steps || []).find(function(s) { return s.id === stepId; });
+    if (!step) { console.error('[wedChangeStepType] step not found:', stepId); return; }
+    step.type = newType;
+    wfEd.selected = stepId;
+    wfEd.dirty = true;
+    updateDirtyIndicator();
+    renderEditorCanvas();
+    renderPropertyPanel(stepId);
+  } catch(e) { console.error('[wedChangeStepType] error:', e); }
+}
+
 function updateStepProp(stepId, key, value) {
-  var step = (wfEd.workflow.steps || []).find(function(s) { return s.id === stepId; });
-  if (!step) return;
-  if (value === '') {
-    delete step[key];
-  } else {
-    step[key] = value;
-  }
-  wfEd.dirty = true;
-  updateDirtyIndicator();
+  try {
+    var step = (wfEd.workflow.steps || []).find(function(s) { return s.id === stepId; });
+    if (!step) { console.error('[updateStepProp] step not found:', stepId); return; }
+    if (value === '') {
+      delete step[key];
+    } else {
+      step[key] = value;
+    }
+    wfEd.dirty = true;
+    updateDirtyIndicator();
 
-  // If ID changed, update positions map and re-render
-  if (key === 'id' && value && value !== stepId) {
-    wfEd.positions[value] = wfEd.positions[stepId];
-    delete wfEd.positions[stepId];
-    if (wfEd.selected === stepId) wfEd.selected = value;
-    // Update dependsOn references
-    (wfEd.workflow.steps || []).forEach(function(s) {
-      if (s.dependsOn) {
-        s.dependsOn = s.dependsOn.map(function(d) { return d === stepId ? value : d; });
-      }
-    });
-  }
+    // If ID changed, update positions map and re-render
+    if (key === 'id' && value && value !== stepId) {
+      wfEd.positions[value] = wfEd.positions[stepId];
+      delete wfEd.positions[stepId];
+      if (wfEd.selected === stepId) wfEd.selected = value;
+      // Update dependsOn references
+      (wfEd.workflow.steps || []).forEach(function(s) {
+        if (s.dependsOn) {
+          s.dependsOn = s.dependsOn.map(function(d) { return d === stepId ? value : d; });
+        }
+      });
+    }
 
-  renderEditorCanvas();
-  renderPropertyPanel(wfEd.selected);
+    renderEditorCanvas();
+    renderPropertyPanel(wfEd.selected);
+  } catch(e) { console.error('[updateStepProp] error:', e); }
 }
 
 function updateStepPropJSON(stepId, key, value) {
@@ -1125,6 +1204,29 @@ async function wfLoadSkills() {
   } catch(e) {
     wfEd.skills = [];
   }
+}
+
+async function wfLoadAgents() {
+  try {
+    var agents = await fetchJSON('/api/agents');
+    wfEd.agents = Array.isArray(agents) ? agents : [];
+  } catch(e) {
+    wfEd.agents = [];
+  }
+}
+
+function wedAddAgent(stepId) {
+  var name = prompt('New agent name:');
+  if (!name || !name.trim()) return;
+  name = name.trim();
+  // Add to cached list if not already present
+  var exists = wfEd.agents.some(function(a) { return (a.name || a) === name; });
+  if (!exists) {
+    wfEd.agents.push({ name: name });
+  }
+  // Set on current step and refresh
+  updateStepProp(stepId, 'agent', name);
+  renderPropertyPanel(stepId);
 }
 
 async function wfLoadTools() {
