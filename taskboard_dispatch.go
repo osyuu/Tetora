@@ -18,7 +18,7 @@ import (
 //
 // Polling rules (resource contention prevention):
 //   - Scans every Interval (default 5m) via ticker.
-//   - If any tasks from the previous cycle are still running (activeCount > 0),
+//   - If activeCount >= maxConcurrentTasks,
 //     the scan is skipped — no new tasks are launched until all current ones finish.
 //   - When activeCount drops to zero, doneCh fires an immediate extra scan so the
 //     next batch starts without waiting for the full interval.
@@ -36,7 +36,7 @@ type TaskBoardDispatcher struct {
 	activeCount   atomic.Int32   // number of currently running dispatchTask goroutines
 	running       bool
 	stopCh        chan struct{}
-	doneCh        chan struct{} // signals when activeCount drops to 0 → immediate re-scan
+	doneCh        chan struct{} // signals when a task finishes → immediate re-scan to backfill
 	lastTriageAt  time.Time    // last backlog triage time (cooldown tracking)
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -265,8 +265,8 @@ func (d *TaskBoardDispatcher) resetStuckDoing() {
 }
 
 // scan finds todo tasks with an assignee and dispatches them.
-// If any tasks are still running from a previous cycle, the dispatch is skipped
-// to avoid resource contention. resetStuckDoing always runs to handle crash recovery.
+// Concurrent dispatch is allowed up to maxConcurrentTasks. resetStuckDoing
+// always runs to handle crash recovery.
 func (d *TaskBoardDispatcher) scan() {
 	// Always reset stuck tasks first (handles crash/restart scenarios regardless of active count).
 	d.resetStuckDoing()
@@ -275,9 +275,14 @@ func (d *TaskBoardDispatcher) scan() {
 	// Runs before dispatch so approved tasks can unblock dependents in this same cycle.
 	d.scanReviews()
 
-	// Skip dispatch if tasks from the previous cycle are still running.
-	if n := d.activeCount.Load(); n > 0 {
-		logInfo("taskboard dispatch: scan skipped, waiting for running tasks", "active", n)
+	maxTasks := d.engine.config.AutoDispatch.MaxConcurrentTasks
+	if maxTasks <= 0 {
+		maxTasks = 3
+	}
+
+	// Skip dispatch if already at capacity.
+	if n := int(d.activeCount.Load()); n >= maxTasks {
+		logInfo("taskboard dispatch: at capacity, skipping scan", "active", n, "max", maxTasks)
 		return
 	}
 
@@ -293,10 +298,9 @@ func (d *TaskBoardDispatcher) scan() {
 		return
 	}
 
-	maxTasks := d.engine.config.AutoDispatch.MaxConcurrentTasks
-	if maxTasks <= 0 {
-		maxTasks = 3
-	}
+	// How many more tasks can we dispatch this cycle?
+	active := int(d.activeCount.Load())
+	available := maxTasks - active
 	dispatched := 0
 
 	for _, t := range tasks {
@@ -304,8 +308,9 @@ func (d *TaskBoardDispatcher) scan() {
 			logInfo("taskboard dispatch: skipping unassigned task", "id", t.ID, "title", t.Title)
 			continue
 		}
-		if dispatched >= maxTasks {
-			logInfo("taskboard dispatch: maxConcurrentTasks reached, deferring remaining tasks", "limit", maxTasks)
+		if dispatched >= available {
+			logInfo("taskboard dispatch: maxConcurrentTasks reached, deferring remaining tasks",
+				"active", active, "dispatched", dispatched, "max", maxTasks)
 			break
 		}
 
@@ -318,12 +323,11 @@ func (d *TaskBoardDispatcher) scan() {
 		go func(task TaskBoard) {
 			defer d.wg.Done()
 			defer func() {
-				// Decrement active count; signal for immediate re-scan if last task done.
-				if remaining := d.activeCount.Add(-1); remaining == 0 {
-					select {
-					case d.doneCh <- struct{}{}:
-					default: // already signaled, skip
-					}
+				// Decrement active count; signal for immediate re-scan to backfill slots.
+				d.activeCount.Add(-1)
+				select {
+				case d.doneCh <- struct{}{}:
+				default: // already signaled, skip
 				}
 			}()
 			defer func() {
@@ -459,6 +463,9 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 	// create an isolated worktree so the agent doesn't touch the main working tree.
 	var worktreeDir string
 	if d.engine.config.GitWorktree && projectWorkdir != "" {
+		// Pre-flight: check for stale index.lock before any git operation.
+		cleanStaleLock(projectWorkdir, t.ID, d.engine)
+
 		if exec.Command("git", "-C", projectWorkdir, "rev-parse", "--git-dir").Run() == nil {
 			branch := buildBranchName(d.engine.config.GitWorkflow, t)
 			wtDir, err := d.worktreeMgr.Create(projectWorkdir, t.ID, branch)
@@ -958,6 +965,12 @@ func (d *TaskBoardDispatcher) runTaskWithWorkflow(ctx context.Context, t TaskBoa
 
 	logInfo("runTaskWithWorkflow: starting workflow pipeline",
 		"task", t.ID, "workflow", workflowName, "steps", len(w.Steps))
+
+	// Fire onStart callback (moves task to "doing") — executeWorkflow creates its
+	// own step tasks, so the original task.onStart would never be triggered otherwise.
+	if task.onStart != nil {
+		task.onStart()
+	}
 
 	// Inject taskId into vars so workflow runs can be traced back to tasks.
 	vars["_taskId"] = t.ID

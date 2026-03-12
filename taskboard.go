@@ -327,8 +327,10 @@ func (tb *TaskBoardEngine) DeleteTask(id string) error {
 	return nil
 }
 
-// GetTask retrieves a single task by ID.
+// GetTask retrieves a single task by ID. Normalizes bare numeric IDs to "task-{id}".
 func (tb *TaskBoardEngine) GetTask(id string) (TaskBoard, error) {
+	id = normalizeTaskID(id)
+
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
 		       depends_on, type, workflow, discord_thread_id, created_at, updated_at, completed_at, retry_count,
@@ -341,10 +343,40 @@ func (tb *TaskBoardEngine) GetTask(id string) (TaskBoard, error) {
 		return TaskBoard{}, err
 	}
 	if len(rows) == 0 {
-		return TaskBoard{}, fmt.Errorf("task not found")
+		return TaskBoard{}, fmt.Errorf("task %q not found", id)
 	}
 
 	return parseTaskRow(rows[0]), nil
+}
+
+// suggestTasks returns up to 3 recent tasks whose ID shares a prefix with the given ID.
+func (tb *TaskBoardEngine) suggestTasks(id string) []TaskBoard {
+	// Extract numeric portion and use first 4 digits as prefix for LIKE search.
+	numeric := strings.TrimPrefix(id, "task-")
+	if len(numeric) < 4 {
+		return nil
+	}
+	prefix := "task-" + numeric[:4]
+
+	sql := fmt.Sprintf(`
+		SELECT id, project, title, description, status, assignee, priority,
+		       depends_on, type, workflow, discord_thread_id, created_at, updated_at, completed_at, retry_count,
+		       cost_usd, duration_ms, session_id, model, parent_id, workflow_run_id
+		FROM tasks WHERE id LIKE '%s%%'
+		ORDER BY created_at DESC
+		LIMIT 3
+	`, escapeSQLite(prefix))
+
+	rows, err := queryDB(tb.dbPath, sql)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+
+	var tasks []TaskBoard
+	for _, row := range rows {
+		tasks = append(tasks, parseTaskRow(row))
+	}
+	return tasks
 }
 
 // MoveTask moves a task to a new status, enforcing dependency checks.
@@ -355,7 +387,7 @@ func (tb *TaskBoardEngine) MoveTask(id, newStatus string) (TaskBoard, error) {
 	}
 
 	// Validate status transition.
-	validStatuses := []string{"idea", "needs-thought", "backlog", "todo", "doing", "review", "done", "failed"}
+	validStatuses := []string{"idea", "needs-thought", "backlog", "todo", "doing", "review", "done", "partial-done", "failed"}
 	isValid := false
 	for _, s := range validStatuses {
 		if s == newStatus {
@@ -692,6 +724,18 @@ func (tb *TaskBoardEngine) ListChildren(parentID string) ([]TaskBoard, error) {
 
 // --- Utility Functions ---
 
+// normalizeTaskID adds "task-" prefix if the ID looks like a bare number.
+func normalizeTaskID(id string) string {
+	if id == "" {
+		return id
+	}
+	if !strings.Contains(id, "-") {
+		// Bare number → prepend "task-"
+		return "task-" + id
+	}
+	return id
+}
+
 func generateID(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
@@ -1018,7 +1062,15 @@ func cmdTask(args []string) {
 
 		task, err := tb.GetTask(taskID)
 		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			// Suggest similar tasks.
+			normalizedID := normalizeTaskID(taskID)
+			if candidates := tb.suggestTasks(normalizedID); len(candidates) > 0 {
+				fmt.Fprintln(os.Stderr, "Did you mean:")
+				for _, c := range candidates {
+					fmt.Fprintf(os.Stderr, "  %s  %s  (%s)\n", c.ID, c.Title, c.Status)
+				}
+			}
 			os.Exit(1)
 		}
 
@@ -1044,7 +1096,7 @@ func cmdTask(args []string) {
 		}
 
 		if full {
-			comments, err := tb.GetThread(taskID)
+			comments, err := tb.GetThread(task.ID)
 			if err != nil {
 				fmt.Printf("\nError loading comments: %v\n", err)
 			} else if len(comments) > 0 {

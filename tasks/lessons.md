@@ -37,4 +37,13 @@
 - **Test/implementation mismatch**: Rewrote `workspace_test.go` — all tests now use role keys ("ruri" not "琉璃") and expect shared workspace paths.
 - **`getWorkspaceMemoryPath`/`getWorkspaceSkillsPath`**: Removed unused `roleName` parameter, functions now correctly return shared workspace paths.
 
+## Defensive Code（2026-03-12 worktree 資料丟失事件）
+
+- `taskboard_git.go` 的 `defer Remove()` 無條件刪除 worktree → merge 失敗時資料永久丟失
+- `postTaskWorkspaceGit` 不回傳 error → caller 無法知道 git 失敗 → task 標 done 但沒 commit
+- `index.lock` stale 5 天沒人發現 → 所有 git 操作靜默失敗
+- review execution error 回傳 `approve` → 品質關卡形同虛設
+- 這些全部是設計階段就該避免的，不是「邊界情況」
+- 對應 rule 已寫入 `workspace/rules/defensive-code.md` 和 `~/.claude/lessons.md`
+
 _New lessons added here after each correction._

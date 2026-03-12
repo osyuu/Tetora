@@ -37,6 +37,11 @@ func NewWorktreeManager(baseDir string) *WorktreeManager {
 	return &WorktreeManager{baseDir: baseDir}
 }
 
+// isGitRepo checks if a directory is a git repository.
+func isGitRepo(dir string) bool {
+	return exec.Command("git", "-C", dir, "rev-parse", "--git-dir").Run() == nil
+}
+
 // pathLock returns or creates a mutex for the given worktree path.
 func (wm *WorktreeManager) pathLock(path string) *sync.Mutex {
 	v, _ := wm.pathMu.LoadOrStore(path, &sync.Mutex{})

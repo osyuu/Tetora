@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,27 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 			d = home
 		}
 		task.AddDirs = append(task.AddDirs, d)
+	}
+
+	// --- Lessons injection (always, provider-aware) ---
+	if agentName != "" {
+		lessonsPath := filepath.Join(cfg.baseDir, "agents", agentName, "lessons.md")
+		if providerType == "claude-code" || providerType == "codex-cli" {
+			// These providers can read files — just remind them to check.
+			if _, err := os.Stat(lessonsPath); err == nil {
+				task.Prompt = fmt.Sprintf("⚠️ 任務開始前請先讀取 agents/%s/lessons.md，確認過去的經驗教訓。\n\n%s", agentName, task.Prompt)
+			}
+		} else {
+			// Other providers: inject content directly into system prompt.
+			if content, err := os.ReadFile(lessonsPath); err == nil && len(content) > 0 {
+				lessons := string(content)
+				if len(lessons) > 4096 {
+					// Over 4KB — only keep the last 10 entries.
+					lessons = truncateLessonsToRecent(lessons, 10)
+				}
+				task.SystemPrompt += "\n\n## 經驗教訓 (lessons.md)\n" + lessons
+			}
+		}
 	}
 
 	// If provider is claude-code or codex-cli, only the soul prompt is needed; skip everything else.
@@ -177,6 +199,35 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 }
 
 // truncateToChars truncates a string to maxChars, trying to cut at a newline boundary.
+// truncateLessonsToRecent keeps only the last N entries from a lessons.md file.
+// Entries are separated by "---" or "##" headings.
+func truncateLessonsToRecent(content string, n int) string {
+	// Split by "---" or "## " headings.
+	var entries []string
+	var current strings.Builder
+	for _, line := range strings.Split(content, "\n") {
+		if (line == "---" || strings.HasPrefix(line, "## ")) && current.Len() > 0 {
+			entries = append(entries, current.String())
+			current.Reset()
+		}
+		current.WriteString(line)
+		current.WriteString("\n")
+	}
+	if current.Len() > 0 {
+		entries = append(entries, current.String())
+	}
+
+	if len(entries) <= n {
+		return content
+	}
+
+	// Keep last N entries.
+	recent := entries[len(entries)-n:]
+	result := fmt.Sprintf("[... %d older entries omitted ...]\n\n", len(entries)-n)
+	result += strings.Join(recent, "---\n")
+	return result
+}
+
 func truncateToChars(s string, maxChars int) string {
 	if len(s) <= maxChars {
 		return s

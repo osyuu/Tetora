@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // postTaskWorkspaceGit commits workspace changes after a task completes (done or failed).
@@ -23,10 +25,14 @@ func (d *TaskBoardDispatcher) postTaskWorkspaceGit(t TaskBoard) {
 		return
 	}
 
+	// Clean stale lock before git operations.
+	cleanStaleLock(wsDir, t.ID, d.engine)
+
 	// Check for uncommitted changes.
 	statusOut, err := exec.Command("git", "-C", wsDir, "status", "--porcelain").Output()
 	if err != nil {
 		logWarn("postTaskWorkspaceGit: git status failed", "task", t.ID, "error", err)
+		d.engine.AddComment(t.ID, "system", "[WARNING] workspace git status failed: "+err.Error())
 		return
 	}
 	if len(bytes.TrimSpace(statusOut)) == 0 {
@@ -34,13 +40,23 @@ func (d *TaskBoardDispatcher) postTaskWorkspaceGit(t TaskBoard) {
 	}
 
 	if out, err := exec.Command("git", "-C", wsDir, "add", "-A").CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("[WARNING] workspace git add failed: %s", strings.TrimSpace(string(out)))
 		logWarn("postTaskWorkspaceGit: git add failed", "task", t.ID, "error", string(out))
+		d.engine.AddComment(t.ID, "system", msg)
+		if _, moveErr := d.engine.MoveTask(t.ID, "partial-done"); moveErr != nil {
+			logWarn("postTaskWorkspaceGit: failed to move to partial-done", "task", t.ID, "error", moveErr)
+		}
 		return
 	}
 
 	commitMsg := fmt.Sprintf("[%s] %s", t.ID, t.Title)
 	if out, err := exec.Command("git", "-C", wsDir, "commit", "-m", commitMsg).CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("[WARNING] workspace git commit failed: %s", strings.TrimSpace(string(out)))
 		logWarn("postTaskWorkspaceGit: git commit failed", "task", t.ID, "error", string(out))
+		d.engine.AddComment(t.ID, "system", msg)
+		if _, moveErr := d.engine.MoveTask(t.ID, "partial-done"); moveErr != nil {
+			logWarn("postTaskWorkspaceGit: failed to move to partial-done", "task", t.ID, "error", moveErr)
+		}
 		return
 	}
 
@@ -150,14 +166,20 @@ func (d *TaskBoardDispatcher) postTaskWorktree(t TaskBoard, projectWorkdir, work
 		return
 	}
 
-	// Always remove the worktree when we're done, regardless of outcome.
+	// Track whether merge succeeded — only cleanup on success.
+	mergeOK := false
 	defer func() {
-		if err := d.worktreeMgr.Remove(projectWorkdir, worktreeDir); err != nil {
-			logWarn("worktree: cleanup failed", "task", t.ID, "path", worktreeDir, "error", err)
-			d.engine.AddComment(t.ID, "system",
-				fmt.Sprintf("[worktree] Cleanup failed: %v", err))
-		} else {
-			logInfo("worktree: cleaned up", "task", t.ID, "path", worktreeDir)
+		if mergeOK {
+			if err := d.worktreeMgr.Remove(projectWorkdir, worktreeDir); err != nil {
+				logWarn("worktree: cleanup failed", "task", t.ID, "path", worktreeDir, "error", err)
+				d.engine.AddComment(t.ID, "system",
+					fmt.Sprintf("[worktree] Cleanup failed: %v", err))
+			} else {
+				logInfo("worktree: cleaned up", "task", t.ID, "path", worktreeDir)
+			}
+		} else if newStatus == "done" || newStatus == "review" {
+			// Merge failed — preserve worktree for manual recovery.
+			logWarn("worktree: preserved for recovery", "task", t.ID, "path", worktreeDir)
 		}
 	}()
 
@@ -167,6 +189,7 @@ func (d *TaskBoardDispatcher) postTaskWorktree(t TaskBoard, projectWorkdir, work
 		hasChanges := d.worktreeMgr.HasChanges(worktreeDir)
 
 		if commitCount == 0 && !hasChanges {
+			mergeOK = true // nothing to preserve
 			d.engine.AddComment(t.ID, "system",
 				"[worktree] No changes committed. Worktree discarded.")
 			return
@@ -181,10 +204,16 @@ func (d *TaskBoardDispatcher) postTaskWorktree(t TaskBoard, projectWorkdir, work
 		if err != nil {
 			logWarn("worktree: merge failed", "task", t.ID, "error", err)
 			d.engine.AddComment(t.ID, "system",
-				fmt.Sprintf("[worktree] Merge failed: %v. Changes preserved on branch task/%s.", err, t.ID))
-			return
+				fmt.Sprintf("[worktree] ⚠️ Merge failed: %v\nBranch preserved: task/%s\nWorktree preserved: %s\nRecover manually: git -C %s merge task/%s",
+					err, t.ID, worktreeDir, projectWorkdir, t.ID))
+			// Move task to partial-done so it's visible in triage.
+			if _, moveErr := d.engine.MoveTask(t.ID, "partial-done"); moveErr != nil {
+				logWarn("worktree: failed to move to partial-done", "task", t.ID, "error", moveErr)
+			}
+			return // mergeOK stays false → worktree preserved
 		}
 
+		mergeOK = true
 		comment := "[worktree] Changes merged into main."
 		if diffSummary != "" {
 			comment += "\n```\n" + diffSummary + "\n```"
@@ -193,6 +222,7 @@ func (d *TaskBoardDispatcher) postTaskWorktree(t TaskBoard, projectWorkdir, work
 		logInfo("worktree: merge complete", "task", t.ID)
 
 	default: // failed, cancelled
+		mergeOK = true // discard worktree on failure (no data to preserve)
 		d.engine.AddComment(t.ID, "system",
 			"[worktree] Task failed — worktree discarded without merge.")
 	}
@@ -377,4 +407,36 @@ func detectDefaultBranch(workdir string) string {
 		return "main"
 	}
 	return "master"
+}
+
+// cleanStaleLock removes stale .git/index.lock files that are older than 1 hour.
+// A stale lock blocks all git operations and causes silent dispatch failures.
+func cleanStaleLock(repoDir, taskID string, engine *TaskBoardEngine) {
+	lockPath := filepath.Join(repoDir, ".git", "index.lock")
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		return // no lock file
+	}
+
+	age := time.Since(info.ModTime())
+	if age < time.Hour {
+		logWarn("cleanStaleLock: index.lock exists but is recent, skipping",
+			"task", taskID, "path", lockPath, "age", age.Round(time.Second))
+		if engine != nil {
+			engine.AddComment(taskID, "system",
+				fmt.Sprintf("[WARNING] git index.lock exists (age: %s). Waiting for other git operation to finish.", age.Round(time.Second)))
+		}
+		return
+	}
+
+	if err := os.Remove(lockPath); err != nil {
+		logWarn("cleanStaleLock: failed to remove stale lock", "task", taskID, "path", lockPath, "error", err)
+		return
+	}
+
+	logInfo("cleanStaleLock: removed stale index.lock", "task", taskID, "path", lockPath, "age", age.Round(time.Second))
+	if engine != nil {
+		engine.AddComment(taskID, "system",
+			fmt.Sprintf("[auto-fix] Removed stale git index.lock (age: %s)", age.Round(time.Second)))
+	}
 }

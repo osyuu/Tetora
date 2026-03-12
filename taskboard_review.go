@@ -230,7 +230,7 @@ Reply with ONLY a JSON object:
 
 	result := runSingleTask(ctx, d.cfg, task, d.sem, d.childSem, reviewer)
 	if result.Status != "success" {
-		return reviewResult{Verdict: reviewApprove, Comment: "review skipped (execution error)", CostUSD: result.CostUSD}
+		return reviewResult{Verdict: reviewEscalate, Comment: "review skipped (execution error) — needs manual check", CostUSD: result.CostUSD}
 	}
 
 	// Parse review JSON.
