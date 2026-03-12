@@ -589,8 +589,34 @@ function renderSettingsTaskBoard(data) {
   html += makeToggle('Auto-Dispatch', 'taskBoard.autoDispatch.enabled', data.autoDispatch);
   html += '<div style="background:var(--surface);padding:10px 14px;font-size:13px;color:var(--muted)">Max Retries</div>';
   html += '<div style="background:var(--surface);padding:10px 14px;font-size:13px;font-family:monospace">' + (data.maxRetries || 3) + '</div>';
+  html += '<div style="background:var(--surface);padding:10px 14px;font-size:13px;color:var(--muted)">Default Workflow</div>';
+  html += '<div style="background:var(--surface);padding:8px 14px;display:flex;align-items:center;gap:8px">';
+  html += '<select id="tb-default-workflow" onchange="setDefaultWorkflow(this.value)" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:13px;flex:1">';
+  html += '<option value=""' + (!data.defaultWorkflow ? ' selected' : '') + '>None (direct dispatch)</option>';
+  html += '</select>';
+  html += '</div>';
   html += '</div>';
   el.innerHTML = html;
+  // Populate workflow options asynchronously
+  loadWorkflowOptions(data.defaultWorkflow || '');
+}
+
+function loadWorkflowOptions(current) {
+  getWorkflowNames().then(function(names) {
+    var sel = document.getElementById('tb-default-workflow');
+    if (!sel) return;
+    names.forEach(function(name) {
+      var opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  });
+}
+
+function setDefaultWorkflow(value) {
+  toggleConfigKey('taskBoard.defaultWorkflow', value);
 }
 
 function toggleConfigKey(key, value) {

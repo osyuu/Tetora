@@ -29,7 +29,6 @@ const pwaManifestJSON = `{
 // TETORA_VERSION is replaced at serve-time with the actual version for cache busting.
 const pwaServiceWorkerJS = `'use strict';
 var CACHE_VERSION = 'tetora-TETORA_VERSION';
-var CACHE_API = CACHE_VERSION + '-api';
 var APP_SHELL = [
   '/dashboard',
   '/dashboard/manifest.json',
@@ -50,7 +49,7 @@ self.addEventListener('activate', function(e) {
   e.waitUntil(
     caches.keys().then(function(keys) {
       return Promise.all(
-        keys.filter(function(k) { return k !== CACHE_VERSION && k !== CACHE_API; })
+        keys.filter(function(k) { return k !== CACHE_VERSION; })
             .map(function(k) { return caches.delete(k); })
       );
     }).then(function() {
@@ -63,33 +62,23 @@ self.addEventListener('fetch', function(e) {
   if (e.request.method !== 'GET') return;
 
   var url = new URL(e.request.url);
-  if (url.pathname.indexOf('/stream') !== -1) return;
-  if (url.pathname === '/dashboard/login') return;
 
+  // Only cache app shell assets. Let all API requests pass through
+  // to the browser's native fetch so Referer and cookies are preserved
+  // (SW-initiated fetches can strip Referer, causing auth failures).
   var isShell = url.pathname === '/dashboard' ||
                 url.pathname === '/dashboard/manifest.json' ||
-                url.pathname === '/dashboard/icon.svg';
+                url.pathname === '/dashboard/icon.svg' ||
+                url.pathname === '/dashboard/office-bg.webp' ||
+                url.pathname.indexOf('/dashboard/sprites/') === 0;
 
-  if (isShell) {
-    e.respondWith(
-      fetch(e.request).then(function(resp) {
-        if (resp.ok) {
-          var clone = resp.clone();
-          caches.open(CACHE_VERSION).then(function(c) { c.put(e.request, clone); });
-        }
-        return resp;
-      }).catch(function() {
-        return caches.match(e.request);
-      })
-    );
-    return;
-  }
+  if (!isShell) return;
 
   e.respondWith(
     fetch(e.request).then(function(resp) {
       if (resp.ok) {
         var clone = resp.clone();
-        caches.open(CACHE_API).then(function(c) { c.put(e.request, clone); });
+        caches.open(CACHE_VERSION).then(function(c) { c.put(e.request, clone); });
       }
       return resp;
     }).catch(function() {
