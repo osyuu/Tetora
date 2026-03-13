@@ -199,13 +199,13 @@ async function refreshBoard() {
     cachedBoardData = await fetchJSON(url);
   } catch(e) {
     // Task board might not be enabled — show empty state.
-    cachedBoardData = { columns: {idea:[],backlog:[],'needs-thought':[],todo:[],doing:[],review:[],done:[],failed:[]}, stats: {total:0,byStatus:{},totalCost:0}, projects: [], agents: [] };
+    cachedBoardData = { columns: {idea:[],backlog:[],'needs-thought':[],todo:[],doing:[],'partial-done':[],review:[],done:[],failed:[]}, stats: {total:0,byStatus:{},totalCost:0}, projects: [], agents: [] };
   }
 
   // Cache all tasks for search
   var allTasks = [];
   if (cachedBoardData && cachedBoardData.columns) {
-    ['idea','backlog','needs-thought','todo','doing','review','done','failed'].forEach(function(s) {
+    ['idea','backlog','needs-thought','todo','doing','partial-done','review','done','failed'].forEach(function(s) {
       (cachedBoardData.columns[s] || []).forEach(function(t) { allTasks.push(t); });
     });
   }
@@ -321,8 +321,8 @@ function populateBoardFilters() {
 function renderBoard() {
   var board = document.getElementById('kanban-board');
   var search = (document.getElementById('kb-search').value || '').toLowerCase();
-  var statuses = ['idea','backlog','needs-thought','todo','doing','review','done','failed'];
-  var labels = {idea:'Idea','needs-thought':'Needs Thought',backlog:'Backlog',todo:'Todo',doing:'Doing',review:'Review',done:'Done',failed:'Failed'};
+  var statuses = ['idea','backlog','needs-thought','todo','doing','partial-done','review','done','failed'];
+  var labels = {idea:'Idea','needs-thought':'Needs Thought',backlog:'Backlog',todo:'Todo',doing:'Doing','partial-done':'Partial',review:'Review',done:'Done',failed:'Failed'};
 
   if (!cachedBoardData) {
     board.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center;width:100%">Loading board...</div>';
@@ -503,6 +503,9 @@ async function openTaskDetail(taskId) {
     // Load workflow step progress.
     loadTaskWfProgress(task);
 
+    // Load subtask tree.
+    loadSubtaskTree(taskId);
+
     // Load comments.
     loadTaskComments(taskId);
 
@@ -536,6 +539,47 @@ async function deleteTask() {
   } catch(e) {
     toast('刪除失敗: ' + e.message);
   }
+}
+
+async function loadSubtaskTree(taskId) {
+  var section = document.getElementById('td-subtask-section');
+  var treeEl = document.getElementById('td-subtask-tree');
+  try {
+    var data = await fetchJSON('/api/tasks/' + taskId + '/subtasks');
+    if (!data.children || data.children.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    treeEl.innerHTML = renderSubtaskNodes(data.children, 0);
+  } catch(e) {
+    section.style.display = 'none';
+  }
+}
+
+function renderSubtaskNodes(nodes, depth) {
+  return nodes.map(function(node) {
+    var t = node.task;
+    var statusColors = {backlog:'var(--muted)',todo:'var(--accent2)',doing:'var(--accent)',review:'var(--warn)',done:'var(--green)',failed:'var(--red)'};
+    var statusColor = statusColors[t.status] || 'var(--muted)';
+    var badge = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + statusColor + ';margin-right:5px"></span>';
+    var assignee = t.assignee ? '<span style="color:var(--muted);font-size:11px;margin-left:6px">@' + esc(t.assignee) + '</span>' : '';
+    var status = '<span style="color:var(--muted);font-size:11px;margin-left:6px">' + esc(t.status) + '</span>';
+    var title = '<span style="font-size:12px;cursor:pointer" onclick="openTaskDetail(\'' + esc(t.id) + '\')">' + esc(t.title) + '</span>';
+    var content = badge + title + status + assignee;
+    var childrenHtml = '';
+    if (node.children && node.children.length > 0) {
+      childrenHtml = '<div style="padding-left:16px">' + renderSubtaskNodes(node.children, depth + 1) + '</div>';
+      var summary = '<summary style="padding:3px 0;list-style:none;cursor:pointer"><span style="margin-right:4px;font-size:10px;color:var(--muted)">▶</span>' + content + '</summary>';
+      return '<details open style="padding-left:' + (depth > 0 ? '0' : '0') + 'px">' + summary + childrenHtml + '</details>';
+    }
+    if (node.truncated) {
+      childrenHtml = '<div style="padding-left:16px;color:var(--muted);font-size:11px;padding:2px 0">…さらに子タスクあり</div>';
+      var summary2 = '<summary style="padding:3px 0;list-style:none;cursor:pointer"><span style="margin-right:4px;font-size:10px;color:var(--muted)">▶</span>' + content + '</summary>';
+      return '<details style="padding-left:0">' + summary2 + childrenHtml + '</details>';
+    }
+    return '<div style="padding:3px 0;padding-left:12px">' + content + '</div>';
+  }).join('');
 }
 
 async function loadTaskComments(taskId) {

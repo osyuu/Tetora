@@ -224,6 +224,48 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 			return
 		}
 
+		// GET /api/tasks/{id}/subtasks → get subtask tree (max depth 3).
+		if r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "subtasks" {
+			type SubtaskNode struct {
+				Task      TaskBoard     `json:"task"`
+				Children  []SubtaskNode `json:"children"`
+				Truncated bool          `json:"truncated,omitempty"`
+			}
+			var buildTree func(parentID string, depth int) ([]SubtaskNode, error)
+			buildTree = func(parentID string, depth int) ([]SubtaskNode, error) {
+				children, err := taskBoardEngine.ListChildren(parentID)
+				if err != nil {
+					return nil, err
+				}
+				var nodes []SubtaskNode
+				for _, child := range children {
+					node := SubtaskNode{Task: child}
+					if depth < 3 {
+						sub, err := buildTree(child.ID, depth+1)
+						if err != nil {
+							return nil, err
+						}
+						node.Children = sub
+					} else {
+						// Check if there are deeper children without fetching them all.
+						deeper, _ := taskBoardEngine.ListChildren(child.ID)
+						if len(deeper) > 0 {
+							node.Truncated = true
+						}
+					}
+					nodes = append(nodes, node)
+				}
+				return nodes, nil
+			}
+			tree, err := buildTree(taskID, 1)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"children": tree})
+			return
+		}
+
 		// POST /api/tasks/{id}/move → move task.
 		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "move" {
 			var req struct {

@@ -729,6 +729,13 @@ func resumeWorkflow(ctx context.Context, cfg *Config, originalRunID string,
 	// Record running state.
 	recordWorkflowRun(cfg.HistoryDB, run)
 
+	// Update task's workflowRunId to point to the new run immediately,
+	// so resetStuckDoing() sees the correct (running) run during execution.
+	if taskID := originalRun.Variables["_taskId"]; taskID != "" {
+		tb := newTaskBoardEngine(cfg.HistoryDB, cfg.TaskBoard, cfg.Webhooks)
+		tb.UpdateTask(taskID, map[string]any{"workflowRunId": runID})
+	}
+
 	// Execute DAG.
 	dagErr := exec.executeDAG(execCtx)
 

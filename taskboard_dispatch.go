@@ -227,6 +227,19 @@ func (d *TaskBoardDispatcher) resetOrphanedDoing() {
 	}
 }
 
+// findRunningWorkflowForTask finds a currently running workflow run for a given task ID.
+func findRunningWorkflowForTask(historyDB, taskID string) string {
+	sql := fmt.Sprintf(
+		`SELECT id FROM workflow_runs WHERE status = 'running' AND json_extract(variables, '$._taskId') = '%s' LIMIT 1`,
+		escapeSQLite(taskID),
+	)
+	rows, err := queryDB(historyDB, sql)
+	if err != nil || len(rows) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%v", rows[0]["id"])
+}
+
 // resetStuckDoing resets tasks that have been stuck in "doing" longer than StuckThreshold
 // back to "todo" so they can be re-dispatched. This handles daemon crash/restart scenarios
 // where in-flight tasks never received their completion callback.
@@ -250,9 +263,25 @@ func (d *TaskBoardDispatcher) resetStuckDoing() {
 		wfRunID := fmt.Sprintf("%v", row["workflow_run_id"])
 
 		// Guard: if task has a running workflow, it's not stuck — refresh updated_at.
+		// Check both the pointed-to run AND any running run for this task ID.
 		if wfRunID != "" {
 			wfRun, wfErr := queryWorkflowRunByID(d.cfg.HistoryDB, wfRunID)
-			if wfErr == nil && wfRun.Status == "running" {
+			if wfErr == nil && (wfRun.Status == "running" || wfRun.Status == "resumed") {
+				// "resumed" means a new run was spawned — find and link to it.
+				if wfRun.Status == "resumed" {
+					newRunID := findRunningWorkflowForTask(d.cfg.HistoryDB, id)
+					if newRunID != "" {
+						execDB(d.engine.dbPath, fmt.Sprintf(
+							`UPDATE tasks SET workflow_run_id = '%s', updated_at = '%s' WHERE id = '%s'`,
+							escapeSQLite(newRunID),
+							escapeSQLite(time.Now().UTC().Format(time.RFC3339)),
+							escapeSQLite(id),
+						))
+						logInfo("taskboard dispatch: task workflow_run_id updated to active run",
+							"id", id, "title", title, "oldRunId", wfRunID[:8], "newRunId", newRunID[:8])
+						continue
+					}
+				}
 				touchSQL := fmt.Sprintf(
 					`UPDATE tasks SET updated_at = '%s' WHERE id = '%s'`,
 					escapeSQLite(time.Now().UTC().Format(time.RFC3339)),
@@ -261,6 +290,19 @@ func (d *TaskBoardDispatcher) resetStuckDoing() {
 				execDB(d.engine.dbPath, touchSQL)
 				logInfo("taskboard dispatch: task has running workflow, refreshing timestamp",
 					"id", id, "title", title, "workflowRunId", wfRunID[:8])
+				continue
+			}
+			// Also check if there's a running workflow for this task even if pointed run is terminal.
+			activeRunID := findRunningWorkflowForTask(d.cfg.HistoryDB, id)
+			if activeRunID != "" {
+				execDB(d.engine.dbPath, fmt.Sprintf(
+					`UPDATE tasks SET workflow_run_id = '%s', updated_at = '%s' WHERE id = '%s'`,
+					escapeSQLite(activeRunID),
+					escapeSQLite(time.Now().UTC().Format(time.RFC3339)),
+					escapeSQLite(id),
+				))
+				logInfo("taskboard dispatch: found active workflow for task, updating link",
+					"id", id, "title", title, "activeRunId", activeRunID[:8])
 				continue
 			}
 		}
@@ -281,7 +323,38 @@ func (d *TaskBoardDispatcher) resetStuckDoing() {
 		}
 
 		logInfo("taskboard dispatch: reset stuck doing task", "id", id, "title", title, "threshold", threshold)
+
+		// Notify via Discord (best-effort).
+		d.notifyStaleReset(id, title, threshold)
 	}
+}
+
+// notifyStaleReset sends a Discord notification when a stuck task is auto-reset.
+func (d *TaskBoardDispatcher) notifyStaleReset(taskID, title string, threshold time.Duration) {
+	if d.state == nil || d.state.discordBot == nil {
+		return
+	}
+	ch := d.cfg.Discord.NotifyChannelID
+	if ch == "" {
+		return
+	}
+
+	shortID := taskID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+
+	embed := discordEmbed{
+		Title: "⚠️ Stale Task Auto-Reset",
+		Description: fmt.Sprintf(
+			"Task **%s** (`%s`) was stuck in `doing` for >%s.\nReset to `todo` for re-dispatch.",
+			title, shortID, threshold,
+		),
+		Color:     0xFEE75C, // yellow
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Footer:    &discordEmbedFooter{Text: "tetora taskboard"},
+	}
+	d.state.discordBot.sendEmbed(ch, embed)
 }
 
 // scan finds todo tasks with an assignee and dispatches them.
@@ -325,8 +398,15 @@ func (d *TaskBoardDispatcher) scan() {
 
 	for _, t := range tasks {
 		if t.Assignee == "" {
-			logInfo("taskboard dispatch: skipping unassigned task", "id", t.ID, "title", t.Title)
-			continue
+			// Use defaultAgent as fallback for unassigned todo tasks.
+			defaultAgent := d.engine.config.AutoDispatch.DefaultAgent
+			if defaultAgent == "" {
+				defaultAgent = "ruri"
+			}
+			d.engine.UpdateTask(t.ID, map[string]any{"assignee": defaultAgent})
+			t.Assignee = defaultAgent
+			logInfo("taskboard dispatch: assigned defaultAgent to unassigned task",
+				"id", t.ID, "title", t.Title, "agent", defaultAgent)
 		}
 		if dispatched >= available {
 			logInfo("taskboard dispatch: maxConcurrentTasks reached, deferring remaining tasks",

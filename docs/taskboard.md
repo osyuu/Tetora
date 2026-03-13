@@ -39,7 +39,7 @@ idea → needs-thought → backlog → todo → doing → review → done
 | `partial-done` | Execution succeeded but post-processing failed (e.g. git merge conflict). Recoverable. |
 | `failed` | Execution failed or produced empty output. Will be retried up to `maxRetries`. |
 
-Auto-dispatch only picks up tasks with `status=todo` and a non-empty `assignee`. Tasks in `backlog` are triaged periodically by the configured `backlogAgent` (default: `ruri`) which promotes promising ones to `todo`.
+Auto-dispatch picks up tasks with `status=todo`. If a task has no assignee, it is automatically assigned to `defaultAgent` (default: `ruri`). Tasks in `backlog` are triaged periodically by the configured `backlogAgent` (default: `ruri`) which promotes promising ones to `todo`.
 
 ---
 
@@ -121,9 +121,91 @@ Auto-dispatch is the background loop that picks up `todo` tasks and runs them th
 
 1. A ticker fires every `interval` (default: `5m`).
 2. The scanner checks how many tasks are currently running. If `activeCount >= maxConcurrentTasks`, the scan is skipped.
-3. For each `todo` task with an assignee, the task is dispatched to that agent.
+3. For each `todo` task with an assignee, the task is dispatched to that agent. Unassigned tasks are auto-assigned to `defaultAgent`.
 4. When a task finishes, an immediate re-scan fires so the next batch starts without waiting for the full interval.
 5. On daemon startup, orphaned `doing` tasks from a previous crash are either restored to `done` (if there is completion evidence) or reset to `todo` (if truly orphaned).
+
+### Dispatch Flow
+
+```
+                          ┌─────────┐
+                          │  idea   │  (manual concept entry)
+                          └────┬────┘
+                               ▼
+                       ┌──────────────┐
+                       │ needs-thought │  (requires analysis)
+                       └───────┬──────┘
+                               ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │                       backlog                             │
+  │                                                           │
+  │  Triage (backlogAgent, default: ruri) runs periodically:  │
+  │   • "ready"     → assign agent → move to todo             │
+  │   • "decompose" → create subtasks → parent to doing       │
+  │   • "clarify"   → add question comment → stay in backlog  │
+  │                                                           │
+  │  Fast-path: already has assignee + no blocking deps       │
+  │   → skip LLM triage, promote directly to todo             │
+  └──────────────────────┬───────────────────────────────────┘
+                         ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │                        todo                               │
+  │                                                           │
+  │  Auto-dispatch picks up tasks every scan cycle:           │
+  │   • Has assignee       → dispatch to that agent           │
+  │   • No assignee        → assign defaultAgent, then run    │
+  │   • Has workflow       → run through workflow pipeline     │
+  │   • Has dependsOn      → wait until deps are done         │
+  │   • Resumable prev run → resume from checkpoint           │
+  └──────────────────────┬───────────────────────────────────┘
+                         ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │                       doing                               │
+  │                                                           │
+  │  Agent executes task (single prompt or workflow DAG)       │
+  │                                                           │
+  │  Guard: stuckThreshold (default 2h)                       │
+  │   • If workflow still running → refresh timestamp          │
+  │   • If truly stuck            → reset to todo              │
+  └────────┬──────────┬──────────┬──────────────────────────┘
+           │          │          │
+     success    partial failure  failure
+           │          │          │
+           ▼          ▼          ▼
+       ┌────────┐ ┌──────────┐ ┌────────┐
+       │ review │ │ partial- │ │ failed │
+       │        │ │   done   │ │        │
+       └───┬────┘ └────┬─────┘ └───┬────┘
+           │           │           │
+           │     Resume button     │  Retry (up to maxRetries)
+           │     in dashboard      │  or escalate
+           ▼                       ▼
+       ┌────────┐            ┌──────────┐
+       │  done  │            │ escalate │
+       └────────┘            │ to human │
+                             └──────────┘
+```
+
+### Triage Details
+
+Triage runs every `backlogTriageInterval` (default: `1h`) and is performed by the `backlogAgent` (default: `ruri`). The agent receives each backlog task with its comments and available agent roster, then decides:
+
+| Action | Effect |
+|---|---|
+| `ready` | Assigns a specific agent and promotes to `todo` |
+| `decompose` | Creates subtasks (with assignees), parent moves to `doing` |
+| `clarify` | Adds a question as a comment, task stays in `backlog` |
+
+**Fast-path**: Tasks that already have an assignee and no blocking dependencies skip LLM triage entirely and are promoted to `todo` immediately.
+
+### Auto-Assignment
+
+When a `todo` task has no assignee, the dispatcher automatically assigns it to `defaultAgent` (configurable, default: `ruri`). This prevents tasks from being silently stuck. The typical flow:
+
+1. Task created without assignee → enters `backlog`
+2. Triage promotes to `todo` (with or without assigning an agent)
+3. If triage didn't assign → dispatcher assigns `defaultAgent`
+4. Task executes normally
 
 ### Configuration
 
@@ -163,7 +245,7 @@ Add to `config.json`:
 | `enabled` | `false` | Enable auto-dispatch loop |
 | `interval` | `5m` | How often to scan for ready tasks |
 | `maxConcurrentTasks` | `3` | Maximum tasks running simultaneously |
-| `defaultAgent` | — | Fallback agent for unassigned `todo` tasks |
+| `defaultAgent` | `ruri` | Auto-assigned to unassigned `todo` tasks before dispatch |
 | `backlogAgent` | `ruri` | Agent that reviews and promotes backlog tasks |
 | `reviewAgent` | `ruri` | Agent that reviews completed task output |
 | `escalateAssignee` | `takuma` | Who gets assigned when auto-review requests human judgment |

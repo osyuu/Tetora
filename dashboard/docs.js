@@ -12,6 +12,10 @@ async function refreshDocs() {
     var list = await fetchJSON('/api/docs');
     docsState.list = list || [];
     docsState.loaded = true;
+    if (docsState.list.length === 0) {
+      showDocsUnderConstruction();
+      return;
+    }
     renderDocsSidebar();
     // Load README by default
     var readme = docsState.list.find(function(d) { return d.file === 'README.md'; });
@@ -21,9 +25,22 @@ async function refreshDocs() {
       loadDoc(docsState.list[0].file, docsState.list[0].name);
     }
   } catch(e) {
-    var sidebar = document.getElementById('docs-sidebar-list');
-    if (sidebar) sidebar.innerHTML = '<div style="color:var(--muted);padding:12px;font-size:12px">Failed to load docs list</div>';
+    showDocsUnderConstruction();
   }
+}
+
+function showDocsUnderConstruction() {
+  var sidebar = document.getElementById('docs-sidebar-list');
+  if (sidebar) sidebar.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:12px;text-align:center">Coming soon</div>';
+  var content = document.getElementById('docs-rendered');
+  if (content) content.innerHTML =
+    '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;color:var(--muted);text-align:center">' +
+      '<div style="font-size:40px;margin-bottom:16px">🚧</div>' +
+      '<div style="font-size:18px;font-weight:600;margin-bottom:8px">Documentation Under Construction</div>' +
+      '<div style="font-size:13px;max-width:360px">Documentation is being prepared. Check back later for guides, API references, and workflow examples.</div>' +
+    '</div>';
+  var title = document.getElementById('docs-title');
+  if (title) title.textContent = 'Documentation';
 }
 
 function renderDocsSidebar(filter) {

@@ -861,7 +861,7 @@ func (tb *TaskBoardEngine) GetBoardView(f BoardFilter) (*BoardView, error) {
 		return nil, err
 	}
 
-	statuses := []string{"idea", "needs-thought", "backlog", "todo", "doing", "review", "done", "failed"}
+	statuses := []string{"idea", "needs-thought", "backlog", "todo", "doing", "partial-done", "review", "done", "failed"}
 	columns := make(map[string][]TaskBoard)
 	for _, s := range statuses {
 		columns[s] = []TaskBoard{}
