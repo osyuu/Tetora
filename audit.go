@@ -7,9 +7,6 @@ type AuditEntry = audit.Entry
 type RoutingHistoryEntry = audit.RoutingHistoryEntry
 type AgentRoutingStats = audit.AgentRoutingStats
 
-// auditChan exposes the internal channel for any callers that reference it directly.
-var auditChan = audit.Chan
-
 func startAuditWriter()                      { audit.StartWriter() }
 func initAuditLog(dbPath string) error       { return audit.Init(dbPath) }
 func auditLog(dbPath, action, source, detail, ip string) {

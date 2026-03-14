@@ -103,26 +103,6 @@ func versionDiffDetail(dbPath, versionID1, versionID2 string) (map[string]any, e
 	return version.DiffDetail(dbPath, versionID1, versionID2)
 }
 
-func computeDiffSummary(oldContent, newContent, entityType string) string {
-	return version.ComputeDiffSummary(oldContent, newContent, entityType)
-}
-
-func computeJSONDiff(oldJSON, newJSON string) string {
-	return version.ComputeJSONDiff(oldJSON, newJSON)
-}
-
-func computeTextDiff(oldText, newText string) string {
-	return version.ComputeTextDiff(oldText, newText)
-}
-
-func flattenDiff(prefix string, old, new map[string]any, added, removed, changed *[]string) {
-	version.FlattenDiff(prefix, old, new, added, removed, changed)
-}
-
-func versionGetNestedValue(m map[string]any, path string) any {
-	return version.GetNestedValue(m, path)
-}
-
 // --- Prune ---
 
 func pruneVersions(dbPath, entityType, entityName string, keep int) {
