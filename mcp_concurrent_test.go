@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,13 +41,19 @@ func runMockMCPServer() {
 	writer := bufio.NewWriter(os.Stdout)
 
 	writeResp := func(id int, result interface{}) {
-		resultJSON, _ := json.Marshal(result)
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			log.Fatalf("runMockMCPServer: marshal result: %v", err)
+		}
 		resp := jsonRPCResponse{
 			JSONRPC: "2.0",
 			ID:      id,
 			Result:  json.RawMessage(resultJSON),
 		}
-		data, _ := json.Marshal(resp)
+		data, err := json.Marshal(resp)
+		if err != nil {
+			log.Fatalf("runMockMCPServer: marshal response: %v", err)
+		}
 		writer.Write(append(data, '\n'))
 		writer.Flush()
 	}
@@ -138,25 +145,36 @@ func setupMockMCPServer(t *testing.T) (*MCPServer, *bufio.Reader, io.WriteCloser
 }
 
 // sendMockResponse writes a JSON-RPC success response to w.
-func sendMockResponse(w io.Writer, id int, result interface{}) {
-	resultJSON, _ := json.Marshal(result)
+func sendMockResponse(t *testing.T, w io.Writer, id int, result interface{}) {
+	t.Helper()
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("sendMockResponse: marshal result: %v", err)
+	}
 	resp := jsonRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
 		Result:  json.RawMessage(resultJSON),
 	}
-	data, _ := json.Marshal(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("sendMockResponse: marshal response: %v", err)
+	}
 	w.Write(append(data, '\n'))
 }
 
 // sendMockError writes a JSON-RPC error response to w.
-func sendMockError(w io.Writer, id, code int, message string) {
+func sendMockError(t *testing.T, w io.Writer, id, code int, message string) {
+	t.Helper()
 	resp := jsonRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
 		Error:   &jsonRPCError{Code: code, Message: message},
 	}
-	data, _ := json.Marshal(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("sendMockError: marshal response: %v", err)
+	}
 	w.Write(append(data, '\n'))
 }
 
@@ -187,14 +205,30 @@ func TestConcurrentToolCalls(t *testing.T) {
 	srv, reqReader, respWriter := setupMockMCPServer(t)
 	go srv.runReader()
 
-	// Responder: collect all requests then reply in received order.
+	// Responder: spawn a goroutine per request to reply immediately, exercising
+	// real concurrent demux routing rather than a sequential batch-then-respond pattern.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		reqs := collectRequests(t, reqReader, N)
-		for _, req := range reqs {
-			sendMockResponse(respWriter, req.ID, map[string]int{"echo": req.ID})
+		var respWg sync.WaitGroup
+		for i := 0; i < N; i++ {
+			line, err := reqReader.ReadBytes('\n')
+			if err != nil {
+				t.Errorf("responder read[%d]: %v", i, err)
+				return
+			}
+			var req jsonRPCRequest
+			if err := json.Unmarshal(line, &req); err != nil {
+				t.Errorf("responder unmarshal[%d]: %v", i, err)
+				return
+			}
+			respWg.Add(1)
+			go func(r jsonRPCRequest) {
+				defer respWg.Done()
+				sendMockResponse(t, respWriter, r.ID, map[string]int{"echo": r.ID})
+			}(req)
 		}
+		respWg.Wait()
 	}()
 
 	var wg sync.WaitGroup
@@ -278,7 +312,7 @@ func TestOutOfOrderResponseMatching(t *testing.T) {
 		defer close(done)
 		reqs := collectRequests(t, reqReader, N)
 		for i := len(reqs) - 1; i >= 0; i-- {
-			sendMockResponse(respWriter, reqs[i].ID, map[string]int{"reqID": reqs[i].ID})
+			sendMockResponse(t, respWriter, reqs[i].ID, map[string]int{"reqID": reqs[i].ID})
 		}
 	}()
 
@@ -323,8 +357,11 @@ func TestErrorPropagationFromToolHandler(t *testing.T) {
 			return
 		}
 		var req jsonRPCRequest
-		json.Unmarshal(line, &req)
-		sendMockError(respWriter, req.ID, -32000, "tool handler failed: permission denied")
+		if err := json.Unmarshal(line, &req); err != nil {
+			t.Errorf("TestErrorPropagationFromToolHandler: unmarshal request: %v", err)
+			return
+		}
+		sendMockError(t, respWriter, req.ID, -32000, "tool handler failed: permission denied")
 	}()
 
 	_, err := srv.callTool(context.Background(), "restricted_tool", json.RawMessage(`{}`))
@@ -333,6 +370,9 @@ func TestErrorPropagationFromToolHandler(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tool handler failed") {
 		t.Errorf("expected error to contain 'tool handler failed', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("expected error to contain 'permission denied', got: %v", err)
 	}
 }
 
@@ -344,9 +384,17 @@ func TestContextCancellationDuringRequest(t *testing.T) {
 	srv, reqReader, _ := setupMockMCPServer(t)
 	go srv.runReader()
 
-	// Drain outbound requests so the pipe write in sendRequest doesn't block.
-	// We intentionally never write a response, so the select will see ctx.Done().
+	// requestReceived is closed once the server has received the outbound request,
+	// at which point we know sendRequest is blocked in the select waiting for a response.
+	// We intentionally never write a response, so ctx cancel will unblock it.
+	requestReceived := make(chan struct{})
 	go func() {
+		_, err := reqReader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		close(requestReceived)
+		// Drain any further requests to avoid blocking the write side.
 		for {
 			_, err := reqReader.ReadBytes('\n')
 			if err != nil {
@@ -355,18 +403,24 @@ func TestContextCancellationDuringRequest(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	start := time.Now()
-	_, err := srv.sendRequest(ctx, "tools/call", nil)
-	elapsed := time.Since(start)
+	// Cancel the context only after the request has been received by the server,
+	// guaranteeing sendRequest is blocked in the select when cancellation fires.
+	go func() {
+		select {
+		case <-requestReceived:
+			cancel()
+		case <-time.After(5 * time.Second):
+			t.Errorf("timed out waiting for request to be received")
+			cancel()
+		}
+	}()
 
+	_, err := srv.sendRequest(ctx, "tools/call", nil)
 	if err == nil {
 		t.Fatal("expected error on context cancellation, got nil")
-	}
-	if elapsed > 400*time.Millisecond {
-		t.Errorf("sendRequest did not unblock promptly: took %v", elapsed)
 	}
 }
 
@@ -653,7 +707,7 @@ func TestMakeToolHandlerClosure(t *testing.T) {
 		}
 		var req jsonRPCRequest
 		json.Unmarshal(line, &req)
-		sendMockResponse(respWriter, req.ID, toolsCallResult{
+		sendMockResponse(t, respWriter, req.ID, toolsCallResult{
 			Content: []struct {
 				Type string `json:"type"`
 				Text string `json:"text,omitempty"`
