@@ -1,178 +1,40 @@
 package main
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
+	"tetora/internal/sprite"
 )
 
 // --- Sprite State Constants ---
-// Universal agent sprite states — not tied to any specific team.
 
 const (
-	SpriteIdle      = "idle"
-	SpriteWork      = "work"
-	SpriteThink     = "think"
-	SpriteTalk      = "talk"
-	SpriteReview    = "review"
-	SpriteCelebrate = "celebrate"
-	SpriteError     = "error"
+	SpriteIdle      = sprite.Idle
+	SpriteWork      = sprite.Work
+	SpriteThink     = sprite.Think
+	SpriteTalk      = sprite.Talk
+	SpriteReview    = sprite.Review
+	SpriteCelebrate = sprite.Celebrate
+	SpriteError     = sprite.Error
 
-	SpriteWalkDown  = "walk_down"
-	SpriteWalkUp    = "walk_up"
-	SpriteWalkLeft  = "walk_left"
-	SpriteWalkRight = "walk_right"
+	SpriteWalkDown  = sprite.WalkDown
+	SpriteWalkUp    = sprite.WalkUp
+	SpriteWalkLeft  = sprite.WalkLeft
+	SpriteWalkRight = sprite.WalkRight
 )
 
-// --- Sprite Config (user-customizable) ---
+// --- Type Aliases ---
 
-// SpriteConfig describes spritesheet layout and per-agent sheet assignments.
-// Loaded from ~/.tetora/media/sprites/config.json.
-type SpriteConfig struct {
-	CellWidth  int                        `json:"cellWidth"`
-	CellHeight int                        `json:"cellHeight"`
-	Background string                     `json:"background,omitempty"` // optional background PNG filename
-	States     []SpriteStateDef           `json:"states"`
-	Agents     map[string]AgentSpriteDef  `json:"agents"`
-}
+type SpriteConfig = sprite.Config
+type SpriteStateDef = sprite.StateDef
+type AgentSpriteDef = sprite.AgentDef
+type agentSpriteTracker = sprite.Tracker
 
-// SpriteStateDef maps a state name to a spritesheet row.
-type SpriteStateDef struct {
-	Name   string `json:"name"`
-	Row    int    `json:"row"`
-	Frames int    `json:"frames"`
-}
+// --- Wrapper Functions ---
 
-// AgentSpriteDef holds per-agent sprite configuration.
-// Two modes:
-//   - Single sheet: set "sheet" — one PNG with all states as rows (uses States row mapping).
-//   - Multi sheet:  set "sheets" — one PNG per state, each is a single horizontal strip.
-//
-// If both are set, "sheets" entries take priority for matched states; "sheet" is used as fallback.
-type AgentSpriteDef struct {
-	Sheet  string            `json:"sheet,omitempty"`  // single spritesheet PNG
-	Sheets map[string]string `json:"sheets,omitempty"` // state name -> PNG filename
-}
-
-// defaultSpriteConfig returns the built-in sprite config with all 11 states.
-func defaultSpriteConfig() SpriteConfig {
-	return SpriteConfig{
-		CellWidth:  32,
-		CellHeight: 32,
-		States: []SpriteStateDef{
-			{Name: SpriteWalkDown, Row: 0, Frames: 4},
-			{Name: SpriteWalkUp, Row: 1, Frames: 4},
-			{Name: SpriteWalkLeft, Row: 2, Frames: 4},
-			{Name: SpriteWalkRight, Row: 3, Frames: 4},
-			{Name: SpriteIdle, Row: 4, Frames: 4},
-			{Name: SpriteWork, Row: 5, Frames: 4},
-			{Name: SpriteThink, Row: 6, Frames: 2},
-			{Name: SpriteTalk, Row: 7, Frames: 4},
-			{Name: SpriteReview, Row: 8, Frames: 2},
-			{Name: SpriteCelebrate, Row: 9, Frames: 4},
-			{Name: SpriteError, Row: 10, Frames: 2},
-		},
-		Agents: map[string]AgentSpriteDef{},
-	}
-}
-
-// loadSpriteConfig reads config.json from the sprites directory.
-// Returns default config if file doesn't exist or is unreadable.
-// agentKeys are auto-registered into Agents if not already present,
-// so the frontend always sees all known agents (with or without custom sheets).
-func loadSpriteConfig(spritesDir string, agentKeys []string) SpriteConfig {
-	def := defaultSpriteConfig()
-	data, err := os.ReadFile(filepath.Join(spritesDir, "config.json"))
-	if err != nil {
-		// No config file — start from defaults.
-		cfg := def
-		for _, k := range agentKeys {
-			cfg.Agents[k] = AgentSpriteDef{}
-		}
-		return cfg
-	}
-	var cfg SpriteConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		cfg = def
-		for _, k := range agentKeys {
-			cfg.Agents[k] = AgentSpriteDef{}
-		}
-		return cfg
-	}
-	// Fill zero values from defaults.
-	if cfg.CellWidth == 0 {
-		cfg.CellWidth = def.CellWidth
-	}
-	if cfg.CellHeight == 0 {
-		cfg.CellHeight = def.CellHeight
-	}
-	if len(cfg.States) == 0 {
-		cfg.States = def.States
-	}
-	if cfg.Agents == nil {
-		cfg.Agents = map[string]AgentSpriteDef{}
-	}
-	// Auto-register known agents that aren't in config yet.
-	for _, k := range agentKeys {
-		if _, exists := cfg.Agents[k]; !exists {
-			cfg.Agents[k] = AgentSpriteDef{}
-		}
-	}
-	return cfg
-}
-
-// initSpriteConfig writes the default config.json if it doesn't exist.
-func initSpriteConfig(spritesDir string) error {
-	path := filepath.Join(spritesDir, "config.json")
-	if _, err := os.Stat(path); err == nil {
-		return nil // already exists
-	}
-	cfg := defaultSpriteConfig()
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
-
-// --- Per-Agent Sprite State Tracker ---
-
-// agentSpriteTracker tracks the current sprite state for each agent.
-type agentSpriteTracker struct {
-	mu    sync.RWMutex
-	state map[string]string // agent name -> sprite state
-}
-
-func newAgentSpriteTracker() *agentSpriteTracker {
-	return &agentSpriteTracker{state: make(map[string]string)}
-}
-
-func (t *agentSpriteTracker) set(agent, state string) {
-	t.mu.Lock()
-	t.state[agent] = state
-	t.mu.Unlock()
-}
-
-func (t *agentSpriteTracker) get(agent string) string {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	if s, ok := t.state[agent]; ok {
-		return s
-	}
-	return SpriteIdle
-}
-
-func (t *agentSpriteTracker) snapshot() map[string]string {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	m := make(map[string]string, len(t.state))
-	for k, v := range t.state {
-		m[k] = v
-	}
-	return m
-}
+func defaultSpriteConfig() SpriteConfig                              { return sprite.DefaultConfig() }
+func loadSpriteConfig(dir string, keys []string) SpriteConfig        { return sprite.LoadConfig(dir, keys) }
+func initSpriteConfig(dir string) error                              { return sprite.InitConfig(dir) }
+func newAgentSpriteTracker() *agentSpriteTracker                     { return sprite.NewTracker() }
 
 // --- State Resolution ---
 
