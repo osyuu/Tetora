@@ -30,7 +30,7 @@ function makeSVGLineChart(data, series, opts) {
     const y = (PT + cH - pct * cH).toFixed(1);
     const val = maxVal * pct;
     const label = opts.formatVal ? opts.formatVal(val) : (val < 1 ? val.toFixed(3) : Math.round(val).toString());
-    return `<line x1="${PL}" y1="${y}" x2="${PL+cW}" y2="${y}" stroke="#1e1e2e" stroke-width="1"/><text x="${PL-3}" y="${(parseFloat(y)+3.5).toFixed(1)}" font-size="8" fill="#6b6b80" text-anchor="end">${label}</text>`;
+    return `<line x1="${PL}" y1="${y}" x2="${PL+cW}" y2="${y}" stroke="var(--border)" stroke-width="1"/><text x="${PL-3}" y="${(parseFloat(y)+3.5).toFixed(1)}" font-size="8" fill="var(--muted)" text-anchor="end">${label}</text>`;
   }).join('');
 
   const lines = series.map(s => {

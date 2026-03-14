@@ -450,7 +450,7 @@ function renderChatBubble(m) {
   var isSys = m.role === 'system';
   var bubbleCls = isUser ? 'chat-bubble-user' : isSys ? 'chat-bubble-system' : 'chat-bubble-agent';
   var label = isUser ? 'You' : isSys ? 'System' : chatSessionRole;
-  var labelColor = isUser ? '#60a5fa' : isSys ? 'var(--muted)' : chatRoleColor(chatSessionRole);
+  var labelColor = isUser ? 'var(--accent)' : isSys ? 'var(--muted)' : chatRoleColor(chatSessionRole);
   var contentHTML = isUser
     ? '<div style="white-space:pre-wrap;word-break:break-word">' + esc(m.content || '') + '</div>'
     : '<div class="md-rendered">' + renderMarkdown(m.content || '') + '</div>';

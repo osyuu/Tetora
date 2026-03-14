@@ -666,9 +666,9 @@ async function viewSession(shortId, fullId) {
     document.getElementById('session-modal-messages').innerHTML = msgs.map(m => {
       const isUser = m.role === 'user';
       const isSys = m.role === 'system';
-      const bgColor = isUser ? '#1a1a3a' : isSys ? '#1a1a1a' : '#0d1a1a';
+      const bgColor = isUser ? 'color-mix(in srgb, var(--accent) 12%, var(--surface))' : isSys ? 'var(--surface)' : 'color-mix(in srgb, var(--green) 10%, var(--surface))';
       const label = isUser ? 'USER' : isSys ? 'SYSTEM' : (s.agent || 'AGENT');
-      const labelColor = isUser ? '#60a5fa' : isSys ? 'var(--muted)' : 'var(--green)';
+      const labelColor = isUser ? 'var(--accent)' : isSys ? 'var(--muted)' : 'var(--green)';
       const costInfo = m.costUsd > 0 ? ` | ${costFmt(m.costUsd)}` : '';
       const modelInfo = m.model ? ` | ${esc(m.model)}` : '';
       return `<div style="background:${bgColor};border:1px solid var(--border);border-radius:8px;padding:12px">
@@ -845,9 +845,9 @@ function connectSessionStream(sessionId) {
   function appendMessageBubble(role, content, ts) {
     const isUser = role === 'user';
     const isSys = role === 'system';
-    const bgColor = isUser ? '#1a1a3a' : isSys ? '#1a1a1a' : '#0d1a1a';
+    const bgColor = isUser ? 'color-mix(in srgb, var(--accent) 12%, var(--surface))' : isSys ? 'var(--surface)' : 'color-mix(in srgb, var(--green) 10%, var(--surface))';
     const label = isUser ? 'USER' : isSys ? 'SYSTEM' : (sessionSSERole || 'AGENT').toUpperCase();
-    const labelColor = isUser ? '#60a5fa' : isSys ? 'var(--muted)' : 'var(--green)';
+    const labelColor = isUser ? 'var(--accent)' : isSys ? 'var(--muted)' : 'var(--green)';
     const timeStr = ts ? dateTimeStr(ts) : dateTimeStr(new Date().toISOString());
     appendToModal(
       '<div style="background:' + bgColor + ';border:1px solid var(--border);border-radius:8px;padding:12px">' +
