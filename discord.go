@@ -199,6 +199,11 @@ type DiscordBot struct {
 	notifier     *discordTaskNotifier     // task notification (thread-per-task)
 	terminal     *terminalBridge         // terminal bridge (tmux sessions)
 	msgSem       chan struct{}            // limits concurrent message handlers
+	// Message dedup: ring buffer of recently processed message IDs to prevent
+	// duplicate handling on gateway reconnect/resume event replay.
+	dedupMu    sync.Mutex
+	dedupRing  [128]string
+	dedupIdx   int
 }
 
 func newDiscordBot(cfg *Config, state *dispatchState, sem, childSem chan struct{}, cron *CronEngine) *DiscordBot {
@@ -430,6 +435,21 @@ func (db *DiscordBot) handleEvent(payload gatewayPayload) {
 	}
 }
 
+// isDuplicateMessage checks if a message ID was already processed recently.
+// Returns true if duplicate (should skip), false if new (recorded for future checks).
+func (db *DiscordBot) isDuplicateMessage(msgID string) bool {
+	db.dedupMu.Lock()
+	defer db.dedupMu.Unlock()
+	for _, id := range db.dedupRing {
+		if id == msgID {
+			return true
+		}
+	}
+	db.dedupRing[db.dedupIdx%len(db.dedupRing)] = msgID
+	db.dedupIdx++
+	return false
+}
+
 // handleMessageWithType is the top-level message handler that checks for thread bindings
 // before falling through to normal message handling. (P14.2)
 func (db *DiscordBot) handleMessageWithType(msg discordMessage, channelType int) {
@@ -440,6 +460,12 @@ func (db *DiscordBot) handleMessageWithType(msg discordMessage, channelType int)
 
 	// Ignore bots.
 	if msg.Author.Bot || msg.Author.ID == db.botUserID {
+		return
+	}
+
+	// Dedup: skip if this message was already processed (gateway resume replays events).
+	if db.isDuplicateMessage(msg.ID) {
+		logDebug("discord message dedup: skipping replayed message", "msgId", msg.ID, "author", msg.Author.Username)
 		return
 	}
 
