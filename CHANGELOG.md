@@ -11,6 +11,28 @@
 
 ---
 
+## [v2.0.4] - 2026-03-16
+
+### Added
+- **Skill observability CLI**: `tetora skill log`, `skill stats`, `skill diagnostics` commands for tracking skill usage
+- **Session-based skill completion**: `recordSkillCompletion` uses `session_id` for accurate attribution
+- **Dashboard MCP toggle**: Claude Code MCP server enable/disable in Settings > Integrations
+- **`local-install` Makefile target**: Build, stop daemon, copy binary, codesign, restart in one command
+- **Upgrade `--force` flag**: Force re-download even when version matches
+
+### Fixed
+- **`tetora upgrade` semver comparison**: Proper numeric version comparison instead of string equality; dev builds (2.0.3.1) correctly upgrade to releases (2.0.3)
+- **`tetora upgrade` nil pointer dereference**: `os.Stat` failure no longer crashes on `info.Size()`
+- **`tetora upgrade` binary verification**: Downloaded binary is executed to confirm version before and after replacement
+- **Classify cron/workflow as keyword-based**: No longer auto-Complex; uses keyword counting to save tokens on simple scheduled tasks
+- **MCP concurrent test race condition**: Channel-based synchronization replaces `time.Sleep` in `TestServerContextCancellationDuringRequest`
+
+### Changed
+- **Backup includes `dbs/`**: Database files now included in `tetora backup` output
+- **Permission mode cleanup**: `autoEdit` replaced with `acceptEdits` in examples and dashboard
+
+---
+
 ## [v2.0.3] - 2026-03-16
 
 ### Added
