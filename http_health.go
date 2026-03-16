@@ -159,12 +159,12 @@ func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
 
 	// --- Metrics ---
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		if metrics == nil {
+		if metricsGlobal == nil {
 			http.Error(w, "metrics not initialized", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		metrics.WriteMetrics(w)
+		metricsGlobal.WriteMetrics(w)
 	})
 
 	// --- Circuit Breakers ---
