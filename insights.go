@@ -6,11 +6,44 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
+
+	"tetora/internal/automation/insights"
 )
 
 // --- P24.3: Life Insights Engine ---
 
-var globalInsightsEngine *InsightsEngine
+var globalInsightsEngine *insights.Engine
+
+// newInsightsEngine constructs an insights.Engine from Config + globals.
+func newInsightsEngine(cfg *Config) *insights.Engine {
+	deps := insights.Deps{
+		Query:   queryDB,
+		Escape:  escapeSQLite,
+		LogWarn: logWarn,
+		UUID:    newUUID,
+	}
+	if globalFinanceService != nil {
+		deps.FinanceDBPath = globalFinanceService.DBPath()
+	}
+	if globalTaskManager != nil {
+		deps.TasksDBPath = globalTaskManager.DBPath()
+	}
+	if globalUserProfileService != nil {
+		deps.ProfileDBPath = globalUserProfileService.DBPath()
+	}
+	if globalContactsService != nil {
+		deps.ContactsDBPath = globalContactsService.DBPath()
+	}
+	if globalHabitsService != nil {
+		deps.HabitsDBPath = globalHabitsService.DBPath()
+		deps.GetHabitStreak = globalHabitsService.GetStreak
+	}
+	return insights.New(cfg.HistoryDB, deps)
+}
+
+func initInsightsDB(dbPath string) error {
+	return insights.InitDB(dbPath)
+}
 
 // --- Tool Handlers ---
 

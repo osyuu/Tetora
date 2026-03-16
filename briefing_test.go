@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"tetora/internal/automation/briefing"
+	bpkg "tetora/internal/automation/briefing"
 )
 
 // --- Test helpers ---
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS history (
 // setupBriefingService creates a briefing service with all optional globals cleared
 // to nil for isolation. Callers that need a specific global must set it BEFORE calling
 // this function so it gets captured into the service's deps.
-func setupBriefingService(t *testing.T) (*BriefingService, string, func()) {
+func setupBriefingService(t *testing.T) (*bpkg.Service, string, func()) {
 	t.Helper()
 	dbPath := setupBriefingTestDB(t)
 	cfg := &Config{HistoryDB: dbPath}
@@ -96,7 +96,7 @@ func setupBriefingService(t *testing.T) (*BriefingService, string, func()) {
 }
 
 // testBriefingAppCtx creates a context with an App containing the given BriefingService.
-func testBriefingAppCtx(svc *BriefingService) context.Context {
+func testBriefingAppCtx(svc *bpkg.Service) context.Context {
 	app := &App{Briefing: svc}
 	return withApp(context.Background(), app)
 }
@@ -126,7 +126,7 @@ func TestNewBriefingService(t *testing.T) {
 // --- Greeting tests ---
 
 func TestMorningGreeting(t *testing.T) {
-	svc := briefing.New("", briefing.Deps{})
+	svc := bpkg.New("", bpkg.Deps{})
 
 	tests := []struct {
 		name string
@@ -157,7 +157,7 @@ func TestMorningGreeting(t *testing.T) {
 }
 
 func TestEveningGreeting(t *testing.T) {
-	svc := briefing.New("", briefing.Deps{})
+	svc := bpkg.New("", bpkg.Deps{})
 	date := time.Date(2026, 2, 23, 20, 0, 0, 0, time.UTC) // Monday
 	greeting := svc.EveningGreeting(date)
 	if !strings.Contains(greeting, "Good evening!") {
@@ -229,11 +229,11 @@ func TestGenerateEvening_NoServices(t *testing.T) {
 // --- FormatBriefing ---
 
 func TestFormatBriefing(t *testing.T) {
-	briefing := &Briefing{
+	briefing := &bpkg.Briefing{
 		Type:     "morning",
 		Date:     "2026-02-23",
 		Greeting: "Good morning! It's Monday, February 23, 2026.",
-		Sections: []BriefingSection{
+		Sections: []bpkg.BriefingSection{
 			{
 				Title:   "Today's Schedule",
 				Icon:    "calendar",
@@ -251,7 +251,7 @@ func TestFormatBriefing(t *testing.T) {
 		GeneratedAt: "2026-02-23T08:00:00Z",
 	}
 
-	output := FormatBriefing(briefing)
+	output := bpkg.FormatBriefing(briefing)
 
 	// Check header.
 	if !strings.Contains(output, "## Morning Briefing -- 2026-02-23") {
@@ -280,14 +280,14 @@ func TestFormatBriefing(t *testing.T) {
 }
 
 func TestFormatBriefing_Evening(t *testing.T) {
-	briefing := &Briefing{
+	briefing := &bpkg.Briefing{
 		Type:     "evening",
 		Date:     "2026-02-23",
 		Greeting: "Good evening! Here's your Monday wrap-up.",
 		Quote:    "What was the best part of your day?",
 	}
 
-	output := FormatBriefing(briefing)
+	output := bpkg.FormatBriefing(briefing)
 
 	if !strings.Contains(output, "## Evening Briefing -- 2026-02-23") {
 		t.Errorf("missing header in output:\n%s", output)
@@ -299,12 +299,12 @@ func TestFormatBriefing_Evening(t *testing.T) {
 }
 
 func TestFormatBriefing_EmptySections(t *testing.T) {
-	briefing := &Briefing{
+	briefing := &bpkg.Briefing{
 		Type:     "morning",
 		Date:     "2026-01-01",
 		Greeting: "Hello!",
 	}
-	output := FormatBriefing(briefing)
+	output := bpkg.FormatBriefing(briefing)
 	if !strings.Contains(output, "## Morning Briefing") {
 		t.Errorf("missing header in empty briefing output:\n%s", output)
 	}
@@ -316,7 +316,7 @@ func TestFormatBriefing_EmptySections(t *testing.T) {
 // --- Quote / Reflection variation ---
 
 func TestDailyQuote_DifferentDays(t *testing.T) {
-	svc := briefing.New("", briefing.Deps{})
+	svc := bpkg.New("", bpkg.Deps{})
 	seen := make(map[string]bool)
 	for day := 1; day <= 7; day++ {
 		date := time.Date(2026, 1, day, 8, 0, 0, 0, time.UTC)
@@ -332,7 +332,7 @@ func TestDailyQuote_DifferentDays(t *testing.T) {
 }
 
 func TestEveningReflection_DifferentDays(t *testing.T) {
-	svc := briefing.New("", briefing.Deps{})
+	svc := bpkg.New("", bpkg.Deps{})
 	seen := make(map[string]bool)
 	for day := 1; day <= 7; day++ {
 		date := time.Date(2026, 1, day, 20, 0, 0, 0, time.UTC)
@@ -358,9 +358,9 @@ func TestCapitalizeFirst(t *testing.T) {
 		{"ABC", "ABC"},
 	}
 	for _, tt := range tests {
-		got := capitalizeFirst(tt.in)
+		got := bpkg.CapitalizeFirst(tt.in)
 		if got != tt.want {
-			t.Errorf("capitalizeFirst(%q) = %q, want %q", tt.in, got, tt.want)
+			t.Errorf("bpkg.CapitalizeFirst(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
@@ -493,7 +493,7 @@ func TestToolBriefingEvening_InvalidJSON(t *testing.T) {
 // --- Section-level tests ---
 
 func TestScheduleSection_NilService(t *testing.T) {
-	svc := briefing.New("/tmp/test.db", briefing.Deps{
+	svc := bpkg.New("/tmp/test.db", bpkg.Deps{
 		Query:  queryDB,
 		Escape: escapeSQLite,
 		// ViewSchedule is nil by default
@@ -505,7 +505,7 @@ func TestScheduleSection_NilService(t *testing.T) {
 }
 
 func TestRemindersSection_NoDB(t *testing.T) {
-	svc := briefing.New("", briefing.Deps{Query: queryDB, Escape: escapeSQLite})
+	svc := bpkg.New("", bpkg.Deps{Query: queryDB, Escape: escapeSQLite})
 	sec := svc.RemindersSection("2026-02-23")
 	if sec != nil {
 		t.Error("expected nil when dbPath is empty")
@@ -513,7 +513,7 @@ func TestRemindersSection_NoDB(t *testing.T) {
 }
 
 func TestTasksSection_NilService(t *testing.T) {
-	svc := briefing.New("/tmp/test.db", briefing.Deps{
+	svc := bpkg.New("/tmp/test.db", bpkg.Deps{
 		Query:          queryDB,
 		Escape:         escapeSQLite,
 		TasksAvailable: false,
@@ -525,7 +525,7 @@ func TestTasksSection_NilService(t *testing.T) {
 }
 
 func TestHabitsSection_NilService(t *testing.T) {
-	svc := briefing.New("/tmp/test.db", briefing.Deps{
+	svc := bpkg.New("/tmp/test.db", bpkg.Deps{
 		Query:           queryDB,
 		Escape:          escapeSQLite,
 		HabitsAvailable: false,
@@ -537,7 +537,7 @@ func TestHabitsSection_NilService(t *testing.T) {
 }
 
 func TestGoalsSection_NilService(t *testing.T) {
-	svc := briefing.New("/tmp/test.db", briefing.Deps{
+	svc := bpkg.New("/tmp/test.db", bpkg.Deps{
 		Query:          queryDB,
 		Escape:         escapeSQLite,
 		GoalsAvailable: false,
@@ -549,7 +549,7 @@ func TestGoalsSection_NilService(t *testing.T) {
 }
 
 func TestContactsSection_NilService(t *testing.T) {
-	svc := briefing.New("/tmp/test.db", briefing.Deps{
+	svc := bpkg.New("/tmp/test.db", bpkg.Deps{
 		Query:  queryDB,
 		Escape: escapeSQLite,
 		// GetUpcomingEvents is nil by default
@@ -561,7 +561,7 @@ func TestContactsSection_NilService(t *testing.T) {
 }
 
 func TestSpendingSection_NilService(t *testing.T) {
-	svc := briefing.New("/tmp/test.db", briefing.Deps{
+	svc := bpkg.New("/tmp/test.db", bpkg.Deps{
 		Query:            queryDB,
 		Escape:           escapeSQLite,
 		FinanceAvailable: false,
@@ -573,7 +573,7 @@ func TestSpendingSection_NilService(t *testing.T) {
 }
 
 func TestDaySummarySection_NoDB(t *testing.T) {
-	svc := briefing.New("", briefing.Deps{Query: queryDB, Escape: escapeSQLite})
+	svc := bpkg.New("", bpkg.Deps{Query: queryDB, Escape: escapeSQLite})
 	sec := svc.DaySummarySection("2026-02-23")
 	if sec != nil {
 		t.Error("expected nil when dbPath is empty")
@@ -926,11 +926,11 @@ func TestGenerateEvening_WithHistory(t *testing.T) {
 // --- Briefing serialization ---
 
 func TestBriefingJSON(t *testing.T) {
-	briefing := &Briefing{
+	briefing := &bpkg.Briefing{
 		Type:     "morning",
 		Date:     "2026-02-23",
 		Greeting: "Hello",
-		Sections: []BriefingSection{
+		Sections: []bpkg.BriefingSection{
 			{Title: "Test", Icon: "star", Items: []string{"item1"}, Summary: "1 item"},
 		},
 		Quote:       "A quote",
@@ -942,7 +942,7 @@ func TestBriefingJSON(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var decoded Briefing
+	var decoded bpkg.Briefing
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

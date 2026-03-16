@@ -4,14 +4,16 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"tetora/internal/knowledge"
 )
 
 func TestInitKnowledgeDir(t *testing.T) {
 	dir := t.TempDir()
-	kDir := initKnowledgeDir(dir)
+	kDir := knowledge.InitDir(dir)
 	want := filepath.Join(dir, "knowledge")
 	if kDir != want {
-		t.Errorf("initKnowledgeDir = %q, want %q", kDir, want)
+		t.Errorf("InitDir = %q, want %q", kDir, want)
 	}
 	if _, err := os.Stat(kDir); err != nil {
 		t.Errorf("knowledge dir not created: %v", err)
@@ -20,18 +22,18 @@ func TestInitKnowledgeDir(t *testing.T) {
 
 func TestInitKnowledgeDirIdempotent(t *testing.T) {
 	dir := t.TempDir()
-	initKnowledgeDir(dir)
-	kDir := initKnowledgeDir(dir)
+	knowledge.InitDir(dir)
+	kDir := knowledge.InitDir(dir)
 	if _, err := os.Stat(kDir); err != nil {
 		t.Errorf("knowledge dir not found on second call: %v", err)
 	}
 }
 
 func TestListKnowledgeFilesEmpty(t *testing.T) {
-	dir := initKnowledgeDir(t.TempDir())
-	files, err := listKnowledgeFiles(dir)
+	dir := knowledge.InitDir(t.TempDir())
+	files, err := knowledge.ListFiles(dir)
 	if err != nil {
-		t.Fatalf("listKnowledgeFiles: %v", err)
+		t.Fatalf("ListFiles: %v", err)
 	}
 	if len(files) != 0 {
 		t.Errorf("expected 0 files, got %d", len(files))
@@ -39,7 +41,7 @@ func TestListKnowledgeFilesEmpty(t *testing.T) {
 }
 
 func TestListKnowledgeFilesNonExistent(t *testing.T) {
-	files, err := listKnowledgeFiles("/nonexistent/path/knowledge")
+	files, err := knowledge.ListFiles("/nonexistent/path/knowledge")
 	if err != nil {
 		t.Fatalf("expected nil error for nonexistent dir, got: %v", err)
 	}
@@ -49,13 +51,13 @@ func TestListKnowledgeFilesNonExistent(t *testing.T) {
 }
 
 func TestListKnowledgeFilesSkipsHidden(t *testing.T) {
-	dir := initKnowledgeDir(t.TempDir())
+	dir := knowledge.InitDir(t.TempDir())
 	os.WriteFile(filepath.Join(dir, ".hidden"), []byte("secret"), 0o644)
 	os.WriteFile(filepath.Join(dir, "visible.md"), []byte("content"), 0o644)
 
-	files, err := listKnowledgeFiles(dir)
+	files, err := knowledge.ListFiles(dir)
 	if err != nil {
-		t.Fatalf("listKnowledgeFiles: %v", err)
+		t.Fatalf("ListFiles: %v", err)
 	}
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(files))
@@ -66,13 +68,13 @@ func TestListKnowledgeFilesSkipsHidden(t *testing.T) {
 }
 
 func TestListKnowledgeFilesSkipsDirs(t *testing.T) {
-	dir := initKnowledgeDir(t.TempDir())
+	dir := knowledge.InitDir(t.TempDir())
 	os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
 	os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello"), 0o644)
 
-	files, err := listKnowledgeFiles(dir)
+	files, err := knowledge.ListFiles(dir)
 	if err != nil {
-		t.Fatalf("listKnowledgeFiles: %v", err)
+		t.Fatalf("ListFiles: %v", err)
 	}
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(files))
@@ -81,18 +83,16 @@ func TestListKnowledgeFilesSkipsDirs(t *testing.T) {
 
 func TestAddKnowledgeFile(t *testing.T) {
 	baseDir := t.TempDir()
-	kDir := initKnowledgeDir(baseDir)
+	kDir := knowledge.InitDir(baseDir)
 
-	// Create a source file.
 	srcDir := t.TempDir()
 	srcPath := filepath.Join(srcDir, "notes.md")
 	os.WriteFile(srcPath, []byte("# Knowledge Notes"), 0o644)
 
-	if err := addKnowledgeFile(kDir, srcPath); err != nil {
-		t.Fatalf("addKnowledgeFile: %v", err)
+	if err := knowledge.AddFile(kDir, srcPath); err != nil {
+		t.Fatalf("AddFile: %v", err)
 	}
 
-	// Verify file was copied.
 	data, err := os.ReadFile(filepath.Join(kDir, "notes.md"))
 	if err != nil {
 		t.Fatalf("read copied file: %v", err)
@@ -103,40 +103,40 @@ func TestAddKnowledgeFile(t *testing.T) {
 }
 
 func TestAddKnowledgeFileNotFound(t *testing.T) {
-	kDir := initKnowledgeDir(t.TempDir())
-	err := addKnowledgeFile(kDir, "/nonexistent/file.txt")
+	kDir := knowledge.InitDir(t.TempDir())
+	err := knowledge.AddFile(kDir, "/nonexistent/file.txt")
 	if err == nil {
 		t.Fatal("expected error for nonexistent source")
 	}
 }
 
 func TestAddKnowledgeFileDirectory(t *testing.T) {
-	kDir := initKnowledgeDir(t.TempDir())
+	kDir := knowledge.InitDir(t.TempDir())
 	srcDir := t.TempDir()
-	err := addKnowledgeFile(kDir, srcDir)
+	err := knowledge.AddFile(kDir, srcDir)
 	if err == nil {
 		t.Fatal("expected error when source is a directory")
 	}
 }
 
 func TestAddKnowledgeFileHiddenReject(t *testing.T) {
-	kDir := initKnowledgeDir(t.TempDir())
+	kDir := knowledge.InitDir(t.TempDir())
 	srcDir := t.TempDir()
 	srcPath := filepath.Join(srcDir, ".secret")
 	os.WriteFile(srcPath, []byte("secret"), 0o644)
 
-	err := addKnowledgeFile(kDir, srcPath)
+	err := knowledge.AddFile(kDir, srcPath)
 	if err == nil {
 		t.Fatal("expected error for hidden file")
 	}
 }
 
 func TestRemoveKnowledgeFile(t *testing.T) {
-	kDir := initKnowledgeDir(t.TempDir())
+	kDir := knowledge.InitDir(t.TempDir())
 	os.WriteFile(filepath.Join(kDir, "old.txt"), []byte("data"), 0o644)
 
-	if err := removeKnowledgeFile(kDir, "old.txt"); err != nil {
-		t.Fatalf("removeKnowledgeFile: %v", err)
+	if err := knowledge.RemoveFile(kDir, "old.txt"); err != nil {
+		t.Fatalf("RemoveFile: %v", err)
 	}
 
 	if _, err := os.Stat(filepath.Join(kDir, "old.txt")); !os.IsNotExist(err) {
@@ -145,16 +145,16 @@ func TestRemoveKnowledgeFile(t *testing.T) {
 }
 
 func TestRemoveKnowledgeFileNotFound(t *testing.T) {
-	kDir := initKnowledgeDir(t.TempDir())
-	err := removeKnowledgeFile(kDir, "nonexistent.txt")
+	kDir := knowledge.InitDir(t.TempDir())
+	err := knowledge.RemoveFile(kDir, "nonexistent.txt")
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
 }
 
 func TestRemoveKnowledgeFilePathTraversal(t *testing.T) {
-	kDir := initKnowledgeDir(t.TempDir())
-	err := removeKnowledgeFile(kDir, "../../../etc/passwd")
+	kDir := knowledge.InitDir(t.TempDir())
+	err := knowledge.RemoveFile(kDir, "../../../etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for path traversal")
 	}
@@ -177,36 +177,33 @@ func TestValidateKnowledgeFilename(t *testing.T) {
 		{".", true},
 	}
 	for _, tc := range tests {
-		err := validateKnowledgeFilename(tc.name)
+		err := knowledge.ValidateFilename(tc.name)
 		if (err != nil) != tc.wantErr {
-			t.Errorf("validateKnowledgeFilename(%q): err=%v, wantErr=%v", tc.name, err, tc.wantErr)
+			t.Errorf("ValidateFilename(%q): err=%v, wantErr=%v", tc.name, err, tc.wantErr)
 		}
 	}
 }
 
 func TestKnowledgeDirHasFiles(t *testing.T) {
-	kDir := initKnowledgeDir(t.TempDir())
+	kDir := knowledge.InitDir(t.TempDir())
 
-	// Empty dir.
-	if knowledgeDirHasFiles(kDir) {
+	if knowledge.HasFiles(kDir) {
 		t.Error("expected false for empty dir")
 	}
 
-	// With hidden file only.
 	os.WriteFile(filepath.Join(kDir, ".hidden"), []byte("x"), 0o644)
-	if knowledgeDirHasFiles(kDir) {
+	if knowledge.HasFiles(kDir) {
 		t.Error("expected false with only hidden files")
 	}
 
-	// With visible file.
 	os.WriteFile(filepath.Join(kDir, "doc.md"), []byte("content"), 0o644)
-	if !knowledgeDirHasFiles(kDir) {
+	if !knowledge.HasFiles(kDir) {
 		t.Error("expected true with visible file")
 	}
 }
 
 func TestKnowledgeDirHasFilesNonExistent(t *testing.T) {
-	if knowledgeDirHasFiles("/nonexistent/knowledge") {
+	if knowledge.HasFiles("/nonexistent/knowledge") {
 		t.Error("expected false for nonexistent dir")
 	}
 }
@@ -214,12 +211,10 @@ func TestKnowledgeDirHasFilesNonExistent(t *testing.T) {
 func TestKnowledgeDir(t *testing.T) {
 	cfg := &Config{baseDir: "/tmp/tetora"}
 
-	// Default: baseDir/knowledge.
 	if got := knowledgeDir(cfg); got != "/tmp/tetora/knowledge" {
 		t.Errorf("knowledgeDir (default) = %q, want %q", got, "/tmp/tetora/knowledge")
 	}
 
-	// Custom KnowledgeDir.
 	cfg.KnowledgeDir = "/custom/knowledge"
 	if got := knowledgeDir(cfg); got != "/custom/knowledge" {
 		t.Errorf("knowledgeDir (custom) = %q, want %q", got, "/custom/knowledge")

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 
+	"tetora/internal/automation/briefing"
+	"tetora/internal/automation/insights"
 	imessagebot "tetora/internal/messaging/imessage"
 	"tetora/internal/storage"
 )
@@ -43,11 +45,11 @@ type App struct {
 	Podcast     *PodcastService
 	Family      *FamilyService
 	Contacts    *ContactsService
-	Insights    *InsightsEngine
+	Insights    *insights.Engine
 	Scheduling  *SchedulingService
 	Habits      *HabitsService
 	Goals       *GoalsService
-	Briefing    *BriefingService
+	Briefing    *briefing.Service
 
 	// Integration services
 	OAuth    *OAuthManager

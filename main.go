@@ -14,6 +14,7 @@ import (
 	"tetora/internal/cli"
 	"tetora/internal/completion"
 	"tetora/internal/sla"
+	"tetora/internal/knowledge"
 	"tetora/internal/storage"
 	"tetora/internal/upload"
 	"strings"
@@ -533,7 +534,7 @@ func main() {
 		logInfo("uploads dir initialized", "path", uploadDir)
 
 		// Init knowledge base directory.
-		initKnowledgeDir(cfg.baseDir)
+		knowledge.InitDir(cfg.baseDir)
 		logInfo("knowledge base initialized", "path", cfg.KnowledgeDir)
 
 		// Init tool registry.

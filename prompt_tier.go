@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"tetora/internal/knowledge"
 )
 
 // buildTieredPrompt constructs a system prompt based on request complexity.
@@ -114,7 +116,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 	// --- 5. Knowledge dir ---
 	// Simple: skip. Standard/Complex: inject if exists and < 50KB.
 	if complexity != ComplexitySimple {
-		if cfg.KnowledgeDir != "" && knowledgeDirHasFiles(cfg.KnowledgeDir) && estimateDirSize(cfg.KnowledgeDir) <= 50*1024 {
+		if cfg.KnowledgeDir != "" && knowledge.HasFiles(cfg.KnowledgeDir) && estimateDirSize(cfg.KnowledgeDir) <= 50*1024 {
 			task.AddDirs = append(task.AddDirs, cfg.KnowledgeDir)
 		}
 	}

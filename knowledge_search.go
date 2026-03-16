@@ -10,6 +10,14 @@ import (
 	"unicode"
 )
 
+// knowledgeDir returns the knowledge directory path for a config.
+func knowledgeDir(cfg *Config) string {
+	if cfg.KnowledgeDir != "" {
+		return cfg.KnowledgeDir
+	}
+	return filepath.Join(cfg.baseDir, "knowledge")
+}
+
 // SearchResult represents a matched knowledge chunk.
 type SearchResult struct {
 	Filename  string  `json:"filename"`

@@ -14,7 +14,7 @@ import (
 )
 
 // setupInsightsTestDB creates a temp database with all required tables for testing.
-func setupInsightsTestDB(t *testing.T) (string, *InsightsEngine) {
+func setupInsightsTestDB(t *testing.T) (string, *insights.Engine) {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -171,7 +171,7 @@ func setupTestGlobals(t *testing.T, dbPath string, cfg *Config) func() {
 }
 
 // testInsightsAppCtx returns a context that carries an App with the given engine.
-func testInsightsAppCtx(engine *InsightsEngine) context.Context {
+func testInsightsAppCtx(engine *insights.Engine) context.Context {
 	app := &App{Insights: engine}
 	return withApp(context.Background(), app)
 }
@@ -752,7 +752,7 @@ func TestToolLifeReport(t *testing.T) {
 		t.Fatalf("toolLifeReport: %v", err)
 	}
 
-	var report LifeReport
+	var report insights.LifeReport
 	if err := json.Unmarshal([]byte(result), &report); err != nil {
 		t.Fatalf("unmarshal report: %v", err)
 	}
@@ -829,7 +829,7 @@ func TestToolLifeInsights_List(t *testing.T) {
 		t.Fatalf("toolLifeInsights list: %v", err)
 	}
 
-	var ins []LifeInsight
+	var ins []insights.LifeInsight
 	if err := json.Unmarshal([]byte(result), &ins); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -917,7 +917,7 @@ func TestToolLifeInsights_NilEngine(t *testing.T) {
 
 func TestPeriodDateRange_Daily(t *testing.T) {
 	anchor := time.Date(2026, 2, 23, 12, 0, 0, 0, time.UTC)
-	start, end := periodDateRange("daily", anchor)
+	start, end := insights.PeriodDateRange("daily", anchor)
 	if start.Format("2006-01-02") != "2026-02-23" {
 		t.Errorf("start: got %s, want 2026-02-23", start.Format("2006-01-02"))
 	}
@@ -929,7 +929,7 @@ func TestPeriodDateRange_Daily(t *testing.T) {
 func TestPeriodDateRange_Weekly(t *testing.T) {
 	// 2026-02-23 is Monday.
 	anchor := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC) // Wednesday
-	start, end := periodDateRange("weekly", anchor)
+	start, end := insights.PeriodDateRange("weekly", anchor)
 	if start.Format("2006-01-02") != "2026-02-23" {
 		t.Errorf("start: got %s, want 2026-02-23 (Monday)", start.Format("2006-01-02"))
 	}
@@ -940,7 +940,7 @@ func TestPeriodDateRange_Weekly(t *testing.T) {
 
 func TestPeriodDateRange_Monthly(t *testing.T) {
 	anchor := time.Date(2026, 2, 15, 12, 0, 0, 0, time.UTC)
-	start, end := periodDateRange("monthly", anchor)
+	start, end := insights.PeriodDateRange("monthly", anchor)
 	if start.Format("2006-01-02") != "2026-02-01" {
 		t.Errorf("start: got %s, want 2026-02-01", start.Format("2006-01-02"))
 	}
@@ -952,7 +952,7 @@ func TestPeriodDateRange_Monthly(t *testing.T) {
 func TestPrevPeriodRange(t *testing.T) {
 	start := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 
-	prevStart, prevEnd := prevPeriodRange("monthly", start)
+	prevStart, prevEnd := insights.PrevPeriodRange("monthly", start)
 	if prevStart.Format("2006-01-02") != "2026-01-01" {
 		t.Errorf("prevStart: got %s, want 2026-01-01", prevStart.Format("2006-01-02"))
 	}
@@ -968,7 +968,7 @@ func TestInsightDedup(t *testing.T) {
 	defer cleanup()
 
 	// Store same type insight twice.
-	insight1 := &LifeInsight{
+	insight1 := &insights.LifeInsight{
 		ID:          newUUID(),
 		Type:        "test_dedup",
 		Severity:    "info",
@@ -978,7 +978,7 @@ func TestInsightDedup(t *testing.T) {
 	}
 	engine.StoreInsightDedup(insight1)
 
-	insight2 := &LifeInsight{
+	insight2 := &insights.LifeInsight{
 		ID:          newUUID(),
 		Type:        "test_dedup",
 		Severity:    "info",
@@ -1011,7 +1011,7 @@ func TestInsightFromRow(t *testing.T) {
 		"created_at":   "2026-02-23T00:00:00Z",
 	}
 
-	insight := insightFromRow(row)
+	insight := insights.InsightFromRow(row)
 	if insight.ID != "test-id" {
 		t.Errorf("ID: got %q, want test-id", insight.ID)
 	}
