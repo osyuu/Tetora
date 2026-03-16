@@ -26,7 +26,7 @@ func setupGoalsTestDB(t *testing.T) (string, *GoalsService) {
 		t.Fatalf("initGoalsDB: %v", err)
 	}
 	cfg := &Config{HistoryDB: dbPath}
-	svc := &GoalsService{dbPath: dbPath, cfg: cfg}
+	svc := newGoalsService(cfg)
 	return dbPath, svc
 }
 
@@ -61,7 +61,7 @@ func TestInitGoalsDB(t *testing.T) {
 func TestCreateGoal(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, err := svc.CreateGoal("user1", "Learn Go", "Master Go programming", "learning", "2026-12-31")
+	goal, err := svc.CreateGoal(newUUID(), "user1", "Learn Go", "Master Go programming", "learning", "2026-12-31", newUUID)
 	if err != nil {
 		t.Fatalf("CreateGoal: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestCreateGoal(t *testing.T) {
 func TestCreateGoal_EmptyTitle(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	_, err := svc.CreateGoal("user1", "", "no title", "", "")
+	_, err := svc.CreateGoal(newUUID(), "user1", "", "no title", "", "", newUUID)
 	if err == nil {
 		t.Fatal("expected error for empty title")
 	}
@@ -110,7 +110,7 @@ func TestCreateGoal_WithMilestones(t *testing.T) {
 3. Take practice tests
 4. Review weak areas`
 
-	goal, err := svc.CreateGoal("user1", "Pass JLPT N2", desc, "learning", "2026-07-01")
+	goal, err := svc.CreateGoal(newUUID(), "user1", "Pass JLPT N2", desc, "learning", "2026-07-01", newUUID)
 	if err != nil {
 		t.Fatalf("CreateGoal: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestCreateGoal_BulletMilestones(t *testing.T) {
 - Make a decision
 - Execute plan`
 
-	goal, err := svc.CreateGoal("user1", "Buy a house", desc, "financial", "2027-01-01")
+	goal, err := svc.CreateGoal(newUUID(), "user1", "Buy a house", desc, "financial", "2027-01-01", newUUID)
 	if err != nil {
 		t.Fatalf("CreateGoal: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestCreateGoal_BulletMilestones(t *testing.T) {
 func TestCreateGoal_DefaultUserID(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, err := svc.CreateGoal("", "Test goal", "", "", "")
+	goal, err := svc.CreateGoal(newUUID(), "", "Test goal", "", "", "", newUUID)
 	if err != nil {
 		t.Fatalf("CreateGoal: %v", err)
 	}
@@ -163,9 +163,9 @@ func TestListGoals(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
 	// Create multiple goals.
-	svc.CreateGoal("user1", "Goal A", "", "career", "")
-	svc.CreateGoal("user1", "Goal B", "", "health", "")
-	svc.CreateGoal("user2", "Goal C", "", "learning", "")
+	svc.CreateGoal(newUUID(), "user1", "Goal A", "", "career", "", newUUID)
+	svc.CreateGoal(newUUID(), "user1", "Goal B", "", "health", "", newUUID)
+	svc.CreateGoal(newUUID(), "user2", "Goal C", "", "learning", "", newUUID)
 
 	goals, err := svc.ListGoals("user1", "", 10)
 	if err != nil {
@@ -179,8 +179,8 @@ func TestListGoals(t *testing.T) {
 func TestListGoals_FilterStatus(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	g1, _ := svc.CreateGoal("user1", "Active goal", "", "", "")
-	svc.CreateGoal("user1", "Another active", "", "", "")
+	g1, _ := svc.CreateGoal(newUUID(), "user1", "Active goal", "", "", "", newUUID)
+	svc.CreateGoal(newUUID(), "user1", "Another active", "", "", "", newUUID)
 
 	// Complete one goal.
 	svc.UpdateGoal(g1.ID, map[string]any{"status": "completed"})
@@ -206,7 +206,7 @@ func TestListGoals_Limit(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
 	for i := 0; i < 5; i++ {
-		svc.CreateGoal("user1", "Goal", "", "", "")
+		svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 	}
 
 	goals, err := svc.ListGoals("user1", "", 3)
@@ -223,7 +223,7 @@ func TestListGoals_Limit(t *testing.T) {
 func TestGetGoal(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	created, _ := svc.CreateGoal("user1", "Test Goal", "Some desc", "career", "2026-12-31")
+	created, _ := svc.CreateGoal(newUUID(), "user1", "Test Goal", "Some desc", "career", "2026-12-31", newUUID)
 
 	got, err := svc.GetGoal(created.ID)
 	if err != nil {
@@ -254,7 +254,7 @@ func TestGetGoal_NotFound(t *testing.T) {
 func TestUpdateGoal_Status(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	created, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	created, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 
 	updated, err := svc.UpdateGoal(created.ID, map[string]any{"status": "paused"})
 	if err != nil {
@@ -268,7 +268,7 @@ func TestUpdateGoal_Status(t *testing.T) {
 func TestUpdateGoal_Progress(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	created, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	created, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 
 	updated, err := svc.UpdateGoal(created.ID, map[string]any{"progress": 50})
 	if err != nil {
@@ -282,7 +282,7 @@ func TestUpdateGoal_Progress(t *testing.T) {
 func TestUpdateGoal_MultipleFields(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	created, _ := svc.CreateGoal("user1", "Old Title", "", "", "")
+	created, _ := svc.CreateGoal(newUUID(), "user1", "Old Title", "", "", "", newUUID)
 
 	updated, err := svc.UpdateGoal(created.ID, map[string]any{
 		"title":       "New Title",
@@ -306,7 +306,7 @@ func TestUpdateGoal_MultipleFields(t *testing.T) {
 func TestUpdateGoal_EmptyFields(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	created, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	created, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 
 	updated, err := svc.UpdateGoal(created.ID, map[string]any{})
 	if err != nil {
@@ -322,7 +322,7 @@ func TestUpdateGoal_EmptyFields(t *testing.T) {
 func TestCompleteMilestone(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 	if len(goal.Milestones) < 3 {
 		t.Fatalf("expected at least 3 milestones, got %d", len(goal.Milestones))
 	}
@@ -341,7 +341,7 @@ func TestCompleteMilestone(t *testing.T) {
 func TestCompleteMilestone_AutoProgress(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 	// Default: 3 milestones.
 
 	// Complete 1 of 3 -> 33%.
@@ -369,7 +369,7 @@ func TestCompleteMilestone_AutoProgress(t *testing.T) {
 func TestCompleteMilestone_NotFound(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 
 	err := svc.CompleteMilestone(goal.ID, "nonexistent-milestone")
 	if err == nil {
@@ -382,10 +382,10 @@ func TestCompleteMilestone_NotFound(t *testing.T) {
 func TestAddMilestone(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 	initialCount := len(goal.Milestones)
 
-	updated, err := svc.AddMilestone(goal.ID, "New milestone", "2026-06-01")
+	updated, err := svc.AddMilestone(goal.ID, newUUID(), "New milestone", "2026-06-01")
 	if err != nil {
 		t.Fatalf("AddMilestone: %v", err)
 	}
@@ -408,9 +408,9 @@ func TestAddMilestone(t *testing.T) {
 func TestAddMilestone_EmptyTitle(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 
-	_, err := svc.AddMilestone(goal.ID, "", "")
+	_, err := svc.AddMilestone(goal.ID, newUUID(), "", "")
 	if err == nil {
 		t.Fatal("expected error for empty milestone title")
 	}
@@ -419,12 +419,12 @@ func TestAddMilestone_EmptyTitle(t *testing.T) {
 func TestAddMilestone_RecalculatesProgress(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 	// Default 3 milestones. Complete 1 -> 33%.
 	svc.CompleteMilestone(goal.ID, goal.Milestones[0].ID)
 
 	// Add a 4th milestone. Now 1/4 done -> 25%.
-	updated, _ := svc.AddMilestone(goal.ID, "Extra step", "")
+	updated, _ := svc.AddMilestone(goal.ID, newUUID(), "Extra step", "")
 	if updated.Progress != 25 {
 		t.Errorf("expected progress 25 after adding milestone (1/4 done), got %d", updated.Progress)
 	}
@@ -435,7 +435,7 @@ func TestAddMilestone_RecalculatesProgress(t *testing.T) {
 func TestReviewGoal(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 
 	err := svc.ReviewGoal(goal.ID, "Making good progress")
 	if err != nil {
@@ -458,7 +458,7 @@ func TestReviewGoal(t *testing.T) {
 func TestReviewGoal_Multiple(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 
 	svc.ReviewGoal(goal.ID, "Week 1 review")
 	svc.ReviewGoal(goal.ID, "Week 2 review")
@@ -472,7 +472,7 @@ func TestReviewGoal_Multiple(t *testing.T) {
 func TestReviewGoal_EmptyNote(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Goal", "", "", "", newUUID)
 
 	err := svc.ReviewGoal(goal.ID, "")
 	if err == nil {
@@ -483,18 +483,18 @@ func TestReviewGoal_EmptyNote(t *testing.T) {
 // --- GetStaleGoals ---
 
 func TestGetStaleGoals(t *testing.T) {
-	_, svc := setupGoalsTestDB(t)
+	dbPath, svc := setupGoalsTestDB(t)
 
 	// Create a goal and manually set its updated_at to 30 days ago.
-	goal, _ := svc.CreateGoal("user1", "Old goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Old goal", "", "", "", newUUID)
 	oldDate := time.Now().UTC().Add(-30 * 24 * time.Hour).Format(time.RFC3339)
 	svc.UpdateGoal(goal.ID, map[string]any{"title": "Old goal"}) // just to have a valid update
 	// Force the updated_at to be old via direct SQL.
 	forceSQL := "UPDATE goals SET updated_at = '" + escapeSQLite(oldDate) + "' WHERE id = '" + escapeSQLite(goal.ID) + "';"
-	queryDB(svc.dbPath, forceSQL)
+	queryDB(dbPath, forceSQL)
 
 	// Create a fresh goal.
-	svc.CreateGoal("user1", "Fresh goal", "", "", "")
+	svc.CreateGoal(newUUID(), "user1", "Fresh goal", "", "", "", newUUID)
 
 	stale, err := svc.GetStaleGoals("user1", 14)
 	if err != nil {
@@ -512,7 +512,7 @@ func TestGetStaleGoals_NoStale(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
 	// Create a fresh goal (just created, not stale).
-	svc.CreateGoal("user1", "Fresh goal", "", "", "")
+	svc.CreateGoal(newUUID(), "user1", "Fresh goal", "", "", "", newUUID)
 
 	stale, err := svc.GetStaleGoals("user1", 14)
 	if err != nil {
@@ -526,11 +526,11 @@ func TestGetStaleGoals_NoStale(t *testing.T) {
 func TestGetStaleGoals_ExcludesCompleted(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	goal, _ := svc.CreateGoal("user1", "Old completed", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "user1", "Old completed", "", "", "", newUUID)
 	oldDate := time.Now().UTC().Add(-30 * 24 * time.Hour).Format(time.RFC3339)
 	svc.UpdateGoal(goal.ID, map[string]any{"status": "completed"})
 	forceSQL := "UPDATE goals SET updated_at = '" + escapeSQLite(oldDate) + "' WHERE id = '" + escapeSQLite(goal.ID) + "';"
-	queryDB(svc.dbPath, forceSQL)
+	queryDB(svc.DBPath(), forceSQL)
 
 	stale, err := svc.GetStaleGoals("user1", 14)
 	if err != nil {
@@ -546,9 +546,9 @@ func TestGetStaleGoals_ExcludesCompleted(t *testing.T) {
 func TestGoalSummary(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
-	svc.CreateGoal("user1", "Career goal", "", "career", "")
-	svc.CreateGoal("user1", "Health goal", "", "health", "")
-	g3, _ := svc.CreateGoal("user1", "Learning goal", "", "learning", "")
+	svc.CreateGoal(newUUID(), "user1", "Career goal", "", "career", "", newUUID)
+	svc.CreateGoal(newUUID(), "user1", "Health goal", "", "health", "", newUUID)
+	g3, _ := svc.CreateGoal(newUUID(), "user1", "Learning goal", "", "learning", "", newUUID)
 
 	// Complete one goal.
 	svc.UpdateGoal(g3.ID, map[string]any{"status": "completed"})
@@ -591,8 +591,8 @@ func TestGoalSummary_Overdue(t *testing.T) {
 	_, svc := setupGoalsTestDB(t)
 
 	// Create a goal with past target date.
-	svc.CreateGoal("user1", "Overdue goal", "", "", "2020-01-01")
-	svc.CreateGoal("user1", "Future goal", "", "", "2099-12-31")
+	svc.CreateGoal(newUUID(), "user1", "Overdue goal", "", "", "2020-01-01", newUUID)
+	svc.CreateGoal(newUUID(), "user1", "Future goal", "", "", "2099-12-31", newUUID)
 
 	summary, err := svc.GoalSummary("user1")
 	if err != nil {
@@ -632,7 +632,7 @@ func TestToolGoalCreate(t *testing.T) {
 	defer func() { globalGoalsService = old }()
 
 	input := json.RawMessage(`{"title":"Pass JLPT N2","description":"Study Japanese","category":"learning","target_date":"2026-07-01"}`)
-	result, err := toolGoalCreate(context.Background(), svc.cfg, input)
+	result, err := toolGoalCreate(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolGoalCreate: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestToolGoalCreate_EmptyTitle(t *testing.T) {
 	defer func() { globalGoalsService = old }()
 
 	input := json.RawMessage(`{"title":"","category":"learning"}`)
-	_, err := toolGoalCreate(context.Background(), svc.cfg, input)
+	_, err := toolGoalCreate(context.Background(), &Config{}, input)
 	if err == nil {
 		t.Fatal("expected error for empty title")
 	}
@@ -681,11 +681,11 @@ func TestToolGoalList(t *testing.T) {
 	defer func() { globalGoalsService = old }()
 
 	// Create some goals.
-	svc.CreateGoal("default", "Goal A", "", "", "")
-	svc.CreateGoal("default", "Goal B", "", "", "")
+	svc.CreateGoal(newUUID(), "default", "Goal A", "", "", "", newUUID)
+	svc.CreateGoal(newUUID(), "default", "Goal B", "", "", "", newUUID)
 
 	input := json.RawMessage(`{"user_id":"default","status":"active","limit":10}`)
-	result, err := toolGoalList(context.Background(), svc.cfg, input)
+	result, err := toolGoalList(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolGoalList: %v", err)
 	}
@@ -705,11 +705,11 @@ func TestToolGoalUpdate(t *testing.T) {
 	globalGoalsService = svc
 	defer func() { globalGoalsService = old }()
 
-	goal, _ := svc.CreateGoal("default", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "default", "Goal", "", "", "", newUUID)
 
 	// Test update action.
 	input := json.RawMessage(`{"id":"` + goal.ID + `","action":"update","status":"paused"}`)
-	result, err := toolGoalUpdate(context.Background(), svc.cfg, input)
+	result, err := toolGoalUpdate(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolGoalUpdate: %v", err)
 	}
@@ -729,11 +729,11 @@ func TestToolGoalUpdate_CompleteMilestone(t *testing.T) {
 	globalGoalsService = svc
 	defer func() { globalGoalsService = old }()
 
-	goal, _ := svc.CreateGoal("default", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "default", "Goal", "", "", "", newUUID)
 	msID := goal.Milestones[0].ID
 
 	input := json.RawMessage(`{"id":"` + goal.ID + `","action":"complete_milestone","milestone_id":"` + msID + `"}`)
-	result, err := toolGoalUpdate(context.Background(), svc.cfg, input)
+	result, err := toolGoalUpdate(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolGoalUpdate complete_milestone: %v", err)
 	}
@@ -753,11 +753,11 @@ func TestToolGoalUpdate_AddMilestone(t *testing.T) {
 	globalGoalsService = svc
 	defer func() { globalGoalsService = old }()
 
-	goal, _ := svc.CreateGoal("default", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "default", "Goal", "", "", "", newUUID)
 	initialCount := len(goal.Milestones)
 
 	input := json.RawMessage(`{"id":"` + goal.ID + `","action":"add_milestone","title":"Extra step","due_date":"2026-06-01"}`)
-	_, err := toolGoalUpdate(context.Background(), svc.cfg, input)
+	_, err := toolGoalUpdate(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolGoalUpdate add_milestone: %v", err)
 	}
@@ -774,10 +774,10 @@ func TestToolGoalUpdate_Review(t *testing.T) {
 	globalGoalsService = svc
 	defer func() { globalGoalsService = old }()
 
-	goal, _ := svc.CreateGoal("default", "Goal", "", "", "")
+	goal, _ := svc.CreateGoal(newUUID(), "default", "Goal", "", "", "", newUUID)
 
 	input := json.RawMessage(`{"id":"` + goal.ID + `","action":"review","note":"Going well"}`)
-	_, err := toolGoalUpdate(context.Background(), svc.cfg, input)
+	_, err := toolGoalUpdate(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolGoalUpdate review: %v", err)
 	}
@@ -795,7 +795,7 @@ func TestToolGoalUpdate_MissingID(t *testing.T) {
 	defer func() { globalGoalsService = old }()
 
 	input := json.RawMessage(`{"action":"update","status":"paused"}`)
-	_, err := toolGoalUpdate(context.Background(), svc.cfg, input)
+	_, err := toolGoalUpdate(context.Background(), &Config{}, input)
 	if err == nil {
 		t.Fatal("expected error for missing id")
 	}
@@ -807,10 +807,10 @@ func TestToolGoalReview(t *testing.T) {
 	globalGoalsService = svc
 	defer func() { globalGoalsService = old }()
 
-	svc.CreateGoal("default", "Active goal", "", "career", "")
+	svc.CreateGoal(newUUID(), "default", "Active goal", "", "career", "", newUUID)
 
 	input := json.RawMessage(`{"user_id":"default"}`)
-	result, err := toolGoalReview(context.Background(), svc.cfg, input)
+	result, err := toolGoalReview(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolGoalReview: %v", err)
 	}

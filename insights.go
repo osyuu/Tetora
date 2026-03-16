@@ -190,7 +190,7 @@ func (e *InsightsEngine) GenerateReport(period string, targetDate time.Time) (*L
 // --- Report Section Builders ---
 
 func (e *InsightsEngine) buildSpendingReport(start, end, prevStart, prevEnd time.Time) *SpendingReport {
-	dbPath := globalFinanceService.dbPath
+	dbPath := globalFinanceService.DBPath()
 	startStr := start.Format("2006-01-02")
 	endStr := end.Format("2006-01-02")
 
@@ -381,7 +381,7 @@ func (e *InsightsEngine) buildMoodReport(start, end time.Time) *MoodReport {
 }
 
 func (e *InsightsEngine) buildSocialReport(start, end time.Time) *SocialReport {
-	dbPath := globalContactsService.dbPath
+	dbPath := globalContactsService.DBPath()
 	startStr := start.Format(time.RFC3339)
 	endStr := end.Format(time.RFC3339)
 
@@ -424,7 +424,7 @@ func (e *InsightsEngine) buildSocialReport(start, end time.Time) *SocialReport {
 }
 
 func (e *InsightsEngine) buildHabitsReport(start, end time.Time) *HabitsReport {
-	dbPath := globalHabitsService.dbPath
+	dbPath := globalHabitsService.DBPath()
 	startStr := start.Format(time.RFC3339)
 	endStr := end.Format(time.RFC3339)
 
@@ -554,7 +554,7 @@ func (e *InsightsEngine) DetectAnomalies(days int) ([]LifeInsight, error) {
 }
 
 func (e *InsightsEngine) detectSpendingAnomalies(days int, today string) []LifeInsight {
-	dbPath := globalFinanceService.dbPath
+	dbPath := globalFinanceService.DBPath()
 
 	// Get 30-day daily average.
 	thirtyDaysAgo := time.Now().UTC().AddDate(0, 0, -30).Format("2006-01-02")
@@ -704,7 +704,7 @@ func (e *InsightsEngine) detectTaskAnomalies(today string) []LifeInsight {
 }
 
 func (e *InsightsEngine) detectSocialAnomalies(today string) []LifeInsight {
-	dbPath := globalContactsService.dbPath
+	dbPath := globalContactsService.DBPath()
 
 	// Check for recent interactions.
 	fourteenDaysAgo := time.Now().UTC().AddDate(0, 0, -14).Format(time.RFC3339)
@@ -752,7 +752,7 @@ func (e *InsightsEngine) detectSocialAnomalies(today string) []LifeInsight {
 }
 
 func (e *InsightsEngine) detectHabitAnomalies(today string) []LifeInsight {
-	dbPath := globalHabitsService.dbPath
+	dbPath := globalHabitsService.DBPath()
 
 	// Get all active habits.
 	rows, err := queryDB(dbPath,
@@ -891,7 +891,7 @@ func (e *InsightsEngine) SpendingForecast(month string) (map[string]any, error) 
 		return nil, fmt.Errorf("finance service not available")
 	}
 
-	dbPath := globalFinanceService.dbPath
+	dbPath := globalFinanceService.DBPath()
 
 	// Parse month (YYYY-MM format).
 	if month == "" {

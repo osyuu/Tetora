@@ -35,7 +35,7 @@ func TestTimeTracking_StartStop(t *testing.T) {
 	svc := newTimeTrackingService(cfg)
 
 	// Start timer.
-	entry, err := svc.StartTimer("testuser", "myproject", "coding", []string{"go"})
+	entry, err := svc.StartTimer("testuser", "myproject", "coding", []string{"go"}, newUUID)
 	if err != nil {
 		t.Fatalf("StartTimer: %v", err)
 	}
@@ -91,13 +91,13 @@ func TestTimeTracking_AutoStop(t *testing.T) {
 	svc := newTimeTrackingService(cfg)
 
 	// Start first timer.
-	first, err := svc.StartTimer("testuser", "proj1", "task1", nil)
+	first, err := svc.StartTimer("testuser", "proj1", "task1", nil, newUUID)
 	if err != nil {
 		t.Fatalf("StartTimer first: %v", err)
 	}
 
 	// Start second timer (should auto-stop first).
-	second, err := svc.StartTimer("testuser", "proj2", "task2", nil)
+	second, err := svc.StartTimer("testuser", "proj2", "task2", nil, newUUID)
 	if err != nil {
 		t.Fatalf("StartTimer second: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestTimeTracking_ManualLog(t *testing.T) {
 	cfg := &Config{HistoryDB: dbPath}
 	svc := newTimeTrackingService(cfg)
 
-	entry, err := svc.LogEntry("testuser", "reading", "book", 60, "2025-01-15", "Read chapter 3", []string{"learn"})
+	entry, err := svc.LogEntry("testuser", "reading", "book", 60, "2025-01-15", "Read chapter 3", []string{"learn"}, newUUID)
 	if err != nil {
 		t.Fatalf("LogEntry: %v", err)
 	}
@@ -154,9 +154,9 @@ func TestTimeTracking_Report(t *testing.T) {
 	svc := newTimeTrackingService(cfg)
 
 	// Log some entries.
-	svc.LogEntry("testuser", "proj1", "coding", 120, "", "session 1", nil)
-	svc.LogEntry("testuser", "proj1", "review", 30, "", "session 2", nil)
-	svc.LogEntry("testuser", "proj2", "design", 60, "", "session 3", nil)
+	svc.LogEntry("testuser", "proj1", "coding", 120, "", "session 1", nil, newUUID)
+	svc.LogEntry("testuser", "proj1", "review", 30, "", "session 2", nil, newUUID)
+	svc.LogEntry("testuser", "proj2", "design", 60, "", "session 3", nil, newUUID)
 
 	report, err := svc.Report("testuser", "month", "")
 	if err != nil {
@@ -184,12 +184,12 @@ func TestTimeTracking_LogEntry_InvalidDuration(t *testing.T) {
 	cfg := &Config{HistoryDB: dbPath}
 	svc := newTimeTrackingService(cfg)
 
-	_, err := svc.LogEntry("testuser", "proj", "act", 0, "", "", nil)
+	_, err := svc.LogEntry("testuser", "proj", "act", 0, "", "", nil, newUUID)
 	if err == nil {
 		t.Error("expected error for zero duration")
 	}
 
-	_, err = svc.LogEntry("testuser", "proj", "act", -5, "", "", nil)
+	_, err = svc.LogEntry("testuser", "proj", "act", -5, "", "", nil, newUUID)
 	if err == nil {
 		t.Error("expected error for negative duration")
 	}

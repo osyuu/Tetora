@@ -27,7 +27,7 @@ func (s *Server) handleHabits(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		scope := r.URL.Query().Get("scope")
-		habits, err := globalHabitsService.HabitStatus(scope)
+		habits, err := globalHabitsService.HabitStatus(scope, logWarn)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
@@ -51,9 +51,9 @@ func (s *Server) handleHabits(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
 			return
 		}
-		id, err := globalHabitsService.CreateHabit(
-			body.Name, body.Description, body.Frequency, body.Category, body.Scope, body.TargetCount)
-		if err != nil {
+		id := newUUID()
+		if err := globalHabitsService.CreateHabit(
+			id, body.Name, body.Description, body.Frequency, body.Category, body.Scope, body.TargetCount); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
 		}
@@ -93,7 +93,7 @@ func (s *Server) handleHabitsLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := globalHabitsService.LogHabit(body.HabitID, body.Note, body.Scope, body.Value); err != nil {
+	if err := globalHabitsService.LogHabit(newUUID(), body.HabitID, body.Note, body.Scope, body.Value); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 		return
 	}
@@ -163,7 +163,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := globalHabitsService.LogHealth(body.Metric, body.Value, body.Unit, body.Source, body.Scope); err != nil {
+	if err := globalHabitsService.LogHealth(newUUID(), body.Metric, body.Value, body.Unit, body.Source, body.Scope); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}

@@ -66,7 +66,7 @@ func TestAppSyncToGlobals_Phase2Fields(t *testing.T) {
 
 	cfg := &Config{}
 	le := &LifecycleEngine{cfg: cfg}
-	tt := &TimeTrackingService{cfg: cfg}
+	tt := newTimeTrackingService(cfg)
 	st := &spawnTracker{children: make(map[string]int)}
 	ig := &imageGenLimiter{}
 

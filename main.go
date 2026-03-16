@@ -868,7 +868,7 @@ func main() {
 				logWarn("init reminders table failed", "error", err)
 			} else {
 				reminderEngine = newReminderEngine(cfg, notifyFn)
-				reminderEngine.Start(ctx)
+				reminderEngine.Start()
 				globalReminderEngine = reminderEngine
 				logInfo("reminder engine started", "checkInterval", cfg.Reminders.checkIntervalOrDefault().String(), "maxPerUser", cfg.Reminders.maxPerUserOrDefault())
 			}
@@ -929,7 +929,7 @@ func main() {
 
 		// --- P19.2: Google Calendar Integration ---
 		if cfg.Calendar.Enabled {
-			globalCalendarService = &CalendarService{cfg: cfg}
+			globalCalendarService = newCalendarService(cfg)
 			logInfo("calendar integration enabled")
 		}
 

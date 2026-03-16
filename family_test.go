@@ -15,16 +15,16 @@ func newTestFamilyService(t *testing.T) *FamilyService {
 	if err := initFamilyDB(dbPath); err != nil {
 		t.Fatalf("initFamilyDB: %v", err)
 	}
-	return &FamilyService{
-		dbPath: dbPath,
-		cfg:    &Config{},
-		familyCfg: FamilyConfig{
-			Enabled:          true,
-			MaxUsers:         10,
-			DefaultBudget:    0,
-			DefaultRateLimit: 100,
-		},
+	svc, err := newFamilyService(&Config{HistoryDB: dbPath}, FamilyConfig{
+		Enabled:          true,
+		MaxUsers:         10,
+		DefaultBudget:    0,
+		DefaultRateLimit: 100,
+	})
+	if err != nil {
+		t.Fatalf("newFamilyService: %v", err)
 	}
+	return svc
 }
 
 func TestInitFamilyDB(t *testing.T) {
@@ -86,8 +86,15 @@ func TestAddUser(t *testing.T) {
 }
 
 func TestAddUserMaxLimit(t *testing.T) {
-	fs := newTestFamilyService(t)
-	fs.familyCfg.MaxUsers = 3
+	dbPath := filepath.Join(t.TempDir(), "family_limit.db")
+	if err := initFamilyDB(dbPath); err != nil {
+		t.Fatalf("initFamilyDB: %v", err)
+	}
+	fs, err := newFamilyService(&Config{HistoryDB: dbPath}, FamilyConfig{MaxUsers: 3})
+	if err != nil {
+		t.Fatalf("newFamilyService: %v", err)
+	}
+	_ = fs
 
 	for i := 0; i < 3; i++ {
 		if err := fs.AddUser(jsonStr(i), "User", "member"); err != nil {
@@ -95,7 +102,7 @@ func TestAddUserMaxLimit(t *testing.T) {
 		}
 	}
 	// 4th should fail.
-	err := fs.AddUser("extra", "Extra", "member")
+	err = fs.AddUser("extra", "Extra", "member")
 	if err == nil {
 		t.Fatal("expected max users error")
 	}
@@ -393,7 +400,7 @@ func TestCheckRateLimit(t *testing.T) {
 func TestCreateList(t *testing.T) {
 	fs := newTestFamilyService(t)
 
-	list, err := fs.CreateList("Groceries", "shopping", "user1")
+	list, err := fs.CreateList("Groceries", "shopping", "user1", newUUID)
 	if err != nil {
 		t.Fatalf("CreateList: %v", err)
 	}
@@ -408,13 +415,13 @@ func TestCreateList(t *testing.T) {
 	}
 
 	// Empty name.
-	_, err = fs.CreateList("", "shopping", "user1")
+	_, err = fs.CreateList("", "shopping", "user1", newUUID)
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
 
 	// Default type.
-	list2, err := fs.CreateList("Tasks", "", "user1")
+	list2, err := fs.CreateList("Tasks", "", "user1", newUUID)
 	if err != nil {
 		t.Fatalf("CreateList default type: %v", err)
 	}
@@ -425,7 +432,7 @@ func TestCreateList(t *testing.T) {
 
 func TestGetList(t *testing.T) {
 	fs := newTestFamilyService(t)
-	created, _ := fs.CreateList("Groceries", "shopping", "user1")
+	created, _ := fs.CreateList("Groceries", "shopping", "user1", newUUID)
 
 	got, err := fs.GetList(created.ID)
 	if err != nil {
@@ -444,8 +451,8 @@ func TestGetList(t *testing.T) {
 
 func TestListLists(t *testing.T) {
 	fs := newTestFamilyService(t)
-	fs.CreateList("List1", "shopping", "user1")
-	fs.CreateList("List2", "todo", "user1")
+	fs.CreateList("List1", "shopping", "user1", newUUID)
+	fs.CreateList("List2", "todo", "user1", newUUID)
 
 	lists, err := fs.ListLists()
 	if err != nil {
@@ -458,7 +465,7 @@ func TestListLists(t *testing.T) {
 
 func TestDeleteList(t *testing.T) {
 	fs := newTestFamilyService(t)
-	list, _ := fs.CreateList("ToDelete", "shopping", "user1")
+	list, _ := fs.CreateList("ToDelete", "shopping", "user1", newUUID)
 	fs.AddListItem(list.ID, "Milk", "1L", "user1")
 
 	if err := fs.DeleteList(list.ID); err != nil {
@@ -480,7 +487,7 @@ func TestDeleteList(t *testing.T) {
 
 func TestAddListItem(t *testing.T) {
 	fs := newTestFamilyService(t)
-	list, _ := fs.CreateList("Groceries", "shopping", "user1")
+	list, _ := fs.CreateList("Groceries", "shopping", "user1", newUUID)
 
 	item, err := fs.AddListItem(list.ID, "Milk", "2L", "user1")
 	if err != nil {
@@ -511,7 +518,7 @@ func TestAddListItem(t *testing.T) {
 
 func TestCheckItem(t *testing.T) {
 	fs := newTestFamilyService(t)
-	list, _ := fs.CreateList("Groceries", "shopping", "user1")
+	list, _ := fs.CreateList("Groceries", "shopping", "user1", newUUID)
 	item, _ := fs.AddListItem(list.ID, "Milk", "1L", "user1")
 
 	// Check.
@@ -538,7 +545,7 @@ func TestCheckItem(t *testing.T) {
 
 func TestRemoveListItem(t *testing.T) {
 	fs := newTestFamilyService(t)
-	list, _ := fs.CreateList("Groceries", "shopping", "user1")
+	list, _ := fs.CreateList("Groceries", "shopping", "user1", newUUID)
 	item, _ := fs.AddListItem(list.ID, "Milk", "1L", "user1")
 
 	if err := fs.RemoveListItem(item.ID); err != nil {
@@ -553,7 +560,7 @@ func TestRemoveListItem(t *testing.T) {
 
 func TestGetListItems(t *testing.T) {
 	fs := newTestFamilyService(t)
-	list, _ := fs.CreateList("Groceries", "shopping", "user1")
+	list, _ := fs.CreateList("Groceries", "shopping", "user1", newUUID)
 	fs.AddListItem(list.ID, "Milk", "1L", "user1")
 	fs.AddListItem(list.ID, "Eggs", "12", "user2")
 	fs.AddListItem(list.ID, "Bread", "", "user1")
@@ -636,8 +643,8 @@ func TestToolFamilyListView(t *testing.T) {
 	ctx := context.Background()
 
 	// Create lists.
-	list1, _ := fs.CreateList("Groceries", "shopping", "user1")
-	fs.CreateList("Tasks", "todo", "user1")
+	list1, _ := fs.CreateList("Groceries", "shopping", "user1", newUUID)
+	fs.CreateList("Tasks", "todo", "user1", newUUID)
 	fs.AddListItem(list1.ID, "Milk", "1L", "user1")
 
 	// View all lists.

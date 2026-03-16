@@ -154,9 +154,7 @@ func TestCheckWatches_Triggered(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	origURL := currencyBaseURL
-	currencyBaseURL = srv.URL
-	defer func() { currencyBaseURL = origURL }()
+	engine.SetBaseURL(srv.URL)
 
 	// Add a watch: alert when USD/JPY > 150.
 	engine.AddWatch("user1", "USD", "JPY", "gt", 150.0, "")
@@ -192,9 +190,7 @@ func TestCheckWatches_NotTriggered(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	origURL := currencyBaseURL
-	currencyBaseURL = srv.URL
-	defer func() { currencyBaseURL = origURL }()
+	engine.SetBaseURL(srv.URL)
 
 	// Watch: alert when USD/JPY > 150. Rate is 145, should NOT trigger.
 	engine.AddWatch("user1", "USD", "JPY", "gt", 150.0, "")
@@ -218,9 +214,7 @@ func TestCheckWatches_LessThan(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	origURL := currencyBaseURL
-	currencyBaseURL = srv.URL
-	defer func() { currencyBaseURL = origURL }()
+	engine.SetBaseURL(srv.URL)
 
 	// Watch: alert when EUR/USD < 1.0.
 	engine.AddWatch("user1", "EUR", "USD", "lt", 1.0, "")
@@ -240,7 +234,7 @@ func TestToolPriceWatch_Add(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"action":    "add",
 		"from":      "USD",
@@ -265,7 +259,7 @@ func TestToolPriceWatch_List(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{HistoryDB: svc.DBPath()}
 
 	// Add a watch first.
 	engine := newPriceWatchEngine(cfg)
@@ -291,7 +285,7 @@ func TestToolPriceWatch_Cancel(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{HistoryDB: svc.DBPath()}
 	engine := newPriceWatchEngine(cfg)
 	engine.AddWatch("tester", "USD", "JPY", "gt", 155, "")
 
@@ -320,7 +314,7 @@ func TestToolPriceWatch_InvalidAction(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"action": "invalid",
 	})

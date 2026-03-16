@@ -1,135 +1,83 @@
 package main
 
+// health.go is a thin facade wrapping internal/health.
+// Business logic lives in internal/health/; this file bridges globals/Config.
+
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	"tetora/internal/health"
 	"time"
 )
 
 // deepHealthCheck performs a comprehensive health check and returns a structured report.
 func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startTime time.Time) map[string]any {
-	checks := map[string]any{}
-	overall := "healthy"
-
-	// --- Uptime ---
-	uptime := time.Since(startTime)
-	checks["uptime"] = map[string]any{
-		"startedAt": startTime.Format(time.RFC3339),
-		"duration":  uptime.Round(time.Second).String(),
-		"seconds":   int(uptime.Seconds()),
+	input := health.CheckInput{
+		Version:      tetoraVersion,
+		StartTime:    startTime,
+		BaseDir:      cfg.baseDir,
+		DiskBlockMB:  cfg.DiskBlockMB,
+		DiskWarnMB:   cfg.DiskWarnMB,
+		DiskBudgetGB: cfg.DiskBudgetGB,
 	}
 
-	// --- Version ---
-	checks["version"] = tetoraVersion
-
-	// --- DB Check ---
+	// DB check callback.
 	if cfg.HistoryDB != "" {
-		dbStart := time.Now()
-		rows, err := queryDB(cfg.HistoryDB, "SELECT count(*) as cnt FROM job_runs;")
-		dbLatency := time.Since(dbStart)
-		if err != nil {
-			checks["db"] = map[string]any{
-				"status":    "error",
-				"error":     err.Error(),
-				"latencyMs": dbLatency.Milliseconds(),
+		input.DBCheck = func() (int, error) {
+			rows, err := queryDB(cfg.HistoryDB, "SELECT count(*) as cnt FROM job_runs;")
+			if err != nil {
+				return 0, err
 			}
-			overall = degradeStatus(overall, "unhealthy")
-		} else {
 			count := 0
 			if len(rows) > 0 {
 				if v, ok := rows[0]["cnt"]; ok {
 					fmt.Sscanf(fmt.Sprint(v), "%d", &count)
 				}
 			}
-			checks["db"] = map[string]any{
-				"status":    "ok",
-				"path":      cfg.HistoryDB,
-				"latencyMs": dbLatency.Milliseconds(),
-				"records":   count,
-			}
+			return count, nil
 		}
-	} else {
-		checks["db"] = map[string]any{"status": "disabled"}
+		input.DBPath = cfg.HistoryDB
 	}
 
-	// --- Providers ---
-	providerChecks := map[string]any{}
+	// Providers.
+	providers := map[string]health.ProviderInfo{}
 	if cfg.registry != nil {
 		for name := range cfg.Providers {
-			pc := map[string]any{
-				"status": "ok",
-				"type":   cfg.Providers[name].Type,
+			pi := health.ProviderInfo{
+				Type:   cfg.Providers[name].Type,
+				Status: "ok",
 			}
-			// Circuit breaker status.
 			if cfg.circuits != nil {
 				cb := cfg.circuits.Get(name)
 				st := cb.State()
-				pc["circuit"] = st.String()
+				pi.Circuit = st.String()
 				if st == CircuitOpen {
-					pc["status"] = "open"
-					overall = degradeStatus(overall, "degraded")
+					pi.Status = "open"
 				} else if st == CircuitHalfOpen {
-					pc["status"] = "recovering"
-					overall = degradeStatus(overall, "degraded")
+					pi.Status = "recovering"
 				}
 			}
-			providerChecks[name] = pc
+			providers[name] = pi
 		}
 		// Always include default "claude" provider.
-		if _, exists := providerChecks["claude"]; !exists {
-			pc := map[string]any{"status": "ok", "type": "claude-cli"}
+		if _, exists := providers["claude"]; !exists {
+			pi := health.ProviderInfo{Type: "claude-cli", Status: "ok"}
 			if cfg.circuits != nil {
 				cb := cfg.circuits.Get("claude")
 				st := cb.State()
-				pc["circuit"] = st.String()
+				pi.Circuit = st.String()
 				if st == CircuitOpen {
-					pc["status"] = "open"
-					overall = degradeStatus(overall, "degraded")
+					pi.Status = "open"
 				}
 			}
-			providerChecks["claude"] = pc
+			providers["claude"] = pi
 		}
 	}
-	checks["providers"] = providerChecks
+	input.Providers = providers
 
-	// --- Disk ---
-	if cfg.baseDir != "" {
-		di := diskInfo(cfg.baseDir)
-		blockGB := 0.2 // 200MB default
-		if cfg.DiskBlockMB > 0 {
-			blockGB = float64(cfg.DiskBlockMB) / 1024
-		}
-		warnGB := 0.5 // 500MB default
-		if cfg.DiskWarnMB > 0 {
-			warnGB = float64(cfg.DiskWarnMB) / 1024
-		} else if cfg.DiskBudgetGB > 0 {
-			warnGB = cfg.DiskBudgetGB // backward compat
-		}
-		if freeGB, ok := di["freeGB"].(float64); ok {
-			switch {
-			case freeGB < blockGB:
-				di["status"] = "critical"
-				di["warn"] = true
-				overall = degradeStatus(overall, "unhealthy")
-			case freeGB < warnGB:
-				di["status"] = "warning"
-				di["warn"] = true
-				overall = degradeStatus(overall, "degraded")
-			default:
-				di["status"] = "ok"
-			}
-		}
-		checks["disk"] = di
-	}
+	// Dispatch state.
+	input.DispatchJSON = state.statusJSON()
 
-	// --- Dispatch State ---
-	var dispatchInfo map[string]any
-	json.Unmarshal(state.statusJSON(), &dispatchInfo)
-	checks["dispatch"] = dispatchInfo
-
-	// --- Cron ---
+	// Cron.
 	if cron != nil {
 		jobs := cron.ListJobs()
 		running := 0
@@ -142,84 +90,37 @@ func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startT
 				enabled++
 			}
 		}
-		checks["cron"] = map[string]any{
-			"jobs":    len(jobs),
-			"enabled": enabled,
-			"running": running,
-		}
+		input.Cron = &health.CronSummary{Total: len(jobs), Enabled: enabled, Running: running}
 	}
 
-	// --- Circuit Breakers (summary) ---
+	// Circuit breakers summary.
 	if cfg.circuits != nil {
-		circuitStatus := cfg.circuits.Status()
-		if len(circuitStatus) > 0 {
-			checks["circuits"] = circuitStatus
-		}
+		input.CircuitStatus = cfg.circuits.Status()
 	}
 
-	// --- Offline Queue ---
+	// Offline queue.
 	if cfg.OfflineQueue.Enabled && cfg.HistoryDB != "" {
-		pending := countPendingQueue(cfg.HistoryDB)
-		queueInfo := map[string]any{
-			"status":  "ok",
-			"pending": pending,
-			"max":     cfg.OfflineQueue.maxItemsOrDefault(),
+		input.Queue = &health.QueueInfo{
+			Pending: countPendingQueue(cfg.HistoryDB),
+			Max:     cfg.OfflineQueue.maxItemsOrDefault(),
 		}
-		if pending > 0 {
-			overall = degradeStatus(overall, "degraded")
-			queueInfo["status"] = "draining"
-		}
-		checks["queue"] = queueInfo
 	}
 
-	// --- Overall Status ---
-	checks["status"] = overall
-
-	return checks
+	return health.DeepCheck(input)
 }
 
 // degradeStatus returns the worse of the current and proposed status.
 // Order: healthy < degraded < unhealthy.
 func degradeStatus(current, proposed string) string {
-	ranks := map[string]int{"healthy": 0, "degraded": 1, "unhealthy": 2}
-	if ranks[proposed] > ranks[current] {
-		return proposed
-	}
-	return current
+	return health.DegradeStatus(current, proposed)
 }
 
 // diskInfo returns free disk space info for the given path.
 func diskInfo(path string) map[string]any {
-	// Use os.Stat to check if path exists, then check dir size as an approximation.
-	// For actual free space, we'd need syscall.Statfs which is platform-specific.
-	// Use a simple approach: check outputs directory size.
-	info := map[string]any{"status": "ok"}
+	return health.DiskInfo(path)
+}
 
-	outputsDir := filepath.Join(path, "outputs")
-	var totalSize int64
-	filepath.Walk(outputsDir, func(_ string, fi os.FileInfo, _ error) error {
-		if fi != nil && !fi.IsDir() {
-			totalSize += fi.Size()
-		}
-		return nil
-	})
-	info["outputsSizeMB"] = float64(totalSize) / (1024 * 1024)
-
-	logsDir := filepath.Join(path, "logs")
-	var logsSize int64
-	filepath.Walk(logsDir, func(_ string, fi os.FileInfo, _ error) error {
-		if fi != nil && !fi.IsDir() {
-			logsSize += fi.Size()
-		}
-		return nil
-	})
-	info["logsSizeMB"] = float64(logsSize) / (1024 * 1024)
-
-	// Check actual free disk space using statfs (darwin/linux).
-	if freeBytes := diskFreeBytes(path); freeBytes > 0 {
-		freeGB := float64(freeBytes) / (1024 * 1024 * 1024)
-		info["freeGB"] = float64(int(freeGB*100)) / 100 // round to 2 decimals
-	}
-
-	return info
+// diskFreeBytes returns free disk space in bytes for the given path.
+func diskFreeBytes(path string) uint64 {
+	return health.DiskFreeBytes(path)
 }

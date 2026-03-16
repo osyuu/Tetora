@@ -66,12 +66,9 @@ func TestInitHabitsDB_InvalidPath(t *testing.T) {
 func TestCreateHabit(t *testing.T) {
 	dbPath, svc := setupHabitsTestDB(t)
 
-	id, err := svc.CreateHabit("Morning Run", "Run 5km every morning", "daily", "fitness", "", 1)
-	if err != nil {
+	id := newUUID()
+	if err := svc.CreateHabit(id, "Morning Run", "Run 5km every morning", "daily", "fitness", "", 1); err != nil {
 		t.Fatalf("CreateHabit: %v", err)
-	}
-	if id == "" {
-		t.Fatal("expected non-empty ID")
 	}
 
 	// Verify in DB.
@@ -95,7 +92,7 @@ func TestCreateHabit(t *testing.T) {
 
 func TestCreateHabit_EmptyName(t *testing.T) {
 	_, svc := setupHabitsTestDB(t)
-	_, err := svc.CreateHabit("", "", "daily", "", "", 1)
+	err := svc.CreateHabit(newUUID(), "", "", "daily", "", "", 1)
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -103,7 +100,8 @@ func TestCreateHabit_EmptyName(t *testing.T) {
 
 func TestCreateHabit_Defaults(t *testing.T) {
 	dbPath, svc := setupHabitsTestDB(t)
-	id, err := svc.CreateHabit("Meditate", "", "", "", "", 0)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Meditate", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
@@ -129,12 +127,13 @@ func TestCreateHabit_Defaults(t *testing.T) {
 func TestLogHabit(t *testing.T) {
 	dbPath, svc := setupHabitsTestDB(t)
 
-	id, err := svc.CreateHabit("Read", "Read for 30 minutes", "daily", "learning", "", 1)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Read", "Read for 30 minutes", "daily", "learning", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
 
-	if err := svc.LogHabit(id, "Read chapter 5", "", 1.0); err != nil {
+	if err := svc.LogHabit(newUUID(), id, "Read chapter 5", "", 1.0); err != nil {
 		t.Fatalf("LogHabit: %v", err)
 	}
 
@@ -155,7 +154,7 @@ func TestLogHabit(t *testing.T) {
 
 func TestLogHabit_NotFound(t *testing.T) {
 	_, svc := setupHabitsTestDB(t)
-	err := svc.LogHabit("nonexistent-id", "", "", 1.0)
+	err := svc.LogHabit(newUUID(), "nonexistent-id", "", "", 1.0)
 	if err == nil {
 		t.Fatal("expected error for nonexistent habit")
 	}
@@ -163,7 +162,7 @@ func TestLogHabit_NotFound(t *testing.T) {
 
 func TestLogHabit_EmptyID(t *testing.T) {
 	_, svc := setupHabitsTestDB(t)
-	err := svc.LogHabit("", "", "", 1.0)
+	err := svc.LogHabit(newUUID(), "", "", "", 1.0)
 	if err == nil {
 		t.Fatal("expected error for empty habit_id")
 	}
@@ -172,7 +171,8 @@ func TestLogHabit_EmptyID(t *testing.T) {
 func TestGetStreak_Daily(t *testing.T) {
 	dbPath, svc := setupHabitsTestDB(t)
 
-	id, err := svc.CreateHabit("Exercise", "", "daily", "", "", 1)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Exercise", "", "daily", "", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
@@ -199,7 +199,8 @@ func TestGetStreak_Daily(t *testing.T) {
 func TestGetStreak_Gap(t *testing.T) {
 	dbPath, svc := setupHabitsTestDB(t)
 
-	id, err := svc.CreateHabit("Meditate", "", "daily", "", "", 1)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Meditate", "", "daily", "", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
@@ -231,7 +232,8 @@ func TestGetStreak_Gap(t *testing.T) {
 func TestGetStreak_Weekly(t *testing.T) {
 	dbPath, svc := setupHabitsTestDB(t)
 
-	id, err := svc.CreateHabit("Weekly Review", "", "weekly", "", "", 1)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Weekly Review", "", "weekly", "", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
@@ -267,21 +269,22 @@ func TestGetStreak_NotFound(t *testing.T) {
 func TestHabitStatus_MultipleHabits(t *testing.T) {
 	_, svc := setupHabitsTestDB(t)
 
-	id1, err := svc.CreateHabit("Exercise", "", "daily", "fitness", "", 1)
+	id1 := newUUID()
+	err := svc.CreateHabit(id1, "Exercise", "", "daily", "fitness", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit 1: %v", err)
 	}
-	id2, err := svc.CreateHabit("Read", "", "daily", "learning", "", 1)
-	if err != nil {
+	id2 := newUUID()
+	if err = svc.CreateHabit(id2, "Read", "", "daily", "learning", "", 1); err != nil {
 		t.Fatalf("CreateHabit 2: %v", err)
 	}
 
 	// Log one habit today.
-	if err := svc.LogHabit(id1, "", "", 1.0); err != nil {
+	if err := svc.LogHabit(newUUID(), id1, "", "", 1.0); err != nil {
 		t.Fatalf("LogHabit: %v", err)
 	}
 
-	status, err := svc.HabitStatus("")
+	status, err := svc.HabitStatus("", logWarn)
 	if err != nil {
 		t.Fatalf("HabitStatus: %v", err)
 	}
@@ -314,14 +317,15 @@ func TestHabitStatus_MultipleHabits(t *testing.T) {
 func TestHabitReport_Week(t *testing.T) {
 	_, svc := setupHabitsTestDB(t)
 
-	id, err := svc.CreateHabit("Journal", "", "daily", "", "", 1)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Journal", "", "daily", "", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
 
 	// Log for 3 days.
 	for i := 0; i < 3; i++ {
-		if err := svc.LogHabit(id, "", "", 1.0); err != nil {
+		if err := svc.LogHabit(newUUID(), id, "", "", 1.0); err != nil {
 			t.Fatalf("LogHabit %d: %v", i, err)
 		}
 	}
@@ -352,8 +356,8 @@ func TestHabitReport_AllHabits(t *testing.T) {
 	_, svc := setupHabitsTestDB(t)
 
 	// Create two habits, log some.
-	svc.CreateHabit("A", "", "daily", "", "", 1)
-	svc.CreateHabit("B", "", "daily", "", "", 1)
+	svc.CreateHabit(newUUID(), "A", "", "daily", "", "", 1)
+	svc.CreateHabit(newUUID(), "B", "", "daily", "", "", 1)
 
 	report, err := svc.HabitReport("", "month", "")
 	if err != nil {
@@ -367,10 +371,10 @@ func TestHabitReport_AllHabits(t *testing.T) {
 func TestLogHealth(t *testing.T) {
 	dbPath, svc := setupHabitsTestDB(t)
 
-	if err := svc.LogHealth("steps", 8500, "steps", "manual", ""); err != nil {
+	if err := svc.LogHealth(newUUID(), "steps", 8500, "steps", "manual", ""); err != nil {
 		t.Fatalf("LogHealth: %v", err)
 	}
-	if err := svc.LogHealth("steps", 10200, "steps", "apple_health", ""); err != nil {
+	if err := svc.LogHealth(newUUID(), "steps", 10200, "steps", "apple_health", ""); err != nil {
 		t.Fatalf("LogHealth: %v", err)
 	}
 
@@ -391,7 +395,7 @@ func TestLogHealth(t *testing.T) {
 
 func TestLogHealth_EmptyMetric(t *testing.T) {
 	_, svc := setupHabitsTestDB(t)
-	err := svc.LogHealth("", 100, "", "", "")
+	err := svc.LogHealth(newUUID(), "", 100, "", "", "")
 	if err == nil {
 		t.Fatal("expected error for empty metric")
 	}
@@ -403,7 +407,7 @@ func TestGetHealthSummary(t *testing.T) {
 	// Log several data points.
 	values := []float64{7.5, 8.0, 6.5, 7.0, 8.5}
 	for _, v := range values {
-		if err := svc.LogHealth("sleep_hours", v, "hours", "manual", ""); err != nil {
+		if err := svc.LogHealth(newUUID(), "sleep_hours", v, "hours", "manual", ""); err != nil {
 			t.Fatalf("LogHealth: %v", err)
 		}
 	}
@@ -451,7 +455,8 @@ func TestGetHealthSummary_NoData(t *testing.T) {
 func TestCheckStreakAlerts(t *testing.T) {
 	dbPath, svc := setupHabitsTestDB(t)
 
-	id, err := svc.CreateHabit("Meditate", "", "daily", "", "", 1)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Meditate", "", "daily", "", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
@@ -475,13 +480,14 @@ func TestCheckStreakAlerts(t *testing.T) {
 func TestCheckStreakAlerts_NoAlert(t *testing.T) {
 	_, svc := setupHabitsTestDB(t)
 
-	id, err := svc.CreateHabit("Read", "", "daily", "", "", 1)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Read", "", "daily", "", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
 
 	// Log today -- no alert expected.
-	if err := svc.LogHabit(id, "", "", 1.0); err != nil {
+	if err := svc.LogHabit(newUUID(), id, "", "", 1.0); err != nil {
 		t.Fatalf("LogHabit: %v", err)
 	}
 
@@ -503,7 +509,7 @@ func TestToolHabitCreate(t *testing.T) {
 	defer func() { globalHabitsService = oldGlobal }()
 
 	input := json.RawMessage(`{"name":"Push-ups","frequency":"daily","targetCount":3,"category":"fitness"}`)
-	result, err := toolHabitCreate(context.Background(), svc.cfg, input)
+	result, err := toolHabitCreate(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolHabitCreate: %v", err)
 	}
@@ -539,13 +545,14 @@ func TestToolHabitLog(t *testing.T) {
 	defer func() { globalHabitsService = oldGlobal }()
 
 	// Create a habit first.
-	id, err := svc.CreateHabit("Water", "Drink 8 glasses", "daily", "health", "", 1)
+	id := newUUID()
+	err := svc.CreateHabit(id, "Water", "Drink 8 glasses", "daily", "health", "", 1)
 	if err != nil {
 		t.Fatalf("CreateHabit: %v", err)
 	}
 
 	input := json.RawMessage(`{"habitId":"` + id + `","note":"glass 1","value":1}`)
-	result, err := toolHabitLog(context.Background(), svc.cfg, input)
+	result, err := toolHabitLog(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolHabitLog: %v", err)
 	}
@@ -565,11 +572,11 @@ func TestToolHabitStatus(t *testing.T) {
 	globalHabitsService = svc
 	defer func() { globalHabitsService = oldGlobal }()
 
-	svc.CreateHabit("A", "", "daily", "", "", 1)
-	svc.CreateHabit("B", "", "daily", "", "", 1)
+	svc.CreateHabit(newUUID(), "A", "", "daily", "", "", 1)
+	svc.CreateHabit(newUUID(), "B", "", "daily", "", "", 1)
 
 	input := json.RawMessage(`{}`)
-	result, err := toolHabitStatus(context.Background(), svc.cfg, input)
+	result, err := toolHabitStatus(context.Background(), &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolHabitStatus: %v", err)
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tetora/internal/life/contacts"
 )
 
 // newTestContactsService creates a ContactsService with a temp DB for testing.
@@ -16,10 +18,64 @@ func newTestContactsService(t *testing.T) *ContactsService {
 	if err := initContactsDB(dbPath); err != nil {
 		t.Fatalf("initContactsDB: %v", err)
 	}
-	return &ContactsService{
-		dbPath: dbPath,
-		cfg:    &Config{},
+	return contacts.New(dbPath, makeLifeDB(), nil, nil)
+}
+
+// testAddContact is a test helper that adapts the old map-based API to the new struct API.
+func testAddContact(t *testing.T, cs *ContactsService, name string, fields map[string]any) (*Contact, error) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	c := &Contact{ID: newUUID(), Name: name, CreatedAt: now, UpdatedAt: now}
+	if fields != nil {
+		if v, ok := fields["email"].(string); ok {
+			c.Email = v
+		}
+		if v, ok := fields["phone"].(string); ok {
+			c.Phone = v
+		}
+		if v, ok := fields["birthday"].(string); ok {
+			c.Birthday = v
+		}
+		if v, ok := fields["anniversary"].(string); ok {
+			c.Anniversary = v
+		}
+		if v, ok := fields["notes"].(string); ok {
+			c.Notes = v
+		}
+		if v, ok := fields["nickname"].(string); ok {
+			c.Nickname = v
+		}
+		if v, ok := fields["relationship"].(string); ok {
+			c.Relationship = v
+		}
+		if v, ok := fields["tags"]; ok {
+			switch tv := v.(type) {
+			case []string:
+				c.Tags = tv
+			case []any:
+				for _, s := range tv {
+					if str, ok := s.(string); ok {
+						c.Tags = append(c.Tags, str)
+					}
+				}
+			}
+		}
+		if v, ok := fields["channel_ids"]; ok {
+			switch cv := v.(type) {
+			case map[string]string:
+				c.ChannelIDs = cv
+			case map[string]any:
+				c.ChannelIDs = make(map[string]string)
+				for k, val := range cv {
+					if str, ok := val.(string); ok {
+						c.ChannelIDs[k] = str
+					}
+				}
+			}
+		}
 	}
+	err := cs.AddContact(c)
+	return c, err
 }
 
 func TestInitContactsDB(t *testing.T) {
@@ -51,15 +107,20 @@ func TestInitContactsDB(t *testing.T) {
 func TestAddContact(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	c, err := cs.AddContact("Alice Smith", map[string]any{
-		"email":        "alice@example.com",
-		"phone":        "+1-555-0100",
-		"birthday":     "1990-03-15",
-		"relationship": "friend",
-		"tags":         []string{"work", "tennis"},
-		"channel_ids":  map[string]string{"discord": "12345"},
-	})
-	if err != nil {
+	now := time.Now().UTC().Format(time.RFC3339)
+	c := &Contact{
+		ID:           newUUID(),
+		Name:         "Alice Smith",
+		Email:        "alice@example.com",
+		Phone:        "+1-555-0100",
+		Birthday:     "1990-03-15",
+		Relationship: "friend",
+		Tags:         []string{"work", "tennis"},
+		ChannelIDs:   map[string]string{"discord": "12345"},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := cs.AddContact(c); err != nil {
 		t.Fatalf("AddContact: %v", err)
 	}
 	if c.ID == "" {
@@ -103,7 +164,7 @@ func TestAddContact(t *testing.T) {
 func TestAddContact_EmptyName(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	_, err := cs.AddContact("", nil)
+	err := cs.AddContact(&Contact{ID: newUUID(), Name: ""})
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -112,7 +173,7 @@ func TestAddContact_EmptyName(t *testing.T) {
 	}
 
 	// Whitespace-only name should also fail.
-	_, err = cs.AddContact("   ", nil)
+	err = cs.AddContact(&Contact{ID: newUUID(), Name: "   "})
 	if err == nil {
 		t.Fatal("expected error for whitespace-only name")
 	}
@@ -122,7 +183,7 @@ func TestAddContact_AnyTags(t *testing.T) {
 	cs := newTestContactsService(t)
 
 	// Test with []any tags (as would come from JSON unmarshaling).
-	c, err := cs.AddContact("Bob", map[string]any{
+	c, err := testAddContact(t, cs, "Bob", map[string]any{
 		"tags": []any{"a", "b"},
 	})
 	if err != nil {
@@ -137,7 +198,7 @@ func TestAddContact_AnyChannelIDs(t *testing.T) {
 	cs := newTestContactsService(t)
 
 	// Test with map[string]any channel_ids.
-	c, err := cs.AddContact("Charlie", map[string]any{
+	c, err := testAddContact(t, cs, "Charlie", map[string]any{
 		"channel_ids": map[string]any{"telegram": "99999"},
 	})
 	if err != nil {
@@ -151,7 +212,7 @@ func TestAddContact_AnyChannelIDs(t *testing.T) {
 func TestUpdateContact(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	c, err := cs.AddContact("Alice", map[string]any{
+	c, err := testAddContact(t, cs, "Alice", map[string]any{
 		"email": "alice@old.com",
 	})
 	if err != nil {
@@ -198,7 +259,7 @@ func TestUpdateContact(t *testing.T) {
 func TestUpdateContact_Tags(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	c, err := cs.AddContact("Dora", map[string]any{
+	c, err := testAddContact(t, cs, "Dora", map[string]any{
 		"tags": []string{"old"},
 	})
 	if err != nil {
@@ -219,9 +280,9 @@ func TestUpdateContact_Tags(t *testing.T) {
 func TestSearchContacts(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	cs.AddContact("Alice Smith", map[string]any{"email": "alice@example.com", "notes": "tennis player"})
-	cs.AddContact("Bob Jones", map[string]any{"email": "bob@example.com"})
-	cs.AddContact("Charlie Smith", map[string]any{"nickname": "Chuck"})
+	testAddContact(t, cs, "Alice Smith", map[string]any{"email": "alice@example.com", "notes": "tennis player"})
+	testAddContact(t, cs, "Bob Jones", map[string]any{"email": "bob@example.com"})
+	testAddContact(t, cs, "Charlie Smith", map[string]any{"nickname": "Chuck"})
 
 	// Search by name.
 	results, err := cs.SearchContacts("Smith", 10)
@@ -272,7 +333,7 @@ func TestSearchContacts(t *testing.T) {
 func TestGetContact(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	c, _ := cs.AddContact("Eve", nil)
+	c, _ := testAddContact(t, cs, "Eve", nil)
 	fetched, err := cs.GetContact(c.ID)
 	if err != nil {
 		t.Fatalf("GetContact: %v", err)
@@ -303,9 +364,9 @@ func TestGetContact_NotFound(t *testing.T) {
 func TestListContacts(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	cs.AddContact("Alice", map[string]any{"relationship": "friend"})
-	cs.AddContact("Bob", map[string]any{"relationship": "colleague"})
-	cs.AddContact("Charlie", map[string]any{"relationship": "friend"})
+	testAddContact(t, cs, "Alice", map[string]any{"relationship": "friend"})
+	testAddContact(t, cs, "Bob", map[string]any{"relationship": "colleague"})
+	testAddContact(t, cs, "Charlie", map[string]any{"relationship": "friend"})
 
 	// List all.
 	all, err := cs.ListContacts("", 50)
@@ -320,9 +381,9 @@ func TestListContacts(t *testing.T) {
 func TestListContacts_FilterRelationship(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	cs.AddContact("Alice", map[string]any{"relationship": "friend"})
-	cs.AddContact("Bob", map[string]any{"relationship": "colleague"})
-	cs.AddContact("Charlie", map[string]any{"relationship": "friend"})
+	testAddContact(t, cs, "Alice", map[string]any{"relationship": "friend"})
+	testAddContact(t, cs, "Bob", map[string]any{"relationship": "colleague"})
+	testAddContact(t, cs, "Charlie", map[string]any{"relationship": "friend"})
 
 	// Filter by relationship.
 	friends, err := cs.ListContacts("friend", 50)
@@ -354,32 +415,32 @@ func TestListContacts_FilterRelationship(t *testing.T) {
 func TestLogInteraction(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	c, _ := cs.AddContact("Frank", nil)
+	c, _ := testAddContact(t, cs, "Frank", nil)
 
-	err := cs.LogInteraction(c.ID, "discord", "message", "Chatted about project", "positive")
+	err := cs.LogInteraction(newUUID(), c.ID, "discord", "message", "Chatted about project", "positive")
 	if err != nil {
 		t.Fatalf("LogInteraction: %v", err)
 	}
 
-	err = cs.LogInteraction(c.ID, "email", "email", "Sent proposal", "neutral")
+	err = cs.LogInteraction(newUUID(), c.ID, "email", "email", "Sent proposal", "neutral")
 	if err != nil {
 		t.Fatalf("LogInteraction 2: %v", err)
 	}
 
 	// Logging to nonexistent contact should fail.
-	err = cs.LogInteraction("nonexistent", "discord", "message", "test", "")
+	err = cs.LogInteraction(newUUID(), "nonexistent", "discord", "message", "test", "")
 	if err == nil {
 		t.Fatal("expected error for nonexistent contact")
 	}
 
 	// Missing contact ID.
-	err = cs.LogInteraction("", "discord", "message", "test", "")
+	err = cs.LogInteraction(newUUID(), "", "discord", "message", "test", "")
 	if err == nil {
 		t.Fatal("expected error for empty contact ID")
 	}
 
 	// Missing interaction type.
-	err = cs.LogInteraction(c.ID, "discord", "", "test", "")
+	err = cs.LogInteraction(newUUID(), c.ID, "discord", "", "test", "")
 	if err == nil {
 		t.Fatal("expected error for empty interaction type")
 	}
@@ -388,9 +449,9 @@ func TestLogInteraction(t *testing.T) {
 func TestGetContactInteractions(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	c, _ := cs.AddContact("Grace", nil)
-	cs.LogInteraction(c.ID, "discord", "message", "hello", "positive")
-	cs.LogInteraction(c.ID, "telegram", "call", "video call", "neutral")
+	c, _ := testAddContact(t, cs, "Grace", nil)
+	cs.LogInteraction(newUUID(), c.ID, "discord", "message", "hello", "positive")
+	cs.LogInteraction(newUUID(), c.ID, "telegram", "call", "video call", "neutral")
 
 	interactions, err := cs.GetContactInteractions(c.ID, 10)
 	if err != nil {
@@ -423,13 +484,13 @@ func TestGetUpcomingEvents_Birthday(t *testing.T) {
 	// Use a fixed year (past) so it tests the "this year's occurrence" logic.
 	upcomingPastYear := "1990" + upcoming[4:]
 
-	cs.AddContact("Hank", map[string]any{"birthday": upcomingPastYear})
+	testAddContact(t, cs, "Hank", map[string]any{"birthday": upcomingPastYear})
 
 	// Also add someone whose birthday was yesterday (should not show for 7-day window,
 	// unless we are within 365 days which it always is).
 	yesterday := time.Now().UTC().Add(-1 * 24 * time.Hour).Format("2006-01-02")
 	yesterdayPast := "1985" + yesterday[4:]
-	cs.AddContact("Ivy", map[string]any{"birthday": yesterdayPast})
+	testAddContact(t, cs, "Ivy", map[string]any{"birthday": yesterdayPast})
 
 	events, err := cs.GetUpcomingEvents(7)
 	if err != nil {
@@ -459,7 +520,7 @@ func TestGetUpcomingEvents_NoBirthdays(t *testing.T) {
 	cs := newTestContactsService(t)
 
 	// Contact with no birthday/anniversary.
-	cs.AddContact("Jake", nil)
+	testAddContact(t, cs, "Jake", nil)
 
 	events, err := cs.GetUpcomingEvents(30)
 	if err != nil {
@@ -477,7 +538,7 @@ func TestGetUpcomingEvents_Anniversary(t *testing.T) {
 	upcoming := time.Now().UTC().Add(10 * 24 * time.Hour).Format("2006-01-02")
 	annivPast := "2015" + upcoming[4:]
 
-	cs.AddContact("Kate", map[string]any{"anniversary": annivPast})
+	testAddContact(t, cs, "Kate", map[string]any{"anniversary": annivPast})
 
 	events, err := cs.GetUpcomingEvents(15)
 	if err != nil {
@@ -498,11 +559,11 @@ func TestGetUpcomingEvents_Anniversary(t *testing.T) {
 func TestGetInactiveContacts(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	c1, _ := cs.AddContact("Larry", nil)
-	_, _ = cs.AddContact("Mona", nil)
+	c1, _ := testAddContact(t, cs, "Larry", nil)
+	_, _ = testAddContact(t, cs, "Mona", nil)
 
 	// Log a recent interaction for Larry.
-	cs.LogInteraction(c1.ID, "discord", "message", "recent chat", "positive")
+	cs.LogInteraction(newUUID(), c1.ID, "discord", "message", "recent chat", "positive")
 
 	// Mona has no interaction, so she should be inactive.
 	inactive, err := cs.GetInactiveContacts(7)
@@ -527,8 +588,8 @@ func TestGetInactiveContacts(t *testing.T) {
 func TestGetInactiveContacts_AllActive(t *testing.T) {
 	cs := newTestContactsService(t)
 
-	c1, _ := cs.AddContact("Ned", nil)
-	cs.LogInteraction(c1.ID, "discord", "message", "chat", "positive")
+	c1, _ := testAddContact(t, cs, "Ned", nil)
+	cs.LogInteraction(newUUID(), c1.ID, "discord", "message", "chat", "positive")
 
 	inactive, err := cs.GetInactiveContacts(7)
 	if err != nil {
@@ -588,8 +649,8 @@ func TestToolContactSearch(t *testing.T) {
 	globalContactsService = cs
 	defer func() { globalContactsService = oldGlobal }()
 
-	cs.AddContact("Patricia", map[string]any{"email": "pat@test.com"})
-	cs.AddContact("Paul", map[string]any{"email": "paul@test.com"})
+	testAddContact(t, cs, "Patricia", map[string]any{"email": "pat@test.com"})
+	testAddContact(t, cs, "Paul", map[string]any{"email": "paul@test.com"})
 
 	input := `{"query":"Pa","limit":10}`
 	result, err := toolContactSearch(context.Background(), &Config{}, json.RawMessage(input))
@@ -624,7 +685,7 @@ func TestToolContactLog(t *testing.T) {
 	globalContactsService = cs
 	defer func() { globalContactsService = oldGlobal }()
 
-	c, _ := cs.AddContact("Quinn", nil)
+	c, _ := testAddContact(t, cs, "Quinn", nil)
 
 	input := `{"contact_id":"` + c.ID + `","type":"message","summary":"had lunch","sentiment":"positive"}`
 	result, err := toolContactLog(context.Background(), &Config{}, json.RawMessage(input))
@@ -667,8 +728,8 @@ func TestToolContactList(t *testing.T) {
 	globalContactsService = cs
 	defer func() { globalContactsService = oldGlobal }()
 
-	cs.AddContact("Ruth", map[string]any{"relationship": "family"})
-	cs.AddContact("Sam", map[string]any{"relationship": "friend"})
+	testAddContact(t, cs, "Ruth", map[string]any{"relationship": "family"})
+	testAddContact(t, cs, "Sam", map[string]any{"relationship": "friend"})
 
 	input := `{"relationship":"family","limit":10}`
 	result, err := toolContactList(context.Background(), &Config{}, json.RawMessage(input))
@@ -692,7 +753,7 @@ func TestToolContactUpcoming(t *testing.T) {
 
 	upcoming := time.Now().UTC().Add(3 * 24 * time.Hour).Format("2006-01-02")
 	bdayPast := "1992" + upcoming[4:]
-	cs.AddContact("Tina", map[string]any{"birthday": bdayPast})
+	testAddContact(t, cs, "Tina", map[string]any{"birthday": bdayPast})
 
 	input := `{"days":7}`
 	result, err := toolContactUpcoming(context.Background(), &Config{}, json.RawMessage(input))
@@ -740,7 +801,7 @@ func TestDaysUntilEvent(t *testing.T) {
 	endDate := today.Add(30 * 24 * time.Hour) // 30 days out
 
 	// Event in 5 days (Feb 28).
-	d, ok := daysUntilEvent("1990-02-28", today, endDate)
+	d, ok := contacts.DaysUntilEvent("1990-02-28", today, endDate)
 	if !ok {
 		t.Fatal("expected to find event")
 	}
@@ -749,7 +810,7 @@ func TestDaysUntilEvent(t *testing.T) {
 	}
 
 	// Event today (Feb 23).
-	d, ok = daysUntilEvent("1990-02-23", today, endDate)
+	d, ok = contacts.DaysUntilEvent("1990-02-23", today, endDate)
 	if !ok {
 		t.Fatal("expected to find event for today")
 	}
@@ -758,14 +819,14 @@ func TestDaysUntilEvent(t *testing.T) {
 	}
 
 	// Event far in future (next January) — outside 30 day window.
-	_, ok = daysUntilEvent("1990-01-01", today, endDate)
+	_, ok = contacts.DaysUntilEvent("1990-01-01", today, endDate)
 	// Jan 1 is ~312 days away from Feb 23 (next year), so outside 30-day window.
 	if ok {
 		t.Error("expected NOT to find event outside window")
 	}
 
 	// Invalid date.
-	_, ok = daysUntilEvent("bad", today, endDate)
+	_, ok = contacts.DaysUntilEvent("bad", today, endDate)
 	if ok {
 		t.Error("expected false for invalid date")
 	}

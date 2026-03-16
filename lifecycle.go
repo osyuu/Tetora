@@ -93,7 +93,7 @@ func (le *LifecycleEngine) RunInsightActions() ([]string, error) {
 					if globalReminderEngine != nil {
 						due := time.Now().Add(24 * time.Hour)
 						text := fmt.Sprintf("[Insight] %s: %s", insight.Title, insight.Description)
-						_, err := globalReminderEngine.addReminder(text, due, "", "", "default")
+						_, err := globalReminderEngine.Add(text, due, "", "", "default")
 						if err != nil {
 							logWarn("lifecycle: create insight reminder failed", "error", err)
 						} else {
@@ -164,7 +164,7 @@ func (le *LifecycleEngine) SyncBirthdayReminders() (int, error) {
 			due = time.Now().Add(1 * time.Hour)
 		}
 
-		_, err := globalReminderEngine.addReminder(reminderText, due, "", "", "default")
+		_, err := globalReminderEngine.Add(reminderText, due, "", "", "default")
 		if err != nil {
 			// Likely hit per-user limit; skip silently.
 			logDebug("lifecycle: birthday reminder skipped", "contact", contactName, "error", err)

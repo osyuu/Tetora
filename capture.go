@@ -72,7 +72,7 @@ func executeCapture(ctx context.Context, cfg *Config, category, text string) (st
 			return "", fmt.Errorf("reminder engine not initialized")
 		}
 		due := time.Now().Add(24 * time.Hour)
-		r, err := globalReminderEngine.addReminder(text, due, "", "", "default")
+		r, err := globalReminderEngine.Add(text, due, "", "", "default")
 		if err != nil {
 			return "", fmt.Errorf("add reminder: %w", err)
 		}
@@ -82,8 +82,9 @@ func executeCapture(ctx context.Context, cfg *Config, category, text string) (st
 		if globalContactsService == nil {
 			return "", fmt.Errorf("contacts service not initialized")
 		}
-		c, err := globalContactsService.AddContact(text, nil)
-		if err != nil {
+		now := time.Now().UTC().Format(time.RFC3339)
+		c := &Contact{ID: newUUID(), Name: text, CreatedAt: now, UpdatedAt: now}
+		if err := globalContactsService.AddContact(c); err != nil {
 			return "", fmt.Errorf("add contact: %w", err)
 		}
 		return fmt.Sprintf("Contact added: %s (id=%s)", c.Name, c.ID), nil

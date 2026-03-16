@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // registerContactsRoutes registers HTTP routes for the contacts API.
@@ -72,37 +73,23 @@ func (s *Server) handleContactsAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fields := make(map[string]any)
-	if body.Nickname != "" {
-		fields["nickname"] = body.Nickname
+	now := time.Now().UTC().Format(time.RFC3339)
+	contact := &Contact{
+		ID:           newUUID(),
+		Name:         body.Name,
+		Nickname:     body.Nickname,
+		Email:        body.Email,
+		Phone:        body.Phone,
+		Birthday:     body.Birthday,
+		Anniversary:  body.Anniversary,
+		Notes:        body.Notes,
+		Tags:         body.Tags,
+		ChannelIDs:   body.ChannelIDs,
+		Relationship: body.Relationship,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
-	if body.Email != "" {
-		fields["email"] = body.Email
-	}
-	if body.Phone != "" {
-		fields["phone"] = body.Phone
-	}
-	if body.Birthday != "" {
-		fields["birthday"] = body.Birthday
-	}
-	if body.Anniversary != "" {
-		fields["anniversary"] = body.Anniversary
-	}
-	if body.Notes != "" {
-		fields["notes"] = body.Notes
-	}
-	if body.Relationship != "" {
-		fields["relationship"] = body.Relationship
-	}
-	if len(body.Tags) > 0 {
-		fields["tags"] = body.Tags
-	}
-	if len(body.ChannelIDs) > 0 {
-		fields["channel_ids"] = body.ChannelIDs
-	}
-
-	contact, err := globalContactsService.AddContact(body.Name, fields)
-	if err != nil {
+	if err := globalContactsService.AddContact(contact); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}
@@ -199,7 +186,7 @@ func (s *Server) handleContactsLogInteraction(w http.ResponseWriter, r *http.Req
 		body.Type = "message"
 	}
 
-	if err := globalContactsService.LogInteraction(body.ContactID, body.Channel, body.Type, body.Summary, body.Sentiment); err != nil {
+	if err := globalContactsService.LogInteraction(newUUID(), body.ContactID, body.Channel, body.Type, body.Summary, body.Sentiment); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}

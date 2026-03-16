@@ -1,0 +1,234 @@
+package main
+
+// wire_life.go wires the life service internal packages to the root package
+// by providing constructors and type aliases that keep the root API surface stable.
+
+import (
+	"context"
+	"io"
+	"path/filepath"
+
+	"tetora/internal/life/calendar"
+	"tetora/internal/life/contacts"
+	"tetora/internal/life/dailynotes"
+	"tetora/internal/life/family"
+	"tetora/internal/life/finance"
+	"tetora/internal/life/goals"
+	"tetora/internal/life/habits"
+	"tetora/internal/life/lifedb"
+	"tetora/internal/life/pricewatch"
+	"tetora/internal/life/reminder"
+	"tetora/internal/life/timetracking"
+)
+
+// --- Service type aliases ---
+
+type FinanceService = finance.Service
+type HabitsService = habits.Service
+type GoalsService = goals.Service
+type CalendarService = calendar.Service
+type ContactsService = contacts.Service
+type FamilyService = family.Service
+type PriceWatchEngine = pricewatch.Service
+type ReminderEngine = reminder.Engine
+type TimeTrackingService = timetracking.Service
+type DailyNotesService = dailynotes.Service
+
+// --- Data type aliases ---
+
+// Finance types
+type Expense = finance.Expense
+type Budget = finance.Budget
+type ExpenseReport = finance.ExpenseReport
+type ExpenseBudgetStatus = finance.ExpenseBudgetStatus
+type PriceWatch = pricewatch.PriceWatch
+
+// Goals types
+type Goal = goals.Goal
+type Milestone = goals.Milestone
+type ReviewNote = goals.ReviewNote
+
+// Contacts types
+type Contact = contacts.Contact
+type ContactInteraction = contacts.ContactInteraction
+
+// Family types
+type FamilyUser = family.FamilyUser
+type SharedList = family.SharedList
+type SharedListItem = family.SharedListItem
+
+// Calendar types
+type CalendarEvent = calendar.Event
+type CalendarEventInput = calendar.EventInput
+
+// TimeTracking types
+type TimeEntry = timetracking.TimeEntry
+type TimeReport = timetracking.TimeReport
+type ActivitySummary = timetracking.ActivitySummary
+
+// Reminder types
+type Reminder = reminder.Reminder
+
+// --- makeLifeDB ---
+
+// makeLifeDB returns a lifedb.DB wired to the root package helpers.
+func makeLifeDB() lifedb.DB {
+	return lifedb.DB{
+		Query:   queryDB,
+		Exec:    execDB,
+		Escape:  escapeSQLite,
+		LogInfo: logInfo,
+		LogWarn: logWarn,
+	}
+}
+
+// --- Constructors ---
+
+func newFinanceService(cfg *Config) *FinanceService {
+	encFn := func(v string) string { return encryptField(cfg, v) }
+	decFn := func(v string) string { return decryptField(cfg, v) }
+	return finance.New(cfg.HistoryDB, cfg.Finance.defaultCurrencyOrTWD(), makeLifeDB(), encFn, decFn)
+}
+
+func initFinanceDB(dbPath string) error {
+	return finance.InitDB(dbPath)
+}
+
+func newHabitsService(cfg *Config) *HabitsService {
+	return habits.New(cfg.HistoryDB, makeLifeDB())
+}
+
+func initHabitsDB(dbPath string) error {
+	return habits.InitDB(dbPath)
+}
+
+func newGoalsService(cfg *Config) *GoalsService {
+	return goals.New(cfg.HistoryDB, makeLifeDB())
+}
+
+func initGoalsDB(dbPath string) error {
+	return goals.InitDB(dbPath)
+}
+
+func newCalendarService(cfg *Config) *CalendarService {
+	var oauth calendar.OAuthRequester
+	if globalOAuthManager != nil {
+		oauth = &oauthAdapter{mgr: globalOAuthManager}
+	}
+	return calendar.New(
+		cfg.Calendar.CalendarID,
+		cfg.Calendar.TimeZone,
+		cfg.Calendar.MaxResults,
+		oauth,
+	)
+}
+
+func newContactsService(cfg *Config) *ContactsService {
+	dbPath := filepath.Join(filepath.Dir(cfg.HistoryDB), "contacts.db")
+	if err := contacts.InitDB(dbPath); err != nil {
+		logError("contacts service init failed", "error", err)
+		return nil
+	}
+	encFn := func(v string) string { return encryptField(cfg, v) }
+	decFn := func(v string) string { return decryptField(cfg, v) }
+	logInfo("contacts service initialized", "db", dbPath)
+	return contacts.New(dbPath, makeLifeDB(), encFn, decFn)
+}
+
+func initContactsDB(dbPath string) error {
+	return contacts.InitDB(dbPath)
+}
+
+func newFamilyService(cfg *Config, familyCfg FamilyConfig) (*FamilyService, error) {
+	dbPath := filepath.Join(filepath.Dir(cfg.HistoryDB), "family.db")
+	internalCfg := family.Config{
+		MaxUsers:         familyCfg.MaxUsers,
+		DefaultBudget:    familyCfg.DefaultBudget,
+		DefaultRateLimit: familyCfg.DefaultRateLimit,
+	}
+	return family.New(dbPath, cfg.HistoryDB, internalCfg, makeLifeDB())
+}
+
+func initFamilyDB(dbPath string) error {
+	return family.InitDB(dbPath)
+}
+
+func newPriceWatchEngine(cfg *Config) *PriceWatchEngine {
+	return pricewatch.New(cfg.HistoryDB, currencyBaseURL, makeLifeDB())
+}
+
+func newReminderEngine(cfg *Config, notifyFn func(string)) *ReminderEngine {
+	internalCfg := reminder.Config{
+		CheckInterval: cfg.Reminders.checkIntervalOrDefault(),
+		MaxPerUser:    cfg.Reminders.MaxPerUser,
+	}
+	return reminder.New(cfg.HistoryDB, internalCfg, makeLifeDB(), notifyFn, nextCronTime)
+}
+
+func initReminderDB(dbPath string) error {
+	return reminder.InitDB(dbPath)
+}
+
+func newTimeTrackingService(cfg *Config) *TimeTrackingService {
+	return timetracking.New(cfg.HistoryDB, makeLifeDB())
+}
+
+func initTimeTrackingDB(dbPath string) error {
+	return timetracking.InitDB(dbPath)
+}
+
+func newDailyNotesService(cfg *Config) *DailyNotesService {
+	notesDir := cfg.DailyNotes.dirOrDefault(cfg.baseDir)
+	return dailynotes.New(cfg.HistoryDB, notesDir, makeLifeDB())
+}
+
+// --- oauthAdapter wraps OAuthManager to satisfy calendar.OAuthRequester ---
+
+type oauthAdapter struct {
+	mgr *OAuthManager
+}
+
+func (a *oauthAdapter) Request(ctx context.Context, provider, method, url string, body io.Reader) (*calendar.OAuthResponse, error) {
+	resp, err := a.mgr.Request(ctx, provider, method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	return &calendar.OAuthResponse{
+		StatusCode: resp.StatusCode,
+		Body:       resp.Body,
+	}, nil
+}
+
+// Ensure oauthAdapter satisfies the interface at compile time.
+var _ calendar.OAuthRequester = (*oauthAdapter)(nil)
+
+// --- Forwarding helpers used by tool handlers ---
+
+// parseExpenseNL delegates to internal finance package.
+func parseExpenseNL(text, defaultCurrency string) (amount float64, currency string, category string, description string) {
+	return finance.ParseExpenseNL(text, defaultCurrency)
+}
+
+// periodToDateFilter delegates to internal finance package.
+func periodToDateFilter(period string) string {
+	return finance.PeriodToDateFilter(period)
+}
+
+// parseNaturalSchedule delegates to internal calendar package.
+func parseNaturalSchedule(text string) (*CalendarEventInput, error) {
+	return calendar.ParseNaturalSchedule(text)
+}
+
+// --- Goals helper wrappers ---
+
+func parseMilestonesFromDescription(description string) []Milestone {
+	return goals.ParseMilestonesFromDescription(description, newUUID)
+}
+
+func defaultMilestones() []Milestone {
+	return goals.DefaultMilestones(newUUID)
+}
+
+func calculateMilestoneProgress(milestones []Milestone) int {
+	return goals.CalculateMilestoneProgress(milestones)
+}

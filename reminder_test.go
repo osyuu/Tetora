@@ -304,7 +304,7 @@ func TestReminderAddAndList(t *testing.T) {
 
 	// Add a reminder.
 	due := time.Now().Add(1 * time.Hour)
-	rem, err := re.addReminder("Test reminder", due, "", "api", "user1")
+	rem, err := re.Add("Test reminder", due, "", "api", "user1")
 	if err != nil {
 		t.Fatalf("addReminder: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestReminderAddAndList(t *testing.T) {
 	}
 
 	// List reminders.
-	list, err := re.listReminders("user1")
+	list, err := re.List("user1")
 	if err != nil {
 		t.Fatalf("listReminders: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestReminderAddAndList(t *testing.T) {
 	}
 
 	// List with different user should be empty.
-	list2, err := re.listReminders("user2")
+	list2, err := re.List("user2")
 	if err != nil {
 		t.Fatalf("listReminders: %v", err)
 	}
@@ -350,18 +350,18 @@ func TestReminderCancel(t *testing.T) {
 	re := newReminderEngine(cfg, nil)
 
 	due := time.Now().Add(1 * time.Hour)
-	rem, err := re.addReminder("Cancel me", due, "", "api", "user1")
+	rem, err := re.Add("Cancel me", due, "", "api", "user1")
 	if err != nil {
 		t.Fatalf("addReminder: %v", err)
 	}
 
 	// Cancel it.
-	if err := re.cancelReminder(rem.ID, "user1"); err != nil {
+	if err := re.Cancel(rem.ID, "user1"); err != nil {
 		t.Fatalf("cancelReminder: %v", err)
 	}
 
 	// Should no longer appear in list.
-	list, err := re.listReminders("user1")
+	list, err := re.List("user1")
 	if err != nil {
 		t.Fatalf("listReminders: %v", err)
 	}
@@ -381,18 +381,18 @@ func TestReminderSnooze(t *testing.T) {
 
 	// Create a reminder due 5 minutes from now.
 	due := time.Now().Add(5 * time.Minute)
-	rem, err := re.addReminder("Snooze me", due, "", "api", "user1")
+	rem, err := re.Add("Snooze me", due, "", "api", "user1")
 	if err != nil {
 		t.Fatalf("addReminder: %v", err)
 	}
 
 	// Snooze by 1 hour.
-	if err := re.snoozeReminder(rem.ID, 1*time.Hour); err != nil {
+	if err := re.Snooze(rem.ID, 1*time.Hour); err != nil {
 		t.Fatalf("snoozeReminder: %v", err)
 	}
 
 	// Verify the due_at moved forward.
-	list, err := re.listReminders("user1")
+	list, err := re.List("user1")
 	if err != nil {
 		t.Fatalf("listReminders: %v", err)
 	}
@@ -426,20 +426,20 @@ func TestReminderTick(t *testing.T) {
 
 	// Insert a reminder that is already due (in the past).
 	pastDue := time.Now().Add(-1 * time.Minute)
-	_, err := re.addReminder("Past due reminder", pastDue, "", "api", "user1")
+	_, err := re.Add("Past due reminder", pastDue, "", "api", "user1")
 	if err != nil {
 		t.Fatalf("addReminder: %v", err)
 	}
 
 	// Insert a reminder that is not yet due.
 	futureDue := time.Now().Add(1 * time.Hour)
-	_, err = re.addReminder("Future reminder", futureDue, "", "api", "user1")
+	_, err = re.Add("Future reminder", futureDue, "", "api", "user1")
 	if err != nil {
 		t.Fatalf("addReminder: %v", err)
 	}
 
 	// Run tick.
-	re.tick()
+	re.Tick()
 
 	// Should have fired the past-due reminder.
 	if len(notifications) != 1 {
@@ -450,7 +450,7 @@ func TestReminderTick(t *testing.T) {
 	}
 
 	// The past-due reminder should now be 'fired'.
-	list, err := re.listReminders("user1")
+	list, err := re.List("user1")
 	if err != nil {
 		t.Fatalf("listReminders: %v", err)
 	}
@@ -475,20 +475,20 @@ func TestReminderRecurring(t *testing.T) {
 
 	// Insert a recurring reminder that is already due.
 	pastDue := time.Now().Add(-1 * time.Minute)
-	rem, err := re.addReminder("Daily standup", pastDue, "0 9 * * *", "api", "user1")
+	rem, err := re.Add("Daily standup", pastDue, "0 9 * * *", "api", "user1")
 	if err != nil {
 		t.Fatalf("addReminder: %v", err)
 	}
 
 	// Run tick — should fire and reschedule.
-	re.tick()
+	re.Tick()
 
 	if len(notifications) != 1 {
 		t.Fatalf("expected 1 notification, got %d", len(notifications))
 	}
 
 	// The reminder should still be pending (rescheduled, not fired).
-	list, err := re.listReminders("user1")
+	list, err := re.List("user1")
 	if err != nil {
 		t.Fatalf("listReminders: %v", err)
 	}
@@ -519,14 +519,14 @@ func TestReminderMaxPerUser(t *testing.T) {
 
 	due := time.Now().Add(1 * time.Hour)
 	for i := 0; i < 3; i++ {
-		_, err := re.addReminder(fmt.Sprintf("Reminder %d", i), due, "", "api", "user1")
+		_, err := re.Add(fmt.Sprintf("Reminder %d", i), due, "", "api", "user1")
 		if err != nil {
 			t.Fatalf("addReminder %d: %v", i, err)
 		}
 	}
 
 	// 4th should fail.
-	_, err := re.addReminder("Too many", due, "", "api", "user1")
+	_, err := re.Add("Too many", due, "", "api", "user1")
 	if err == nil {
 		t.Error("expected error when exceeding max per user")
 	}

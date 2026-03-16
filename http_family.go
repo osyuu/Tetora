@@ -113,7 +113,7 @@ func (s *Server) handleFamilyLists(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
 			return
 		}
-		list, err := globalFamilyService.CreateList(body.Name, body.ListType, body.CreatedBy)
+		list, err := globalFamilyService.CreateList(body.Name, body.ListType, body.CreatedBy, newUUID)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return

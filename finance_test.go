@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
 )
 
 func setupFinanceTestDB(t *testing.T) (string, *FinanceService) {
@@ -156,29 +157,7 @@ func TestParseExpenseNL_Yen(t *testing.T) {
 	}
 }
 
-func TestCategorizeExpense(t *testing.T) {
-	tests := []struct {
-		desc string
-		want string
-	}{
-		{"午餐便當", "food"},
-		{"Uber ride", "transport"},
-		{"Netflix subscription", "entertainment"},
-		{"電費", "utilities"},
-		{"房租", "housing"},
-		{"牙醫", "health"},
-		{"Amazon purchase", "shopping"},
-		{"something random", "other"},
-		{"", "other"},
-	}
-
-	for _, tt := range tests {
-		got := categorizeExpense(tt.desc)
-		if got != tt.want {
-			t.Errorf("categorize(%q) = %s, want %s", tt.desc, got, tt.want)
-		}
-	}
-}
+// TestCategorizeExpense moved to internal/life/finance/finance_test.go.
 
 func TestAddExpense(t *testing.T) {
 	_, svc := setupFinanceTestDB(t)
@@ -517,7 +496,7 @@ func TestToolExpenseAdd(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"text":   "午餐 350 元",
 		"userId": "tester",
@@ -541,7 +520,7 @@ func TestToolExpenseAdd_ExplicitFields(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"amount":      99.99,
 		"currency":    "USD",
@@ -568,7 +547,7 @@ func TestToolExpenseAdd_NoAmount(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"text": "something without number",
 	})
@@ -587,7 +566,7 @@ func TestToolExpenseReport(t *testing.T) {
 
 	svc.AddExpense("tester", 500, "TWD", "food", "dinner", nil)
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"period": "today",
 		"userId": "tester",
@@ -611,7 +590,7 @@ func TestToolExpenseBudget_Set(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"action":   "set",
 		"category": "food",
@@ -636,7 +615,7 @@ func TestToolExpenseBudget_List(t *testing.T) {
 
 	svc.SetBudget("tester", "food", 5000, "TWD")
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"action": "list",
 		"userId": "tester",
@@ -660,7 +639,7 @@ func TestToolExpenseBudget_Check(t *testing.T) {
 	svc.SetBudget("tester", "food", 5000, "TWD")
 	svc.AddExpense("tester", 2000, "TWD", "food", "groceries", nil)
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"action": "check",
 		"userId": "tester",
@@ -684,7 +663,7 @@ func TestToolExpenseBudget_InvalidAction(t *testing.T) {
 	globalFinanceService = svc
 	defer func() { globalFinanceService = oldSvc }()
 
-	cfg := svc.cfg
+	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{
 		"action": "invalid",
 	})

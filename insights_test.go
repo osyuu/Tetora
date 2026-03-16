@@ -144,11 +144,11 @@ func setupTestGlobals(t *testing.T, dbPath string, cfg *Config) func() {
 	oldHabits := globalHabitsService
 	oldInsights := globalInsightsEngine
 
-	globalFinanceService = &FinanceService{dbPath: dbPath, cfg: cfg}
+	globalFinanceService = newFinanceService(cfg)
 	globalTaskManager = &TaskManagerService{dbPath: dbPath, cfg: cfg}
 	globalUserProfileService = &UserProfileService{dbPath: dbPath, cfg: cfg}
-	globalContactsService = &ContactsService{dbPath: dbPath, cfg: cfg}
-	globalHabitsService = &HabitsService{dbPath: dbPath, cfg: cfg}
+	globalContactsService = newContactsService(cfg)
+	globalHabitsService = newHabitsService(cfg)
 
 	return func() {
 		globalFinanceService = oldFinance
