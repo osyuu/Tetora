@@ -1106,6 +1106,29 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 		task.sseBroker = db.state.broker
 	}
 
+	// Create cancellable context so Escape button and !cancel can interrupt.
+	taskCtx, taskCancel := context.WithCancel(ctx)
+	defer taskCancel()
+
+	// Register task in dispatch state so !cancel can find it.
+	if db.state != nil {
+		db.state.mu.Lock()
+		db.state.running[task.ID] = &taskState{
+			task:         task,
+			startAt:      time.Now(),
+			lastActivity: time.Now(),
+			cancelFn:     taskCancel,
+		}
+		db.state.mu.Unlock()
+	}
+	defer func() {
+		if db.state != nil {
+			db.state.mu.Lock()
+			delete(db.state.running, task.ID)
+			db.state.mu.Unlock()
+		}
+	}()
+
 	// Start progress message for live Discord updates.
 	// Controlled by showProgress config (default: true).
 	showProgress := db.cfg.Discord.ShowProgress == nil || *db.cfg.Discord.ShowProgress
@@ -1141,13 +1164,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 				},
 				Callback: func(data discordInteractionData) {
 					logInfo("progress escape: cancelling task", "taskId", task.ID)
-					if db.state != nil {
-						db.state.mu.Lock()
-						if ts, ok := db.state.running[task.ID]; ok && ts.cancelFn != nil {
-							ts.cancelFn()
-						}
-						db.state.mu.Unlock()
-					}
+					taskCancel()
 				},
 			})
 
@@ -1156,7 +1173,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 	}
 
 	taskStart := time.Now()
-	result := runSingleTask(ctx, db.cfg, task, db.sem, db.childSem, route.Agent)
+	result := runSingleTask(taskCtx, db.cfg, task, db.sem, db.childSem, route.Agent)
 
 	// Stop progress updater and clean up progress message.
 	if progressStopCh != nil {
