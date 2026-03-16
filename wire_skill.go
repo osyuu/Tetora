@@ -8,13 +8,11 @@ import (
 	"tetora/internal/skill"
 )
 
-// --- Type aliases ---
-// Allow the rest of the root package to use skill types without importing skill directly.
+// --- Type aliases (non-config) ---
+// Config type aliases (SkillConfig, SkillStoreConfig) are now in config.go.
 
-type SkillConfig = skill.SkillConfig
 type SkillResult = skill.SkillResult
 type SkillMetadata = skill.SkillMetadata
-type SkillStoreConfig = skill.SkillStoreConfig
 type SkillMatcher = skill.SkillMatcher
 type SkillEventOpts = skill.SkillEventOpts
 type SentoriReport = skill.SentoriReport
@@ -42,7 +40,7 @@ func toSkillAppConfig(cfg *Config) *skill.AppConfig {
 		SkillStore:       cfg.SkillStore,
 		WorkspaceDir:     cfg.WorkspaceDir,
 		HistoryDB:        cfg.HistoryDB,
-		BaseDir:          cfg.baseDir,
+		BaseDir:          cfg.BaseDir,
 		MaxSkillsPerTask: maxSkills,
 		SkillsMax:        skillsMax,
 		Browser:          globalBrowserRelay,

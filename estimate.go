@@ -8,8 +8,8 @@ import (
 )
 
 // --- Cost Estimation Types (aliases to internal/estimate) ---
+// ModelPricing is aliased in config.go via internal/config.
 
-type ModelPricing = estimate.ModelPricing
 type CostEstimate = estimate.CostEstimate
 type EstimateResult = estimate.EstimateResult
 
@@ -83,7 +83,7 @@ func estimateTaskCost(cfg *Config, task Task, agentName string) CostEstimate {
 	// Estimate output tokens from history, fallback to config default.
 	tokensOut := estimate.QueryModelAvgOutput(cfg.HistoryDB, model)
 	if tokensOut == 0 {
-		tokensOut = cfg.Estimate.defaultOutputTokensOrDefault()
+		tokensOut = cfg.Estimate.DefaultOutputTokensOrDefault()
 	}
 
 	pricing := estimate.ResolvePricing(cfg.Pricing, model)

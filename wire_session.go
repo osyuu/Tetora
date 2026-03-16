@@ -144,7 +144,7 @@ func compactSession(ctx context.Context, cfg *Config, dbPath, sessionID string, 
 		return err
 	}
 
-	keep := cfg.Session.compactKeepOrDefault()
+	keep := cfg.Session.CompactKeepOrDefault()
 	if tokenTriggered {
 		keep = keep * 2
 		if keep < 15 {
@@ -233,8 +233,8 @@ Conversation (%d messages):
 
 // maybeCompactSession triggers compaction if the session exceeds thresholds.
 func maybeCompactSession(cfg *Config, dbPath, sessionID string, msgCount, tokensIn int, sem, childSem chan struct{}) {
-	msgThreshold := cfg.Session.compactAfterOrDefault()
-	tokenThreshold := cfg.Session.compactTokensOrDefault()
+	msgThreshold := cfg.Session.CompactAfterOrDefault()
+	tokenThreshold := cfg.Session.CompactTokensOrDefault()
 	tokenTriggered := tokensIn > tokenThreshold
 	if msgCount <= msgThreshold && !tokenTriggered {
 		return

@@ -266,7 +266,7 @@ func TestInitWorkspaces(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	cfg := &Config{
-		baseDir:      tmpDir,
+		BaseDir:      tmpDir,
 		AgentsDir:    filepath.Join(tmpDir, "agents"),
 		WorkspaceDir: filepath.Join(tmpDir, "workspace"),
 		RuntimeDir:   filepath.Join(tmpDir, "runtime"),

@@ -271,13 +271,13 @@ func TestYouTubeIntegration(t *testing.T) {
 
 func TestYouTubeConfigYtDlpOrDefault(t *testing.T) {
 	c := YouTubeConfig{}
-	if c.ytDlpOrDefault() != "yt-dlp" {
-		t.Errorf("expected yt-dlp default, got %q", c.ytDlpOrDefault())
+	if c.YtDlpOrDefault() != "yt-dlp" {
+		t.Errorf("expected yt-dlp default, got %q", c.YtDlpOrDefault())
 	}
 
 	c.YtDlpPath = "/usr/local/bin/yt-dlp"
-	if c.ytDlpOrDefault() != "/usr/local/bin/yt-dlp" {
-		t.Errorf("expected custom path, got %q", c.ytDlpOrDefault())
+	if c.YtDlpOrDefault() != "/usr/local/bin/yt-dlp" {
+		t.Errorf("expected custom path, got %q", c.YtDlpOrDefault())
 	}
 }
 

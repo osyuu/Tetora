@@ -27,49 +27,6 @@ type ProactiveEngine struct {
 	childSem  chan struct{} // shared semaphore for child tasks
 }
 
-// ProactiveRule defines a trigger → action → delivery pipeline.
-type ProactiveRule struct {
-	Name     string            `json:"name"`
-	Trigger  ProactiveTrigger  `json:"trigger"`
-	Action   ProactiveAction   `json:"action"`
-	Delivery ProactiveDelivery `json:"delivery"`
-	Cooldown string            `json:"cooldown,omitempty"` // e.g. "1h", "30m"
-	Enabled  *bool             `json:"enabled,omitempty"`  // default true
-}
-
-// isEnabled returns true if the rule is enabled (default true).
-func (r ProactiveRule) isEnabled() bool {
-	return r.Enabled == nil || *r.Enabled
-}
-
-// ProactiveTrigger defines when a rule fires.
-type ProactiveTrigger struct {
-	Type     string  `json:"type"` // "schedule", "event", "threshold", "heartbeat"
-	Cron     string  `json:"cron,omitempty"`     // for schedule type
-	TZ       string  `json:"tz,omitempty"`       // timezone
-	Event    string  `json:"event,omitempty"`    // for event type (SSE event type match)
-	Metric   string  `json:"metric,omitempty"`   // for threshold type
-	Op       string  `json:"op,omitempty"`       // ">", "<", ">=", "<=", "=="
-	Value    float64 `json:"value,omitempty"`    // threshold value
-	Interval string  `json:"interval,omitempty"` // for heartbeat type, e.g. "30m"
-}
-
-// ProactiveAction defines what happens when a rule triggers.
-type ProactiveAction struct {
-	Type           string                 `json:"type"` // "dispatch", "notify"
-	Agent          string                 `json:"agent,omitempty"`
-	Prompt         string                 `json:"prompt,omitempty"`
-	PromptTemplate string                 `json:"promptTemplate,omitempty"`
-	Params         map[string]interface{} `json:"params,omitempty"`
-	Message        string                 `json:"message,omitempty"` // for notify type, supports {{.Var}} templates
-	Autonomous     bool                   `json:"autonomous,omitempty"` // if true, agent decides what to do based on context
-}
-
-// ProactiveDelivery defines where to send the result.
-type ProactiveDelivery struct {
-	Channel string `json:"channel"` // "telegram", "slack", "discord", "dashboard"
-	ChatID  int64  `json:"chatId,omitempty"` // for telegram
-}
 
 // ProactiveRuleInfo is the public view of a rule (for API).
 type ProactiveRuleInfo struct {
@@ -174,7 +131,7 @@ func (e *ProactiveEngine) checkScheduleRules(ctx context.Context) {
 	e.mu.RUnlock()
 
 	for _, rule := range rules {
-		if !rule.isEnabled() || rule.Trigger.Type != "schedule" {
+		if !rule.IsEnabled() || rule.Trigger.Type != "schedule" {
 			continue
 		}
 
@@ -199,7 +156,7 @@ func (e *ProactiveEngine) checkHeartbeatRules(ctx context.Context) {
 
 	now := time.Now()
 	for _, rule := range rules {
-		if !rule.isEnabled() || rule.Trigger.Type != "heartbeat" {
+		if !rule.IsEnabled() || rule.Trigger.Type != "heartbeat" {
 			continue
 		}
 
@@ -228,7 +185,7 @@ func (e *ProactiveEngine) checkThresholdRules(ctx context.Context) {
 	e.mu.RUnlock()
 
 	for _, rule := range rules {
-		if !rule.isEnabled() || rule.Trigger.Type != "threshold" {
+		if !rule.IsEnabled() || rule.Trigger.Type != "threshold" {
 			continue
 		}
 
@@ -258,7 +215,7 @@ func (e *ProactiveEngine) handleEvent(event SSEEvent) {
 	e.mu.RUnlock()
 
 	for _, rule := range rules {
-		if !rule.isEnabled() || rule.Trigger.Type != "event" {
+		if !rule.IsEnabled() || rule.Trigger.Type != "event" {
 			continue
 		}
 
@@ -813,7 +770,7 @@ func (e *ProactiveEngine) ListRules() []ProactiveRuleInfo {
 	for _, rule := range e.rules {
 		info := ProactiveRuleInfo{
 			Name:        rule.Name,
-			Enabled:     rule.isEnabled(),
+			Enabled:     rule.IsEnabled(),
 			TriggerType: rule.Trigger.Type,
 			Cooldown:    rule.Cooldown,
 		}
@@ -857,7 +814,7 @@ func (e *ProactiveEngine) TriggerRule(name string) error {
 		return fmt.Errorf("rule %q not found", name)
 	}
 
-	if !target.isEnabled() {
+	if !target.IsEnabled() {
 		return fmt.Errorf("rule %q is disabled", name)
 	}
 
@@ -914,7 +871,7 @@ func cmdProactiveList(cfg *Config) {
 
 	for _, rule := range cfg.Proactive.Rules {
 		enabled := "✓"
-		if !rule.isEnabled() {
+		if !rule.IsEnabled() {
 			enabled = "✗"
 		}
 
@@ -990,7 +947,7 @@ func cmdProactiveStatus(cfg *Config) {
 
 	enabled := 0
 	for _, rule := range cfg.Proactive.Rules {
-		if rule.isEnabled() {
+		if rule.IsEnabled() {
 			enabled++
 		}
 	}

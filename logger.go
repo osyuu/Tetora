@@ -45,11 +45,11 @@ func newLogger(level LogLevel, format LogFormat, out interface{ Write([]byte) (i
 // initLogger creates the global logger from config.
 func initLogger(cfg LoggingConfig, baseDir string) *Logger {
 	l := log.Init(log.Config{
-		Level:     cfg.levelOrDefault(),
-		Format:    cfg.formatOrDefault(),
+		Level:     cfg.LevelOrDefault(),
+		Format:    cfg.FormatOrDefault(),
 		File:      cfg.File,
-		MaxSizeMB: cfg.maxSizeMBOrDefault(),
-		MaxFiles:  cfg.maxFilesOrDefault(),
+		MaxSizeMB: cfg.MaxSizeMBOrDefault(),
+		MaxFiles:  cfg.MaxFilesOrDefault(),
 	}, baseDir)
 	l.SetTraceExtractor(trace.IDFromContext)
 	log.SetDefault(l)

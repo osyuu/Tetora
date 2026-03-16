@@ -478,7 +478,7 @@ func smartDispatch(ctx context.Context, cfg *Config, prompt string, source strin
 //
 // Flow: Dev execute → QA review → (pass → done) | (fail → record failure → inject feedback → retry)
 func routeDevQALoop(ctx context.Context, cfg *Config, task Task, originalPrompt, agentName string, sem, childSem chan struct{}) devQALoopResult {
-	maxRetries := cfg.SmartDispatch.maxRetriesOrDefault() // default 3
+	maxRetries := cfg.SmartDispatch.MaxRetriesOrDefault() // default 3
 
 	reviewer := cfg.SmartDispatch.ReviewAgent
 	if reviewer == "" {

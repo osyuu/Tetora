@@ -235,7 +235,7 @@ func (r *telegramRuntime) EstimateCost(prompt string) *tgbot.CostEstimate {
 }
 
 func (r *telegramRuntime) EstimateThreshold() float64 {
-	return r.cfg.Estimate.confirmThresholdOrDefault()
+	return r.cfg.Estimate.ConfirmThresholdOrDefault()
 }
 
 // --- Trust ---
@@ -579,7 +579,7 @@ func (r *telegramRuntime) SaveFileUpload(telegramToken, fileID, hint string) (fi
 	}
 
 	// Save to uploads dir.
-	uploadDir := upload.InitDir(r.cfg.baseDir)
+	uploadDir := upload.InitDir(r.cfg.BaseDir)
 	f, err := upload.Save(uploadDir, name, bytes.NewReader(content), int64(len(content)), "telegram")
 	if err != nil {
 		return "", nil, fmt.Errorf("save upload: %w", err)
@@ -589,7 +589,7 @@ func (r *telegramRuntime) SaveFileUpload(telegramToken, fileID, hint string) (fi
 }
 
 func (r *telegramRuntime) SaveUploadedFile(filename string, data []byte, source string) (path string, err error) {
-	uploadDir := upload.InitDir(r.cfg.baseDir)
+	uploadDir := upload.InitDir(r.cfg.BaseDir)
 	f, err := upload.Save(uploadDir, filename, bytes.NewReader(data), int64(len(data)), source)
 	if err != nil {
 		return "", err

@@ -691,7 +691,7 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 			logInfo("taskboard dispatch: auto-review requests fix, retrying", "id", t.ID, "comment", rv.Comment)
 			d.engine.AddComment(t.ID, reviewer, fmt.Sprintf("[review] Fix required: %s", rv.Comment))
 
-			maxRetries := d.engine.config.maxRetriesOrDefault()
+			maxRetries := d.engine.config.MaxRetriesOrDefault()
 			if t.RetryCount < maxRetries {
 				// Inject review feedback and retry.
 				t.RetryCount++
@@ -1316,7 +1316,7 @@ func (d *TaskBoardDispatcher) resolveEscalateAssignee() string {
 // buildDependencyContext fetches the latest completion comment from each dependency task
 // and concatenates them into context for the downstream task.
 func (d *TaskBoardDispatcher) buildDependencyContext(depIDs []string) string {
-	maxCtx := d.cfg.PromptBudget.contextMaxOrDefault()
+	maxCtx := d.cfg.PromptBudget.ContextMaxOrDefault()
 	var parts []string
 	totalLen := 0
 

@@ -36,7 +36,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 	})
 
 	// --- Sprite Config + Assets ---
-	spritesDir := filepath.Join(s.cfg.baseDir, "media", "sprites")
+	spritesDir := filepath.Join(s.cfg.BaseDir, "media", "sprites")
 	mux.HandleFunc("/api/sprites/config", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
@@ -458,11 +458,11 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"invalid filename"}`, http.StatusBadRequest)
 			return
 		}
-		outputDir := filepath.Join(cfg.baseDir, "outputs")
+		outputDir := filepath.Join(cfg.BaseDir, "outputs")
 		filePath := filepath.Join(outputDir, name)
 		// Verify resolved path is still within outputs dir (prevent symlink escape).
 		absPath, err := filepath.Abs(filePath)
-		if err != nil || !strings.HasPrefix(absPath, filepath.Join(cfg.baseDir, "outputs")) {
+		if err != nil || !strings.HasPrefix(absPath, filepath.Join(cfg.BaseDir, "outputs")) {
 			http.Error(w, `{"error":"invalid filename"}`, http.StatusBadRequest)
 			return
 		}
@@ -500,7 +500,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		}
 		defer file.Close()
 
-		uploadDir := upload.InitDir(cfg.baseDir)
+		uploadDir := upload.InitDir(cfg.BaseDir)
 		uploaded, err := upload.Save(uploadDir, header.Filename, file, header.Size, "http")
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)

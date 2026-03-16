@@ -38,13 +38,13 @@ INSERT INTO history (job_id, name, status, started_at, finished_at) VALUES ('abc
 
 	cfg := &Config{
 		HistoryDB: dbPath,
-		baseDir:   dir,
+		BaseDir:   dir,
 		Ops: OpsConfig{
 			ExportEnabled: true,
 		},
 	}
 
-	result, err := export.UserData(cfg.HistoryDB, cfg.baseDir, "")
+	result, err := export.UserData(cfg.HistoryDB, cfg.BaseDir, "")
 	if err != nil {
 		t.Fatalf("export.UserData failed: %v", err)
 	}
@@ -132,11 +132,11 @@ INSERT INTO reminders VALUES ('r3', 'alice', 'meeting', '2026-01-02T00:00:00Z', 
 
 	cfg := &Config{
 		HistoryDB: dbPath,
-		baseDir:   dir,
+		BaseDir:   dir,
 		Ops:       OpsConfig{ExportEnabled: true},
 	}
 
-	result, err := export.UserData(cfg.HistoryDB, cfg.baseDir, "alice")
+	result, err := export.UserData(cfg.HistoryDB, cfg.BaseDir, "alice")
 	if err != nil {
 		t.Fatalf("export.UserData failed: %v", err)
 	}
@@ -166,7 +166,7 @@ INSERT INTO reminders VALUES ('r3', 'alice', 'meeting', '2026-01-02T00:00:00Z', 
 
 func TestExportUserData_NoHistoryDB(t *testing.T) {
 	cfg := &Config{HistoryDB: ""}
-	_, err := export.UserData(cfg.HistoryDB, cfg.baseDir, "")
+	_, err := export.UserData(cfg.HistoryDB, cfg.BaseDir, "")
 	if err == nil {
 		t.Error("expected error for empty historyDB")
 	}
@@ -182,11 +182,11 @@ func TestExportUserData_MissingTables(t *testing.T) {
 
 	cfg := &Config{
 		HistoryDB: dbPath,
-		baseDir:   dir,
+		BaseDir:   dir,
 		Ops:       OpsConfig{ExportEnabled: true},
 	}
 
-	result, err := export.UserData(cfg.HistoryDB, cfg.baseDir, "")
+	result, err := export.UserData(cfg.HistoryDB, cfg.BaseDir, "")
 	if err != nil {
 		t.Fatalf("export.UserData failed even with missing tables: %v", err)
 	}
@@ -249,11 +249,11 @@ func TestExportManifestContent(t *testing.T) {
 
 	cfg := &Config{
 		HistoryDB: dbPath,
-		baseDir:   dir,
+		BaseDir:   dir,
 		Ops:       OpsConfig{ExportEnabled: true},
 	}
 
-	result, err := export.UserData(cfg.HistoryDB, cfg.baseDir, "test-user")
+	result, err := export.UserData(cfg.HistoryDB, cfg.BaseDir, "test-user")
 	if err != nil {
 		t.Fatalf("export.UserData failed: %v", err)
 	}

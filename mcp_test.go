@@ -46,9 +46,9 @@ func TestSetAndGetMCPConfig(t *testing.T) {
 	os.WriteFile(configPath, []byte(`{}`), 0o644)
 
 	cfg := &Config{
-		baseDir:    dir,
+		BaseDir:    dir,
 		MCPConfigs: make(map[string]json.RawMessage),
-		mcpPaths:   make(map[string]string),
+		MCPPaths:   make(map[string]string),
 	}
 
 	raw := json.RawMessage(`{"mcpServers":{"test":{"command":"echo","args":["hello"]}}}`)
@@ -76,9 +76,9 @@ func TestDeleteMCPConfig(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "mcp", "to-delete.json"), []byte(`{}`), 0o644)
 
 	cfg := &Config{
-		baseDir:    dir,
+		BaseDir:    dir,
 		MCPConfigs: map[string]json.RawMessage{"to-delete": json.RawMessage(`{}`)},
-		mcpPaths:   map[string]string{"to-delete": filepath.Join(dir, "mcp", "to-delete.json")},
+		MCPPaths:   map[string]string{"to-delete": filepath.Join(dir, "mcp", "to-delete.json")},
 	}
 
 	if err := deleteMCPConfig(cfg, configPath, "to-delete"); err != nil {

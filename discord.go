@@ -13,65 +13,6 @@ import (
 	"tetora/internal/upload"
 )
 
-// --- Discord Config ---
-
-// DiscordBotConfig holds configuration for the Discord bot integration.
-type DiscordBotConfig struct {
-	Enabled        bool                        `json:"enabled"`
-	BotToken       string                      `json:"botToken"`            // $ENV_VAR supported
-	GuildID        string                      `json:"guildID,omitempty"`   // restrict to specific guild
-	ChannelID         string                      `json:"channelID,omitempty"`          // restrict to specific channel (legacy, mention-only)
-	ChannelIDs        []string                    `json:"channelIDs,omitempty"`         // direct-reply channels (no @ needed)
-	MentionChannelIDs []string                    `json:"mentionChannelIDs,omitempty"`  // @mention-only channels
-	Webhooks       map[string]string           `json:"webhooks,omitempty"`  // named webhook channels, e.g. {"stock": "https://discord.com/api/webhooks/..."}
-	PublicKey      string                      `json:"publicKey,omitempty"` // Ed25519 public key for interaction verification
-	Components     DiscordComponentsConfig     `json:"components,omitempty"`
-	ThreadBindings DiscordThreadBindingsConfig `json:"threadBindings,omitempty"` // P14.2: per-thread agent isolation
-	Reactions      DiscordReactionsConfig      `json:"reactions,omitempty"`      // P14.3: lifecycle reactions
-	ForumBoard     DiscordForumBoardConfig     `json:"forumBoard,omitempty"`     // P14.4: forum task board
-	Voice            DiscordVoiceConfig          `json:"voice,omitempty"`            // P14.5: voice channel integration
-	Terminal         DiscordTerminalConfig       `json:"terminal,omitempty"`         // terminal bridge
-	NotifyChannelID  string                      `json:"notifyChannelID,omitempty"`  // task notification channel (thread-per-task)
-	ShowProgress     *bool                       `json:"showProgress,omitempty"`    // show live "Working..." streaming in Discord (default: true)
-	Routes           map[string]DiscordRouteConfig `json:"routes,omitempty"`           // per-channel agent routing
-}
-
-// DiscordRouteConfig binds a Discord channel to a specific agent.
-type DiscordRouteConfig struct {
-	Agent string `json:"agent"`
-}
-
-// UnmarshalJSON implements backward compat: accepts both "role" and "agent".
-func (d *DiscordRouteConfig) UnmarshalJSON(data []byte) error {
-	type Alias DiscordRouteConfig
-	var alias Alias
-	if err := json.Unmarshal(data, &alias); err != nil {
-		return err
-	}
-	if alias.Agent == "" {
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err == nil {
-			if roleRaw, ok := raw["role"]; ok {
-				var role string
-				if err := json.Unmarshal(roleRaw, &role); err == nil {
-					alias.Agent = role
-				}
-			}
-		}
-	}
-	*d = DiscordRouteConfig(alias)
-	return nil
-}
-
-// --- P14.1: Discord Components v2 ---
-
-// DiscordComponentsConfig holds configuration for Discord interactive components.
-type DiscordComponentsConfig struct {
-	Enabled         bool   `json:"enabled,omitempty"`
-	ReusableDefault bool   `json:"reusableDefault,omitempty"` // default for button reusability
-	AccentColor     string `json:"accentColor,omitempty"`     // hex color, default "#5865F2"
-}
-
 // --- Constants ---
 
 const (
@@ -518,7 +459,7 @@ func (db *DiscordBot) handleMessage(msg discordMessage) {
 	// Download attachments and inject into prompt.
 	var attachedFiles []*upload.File
 	for _, att := range msg.Attachments {
-		if f, err := downloadDiscordAttachment(db.cfg.baseDir, att); err != nil {
+		if f, err := downloadDiscordAttachment(db.cfg.BaseDir, att); err != nil {
 			logWarn("discord: attachment download failed", "url", att.URL, "err", err)
 		} else {
 			attachedFiles = append(attachedFiles, f)
@@ -1019,7 +960,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 	if sess != nil {
 		providerName := resolveProviderName(db.cfg, Task{Agent: route.Agent}, route.Agent)
 		if !providerHasNativeSession(providerName) && !canResume {
-			sessionCtx := buildSessionContext(dbPath, sess.ID, db.cfg.Session.contextMessagesOrDefault())
+			sessionCtx := buildSessionContext(dbPath, sess.ID, db.cfg.Session.ContextMessagesOrDefault())
 			contextPrompt = wrapWithContext(sessionCtx, prompt)
 		}
 		now := time.Now().Format(time.RFC3339)

@@ -320,7 +320,7 @@ func workflowRunCmd(name string, flags []string) {
 	if cfg.MaxConcurrent <= 0 {
 		sem = make(chan struct{}, 4)
 	}
-	cfg.registry = initProviders(cfg)
+	cfg.Runtime.ProviderRegistry = initProviders(cfg)
 
 	run := executeWorkflow(context.Background(), cfg, wf, vars, state, sem, nil, mode)
 

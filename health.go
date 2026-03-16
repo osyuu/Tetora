@@ -14,7 +14,7 @@ func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startT
 	input := health.CheckInput{
 		Version:      tetoraVersion,
 		StartTime:    startTime,
-		BaseDir:      cfg.baseDir,
+		BaseDir:      cfg.BaseDir,
 		DiskBlockMB:  cfg.DiskBlockMB,
 		DiskWarnMB:   cfg.DiskWarnMB,
 		DiskBudgetGB: cfg.DiskBudgetGB,
@@ -40,14 +40,14 @@ func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startT
 
 	// Providers.
 	providers := map[string]health.ProviderInfo{}
-	if cfg.registry != nil {
+	if cfg.Runtime.ProviderRegistry != nil {
 		for name := range cfg.Providers {
 			pi := health.ProviderInfo{
 				Type:   cfg.Providers[name].Type,
 				Status: "ok",
 			}
-			if cfg.circuits != nil {
-				cb := cfg.circuits.Get(name)
+			if cfg.Runtime.CircuitRegistry != nil {
+				cb := cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(name)
 				st := cb.State()
 				pi.Circuit = st.String()
 				if st == CircuitOpen {
@@ -61,8 +61,8 @@ func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startT
 		// Always include default "claude" provider.
 		if _, exists := providers["claude"]; !exists {
 			pi := health.ProviderInfo{Type: "claude-cli", Status: "ok"}
-			if cfg.circuits != nil {
-				cb := cfg.circuits.Get("claude")
+			if cfg.Runtime.CircuitRegistry != nil {
+				cb := cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get("claude")
 				st := cb.State()
 				pi.Circuit = st.String()
 				if st == CircuitOpen {
@@ -94,15 +94,15 @@ func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startT
 	}
 
 	// Circuit breakers summary.
-	if cfg.circuits != nil {
-		input.CircuitStatus = cfg.circuits.Status()
+	if cfg.Runtime.CircuitRegistry != nil {
+		input.CircuitStatus = cfg.Runtime.CircuitRegistry.(*circuitRegistry).Status()
 	}
 
 	// Offline queue.
 	if cfg.OfflineQueue.Enabled && cfg.HistoryDB != "" {
 		input.Queue = &health.QueueInfo{
 			Pending: countPendingQueue(cfg.HistoryDB),
-			Max:     cfg.OfflineQueue.maxItemsOrDefault(),
+			Max:     cfg.OfflineQueue.MaxItemsOrDefault(),
 		}
 	}
 

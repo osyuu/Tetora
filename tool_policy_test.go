@@ -95,7 +95,7 @@ func TestAllowDenyMerge(t *testing.T) {
 			},
 		},
 	}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	// Test role test1: minimal + read,write - memory_search
 	allowed := resolveAllowedTools(cfg, "test1")
@@ -295,12 +295,12 @@ func TestFullProfileWildcard(t *testing.T) {
 			},
 		},
 	}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	allowed := resolveAllowedTools(cfg, "admin")
 
 	// Should have all registered tools.
-	allTools := cfg.toolRegistry.List()
+	allTools := cfg.Runtime.ToolRegistry.(*ToolRegistry).List()
 	if len(allowed) != len(allTools) {
 		t.Errorf("full profile should allow all tools, got %d, want %d", len(allowed), len(allTools))
 	}
@@ -326,7 +326,7 @@ func TestToolPolicySummary(t *testing.T) {
 			},
 		},
 	}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	summary := getToolPolicySummary(cfg, "test")
 

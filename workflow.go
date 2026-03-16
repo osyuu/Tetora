@@ -99,7 +99,7 @@ type ResponseMapping struct {
 
 // workflowDir returns the workflows directory under baseDir.
 func workflowDir(cfg *Config) string {
-	return filepath.Join(cfg.baseDir, "workflows")
+	return filepath.Join(cfg.BaseDir, "workflows")
 }
 
 // ensureWorkflowDir creates the workflows directory if missing.

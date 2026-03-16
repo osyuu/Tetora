@@ -6,13 +6,6 @@ import (
 	"strings"
 )
 
-// StoreConfig configures the template marketplace / store.
-type StoreConfig struct {
-	Enabled     bool   `json:"enabled,omitempty"`
-	RegistryURL string `json:"registryUrl,omitempty"` // default: https://registry.tetora.dev/v1
-	AuthToken   string `json:"authToken,omitempty"`    // auth token (resolved from $ENV_VAR)
-}
-
 // --- Store Browse API (local-first, remote-ready) ---
 
 // StoreItem represents a template in the store browse view.

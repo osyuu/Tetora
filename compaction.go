@@ -8,40 +8,31 @@ import (
 	"time"
 )
 
-// --- Compaction Types ---
+// --- Compaction helpers ---
+// CompactionConfig is aliased in config.go via internal/config.
 
-type CompactionConfig struct {
-	Enabled     bool    `json:"enabled,omitempty"`
-	MaxMessages int     `json:"maxMessages,omitempty"` // trigger threshold, default 50
-	CompactTo   int     `json:"compactTo,omitempty"`   // keep recent N messages, default 10
-	Model       string  `json:"model,omitempty"`       // LLM model for summary, default "haiku"
-	MaxCost     float64 `json:"maxCost,omitempty"`     // max cost per compaction, default 0.02
-	Provider    string  `json:"provider,omitempty"`    // provider name, default from config
-}
-
-// Helper methods with defaults.
-func (c CompactionConfig) maxMessages() int {
+func compactionMaxMessages(c CompactionConfig) int {
 	if c.MaxMessages <= 0 {
 		return 50
 	}
 	return c.MaxMessages
 }
 
-func (c CompactionConfig) compactTo() int {
+func compactionCompactTo(c CompactionConfig) int {
 	if c.CompactTo <= 0 {
 		return 10
 	}
 	return c.CompactTo
 }
 
-func (c CompactionConfig) model() string {
+func compactionModel(c CompactionConfig) string {
 	if c.Model == "" {
 		return "haiku"
 	}
 	return c.Model
 }
 
-func (c CompactionConfig) maxCost() float64 {
+func compactionMaxCost(c CompactionConfig) float64 {
 	if c.MaxCost <= 0 {
 		return 0.02
 	}
@@ -83,14 +74,14 @@ func checkCompaction(cfg *Config, sessionID string) error {
 
 	// 1. Count session messages.
 	count := countSessionMessages(cfg, sessionID)
-	if count <= cfg.Session.Compaction.maxMessages() {
+	if count <= compactionMaxMessages(cfg.Session.Compaction) {
 		return nil
 	}
 
-	logInfo("compaction triggered for session %s (%d messages, threshold %d)", sessionID, count, cfg.Session.Compaction.maxMessages())
+	logInfo("compaction triggered for session %s (%d messages, threshold %d)", sessionID, count, compactionMaxMessages(cfg.Session.Compaction))
 
 	// 2. Get oldest messages to compact.
-	toCompact := count - cfg.Session.Compaction.compactTo()
+	toCompact := count - compactionCompactTo(cfg.Session.Compaction)
 	if toCompact <= 0 {
 		return nil
 	}
@@ -201,10 +192,10 @@ func compactMessages(cfg *Config, messages []sessionMessage) (string, error) {
 		ID:           fmt.Sprintf("compact-%d", time.Now().Unix()),
 		Name:         "session-compaction",
 		Prompt:       prompt,
-		Model:        cfg.Session.Compaction.model(),
+		Model:        compactionModel(cfg.Session.Compaction),
 		Provider:     cfg.Session.Compaction.Provider,
 		Timeout:      "60s",
-		Budget:       cfg.Session.Compaction.maxCost(),
+		Budget:       compactionMaxCost(cfg.Session.Compaction),
 		SystemPrompt: "You are a conversation summarizer. Summarize the following conversation, preserving key facts, decisions, action items, and important context. Be concise but thorough. Output only the summary, no preamble.",
 		Source:       "compaction",
 	}
@@ -312,12 +303,12 @@ func runCompaction(args []string) {
 	count := countSessionMessages(cfg, sessionID)
 	fmt.Printf("Session %s has %d messages\n", sessionID, count)
 
-	if count <= cfg.Session.Compaction.compactTo() {
-		fmt.Printf("Session has too few messages to compact (minimum: %d)\n", cfg.Session.Compaction.compactTo()+1)
+	if count <= compactionCompactTo(cfg.Session.Compaction) {
+		fmt.Printf("Session has too few messages to compact (minimum: %d)\n", compactionCompactTo(cfg.Session.Compaction)+1)
 		return
 	}
 
-	fmt.Printf("Compacting to %d most recent messages...\n", cfg.Session.Compaction.compactTo())
+	fmt.Printf("Compacting to %d most recent messages...\n", compactionCompactTo(cfg.Session.Compaction))
 
 	if err := checkCompaction(cfg, sessionID); err != nil {
 		fmt.Printf("Compaction failed: %v\n", err)
@@ -346,7 +337,7 @@ func compactAllSessions(cfg *Config) {
 		FROM session_messages
 		GROUP BY session_id
 		HAVING count > %d
-	`, cfg.Session.Compaction.maxMessages())
+	`, compactionMaxMessages(cfg.Session.Compaction))
 
 	rows, err := queryDB(dbPath, sql)
 	if err != nil {

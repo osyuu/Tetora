@@ -222,7 +222,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			return
 		}
 		cfg.Budgets.Paused = true
-		configPath := filepath.Join(cfg.baseDir, "config.json")
+		configPath := filepath.Join(cfg.BaseDir, "config.json")
 		if err := setBudgetPaused(configPath, true); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -239,7 +239,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			return
 		}
 		cfg.Budgets.Paused = false
-		configPath := filepath.Join(cfg.baseDir, "config.json")
+		configPath := filepath.Join(cfg.BaseDir, "config.json")
 		if err := setBudgetPaused(configPath, false); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return

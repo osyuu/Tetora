@@ -1164,7 +1164,7 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 		ToStepID:      step.ID,
 		FromSessionID: fromSessionID,
 		ToSessionID:   toSessionID,
-		Context:       truncateStr(sourceOutput, e.cfg.PromptBudget.contextMaxOrDefault()),
+		Context:       truncateStr(sourceOutput, e.cfg.PromptBudget.ContextMaxOrDefault()),
 		Instruction:   instruction,
 		Status:        "pending",
 		CreatedAt:     now,
@@ -1280,13 +1280,13 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 func (e *workflowExecutor) runToolCallStep(ctx context.Context, step *WorkflowStep,
 	result *StepRunResult, wCtx *WorkflowContext) {
 
-	if e.cfg.toolRegistry == nil {
+	if e.cfg.Runtime.ToolRegistry == nil {
 		result.Status = "error"
 		result.Error = "tool registry not initialized"
 		return
 	}
 
-	tool, ok := e.cfg.toolRegistry.Get(step.ToolName)
+	tool, ok := e.cfg.Runtime.ToolRegistry.(*ToolRegistry).Get(step.ToolName)
 	if !ok {
 		result.Status = "error"
 		result.Error = fmt.Sprintf("tool %q not found", step.ToolName)
@@ -1534,15 +1534,15 @@ func runSingleTaskNoRecord(ctx context.Context, cfg *Config, task Task, sem, chi
 	}
 
 	s := selectSem(sem, childSem, task.Depth)
-	if task.Depth == 0 && cfg.slotPressureGuard != nil {
-		_, err := cfg.slotPressureGuard.AcquireSlot(ctx, s, task.Source)
+	if task.Depth == 0 && cfg.Runtime.SlotPressureGuard != nil {
+		_, err := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).AcquireSlot(ctx, s, task.Source)
 		if err != nil {
 			return TaskResult{
 				ID: task.ID, Name: task.Name, Status: "cancelled",
 				Error: "slot acquisition cancelled: " + err.Error(), Model: task.Model, SessionID: task.SessionID,
 			}
 		}
-		defer cfg.slotPressureGuard.ReleaseSlot()
+		defer cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).ReleaseSlot()
 		defer func() { <-s }()
 	} else {
 		s <- struct{}{}
@@ -1568,7 +1568,7 @@ func runSingleTaskNoRecord(ctx context.Context, cfg *Config, task Task, sem, chi
 	defer taskCancel()
 
 	start := time.Now()
-	pr := executeWithProvider(taskCtx, cfg, task, agentName, cfg.registry, nil)
+	pr := executeWithProvider(taskCtx, cfg, task, agentName, cfg.Runtime.ProviderRegistry.(*providerRegistry), nil)
 	elapsed := time.Since(start)
 
 	result := TaskResult{

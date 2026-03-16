@@ -110,22 +110,6 @@ func (c *threadParentCache) evictOldestLocked() {
 	}
 }
 
-// --- Config ---
-
-// DiscordThreadBindingsConfig configures per-thread agent session isolation.
-type DiscordThreadBindingsConfig struct {
-	Enabled               bool `json:"enabled,omitempty"`
-	TTLHours              int  `json:"ttlHours,omitempty"`              // default 24
-	SpawnSubagentSessions bool `json:"spawnSubagentSessions,omitempty"` // allow threads to spawn sub-sessions
-}
-
-// threadBindingsTTL returns the configured TTL duration, defaulting to 24 hours.
-func (c DiscordThreadBindingsConfig) threadBindingsTTL() time.Duration {
-	if c.TTLHours <= 0 {
-		return 24 * time.Hour
-	}
-	return time.Duration(c.TTLHours) * time.Hour
-}
 
 // --- Discord Channel Types ---
 
@@ -323,7 +307,7 @@ func (db *DiscordBot) handleFocusCommand(msg discordMessage, args string, channe
 
 	guildID := msg.GuildID
 	threadID := msg.ChannelID // in a thread, channel_id IS the thread ID
-	ttl := db.cfg.Discord.ThreadBindings.threadBindingsTTL()
+	ttl := db.cfg.Discord.ThreadBindings.ThreadBindingsTTL()
 
 	sessionID := db.threads.bind(guildID, threadID, role, ttl)
 	logInfo("discord thread bound", "guild", guildID, "thread", threadID, "agent", role, "session", sessionID)
@@ -410,7 +394,7 @@ func (db *DiscordBot) handleThreadMessage(msg discordMessage, channelType int) b
 		if agent == "" {
 			return false // no default agent configured, fall through
 		}
-		ttl := db.cfg.Discord.ThreadBindings.threadBindingsTTL()
+		ttl := db.cfg.Discord.ThreadBindings.ThreadBindingsTTL()
 		sessionID := db.threads.bind(msg.GuildID, msg.ChannelID, agent, ttl)
 		logInfo("discord thread auto-bound", "thread", msg.ChannelID, "agent", agent, "session", sessionID)
 		binding = db.threads.get(msg.GuildID, msg.ChannelID)
@@ -465,7 +449,7 @@ func (db *DiscordBot) handleThreadRoute(msg discordMessage, prompt string, bindi
 	if sess != nil {
 		providerName := resolveProviderName(db.cfg, Task{Agent: role}, role)
 		if !providerHasNativeSession(providerName) {
-			sessionCtx := buildSessionContext(dbPath, sess.ID, db.cfg.Session.contextMessagesOrDefault())
+			sessionCtx := buildSessionContext(dbPath, sess.ID, db.cfg.Session.ContextMessagesOrDefault())
 			contextPrompt = wrapWithContext(sessionCtx, prompt)
 		}
 		now := time.Now().Format(time.RFC3339)

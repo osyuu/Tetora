@@ -15,15 +15,15 @@ func testWorkflowCfg(t *testing.T) (*Config, chan struct{}) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	cfg := &Config{
-		baseDir:               dir,
+		BaseDir:               dir,
 		HistoryDB:             dbPath,
 		DefaultModel:          "sonnet",
 		DefaultTimeout:        "5m",
 		DefaultPermissionMode: "plan",
 		DefaultWorkdir:        dir,
 		DefaultProvider:       "claude",
-		registry:              initProviders(&Config{}),
 	}
+	cfg.Runtime.ProviderRegistry = initProviders(cfg)
 
 	sem := make(chan struct{}, 4)
 	return cfg, sem
@@ -456,7 +456,7 @@ func TestWorkflowRunEmptyDBPath(t *testing.T) {
 
 func TestWorkflowDirCreation(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	wfDir := workflowDir(cfg)
 	expected := filepath.Join(dir, "workflows")

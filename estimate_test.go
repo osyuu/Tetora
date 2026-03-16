@@ -237,19 +237,19 @@ func TestDefaultPricing(t *testing.T) {
 
 func TestEstimateConfigDefaults(t *testing.T) {
 	var ec EstimateConfig
-	if ec.confirmThresholdOrDefault() != 1.0 {
-		t.Errorf("expected default threshold 1.0, got %f", ec.confirmThresholdOrDefault())
+	if ec.ConfirmThresholdOrDefault() != 1.0 {
+		t.Errorf("expected default threshold 1.0, got %f", ec.ConfirmThresholdOrDefault())
 	}
-	if ec.defaultOutputTokensOrDefault() != 500 {
-		t.Errorf("expected default output tokens 500, got %d", ec.defaultOutputTokensOrDefault())
+	if ec.DefaultOutputTokensOrDefault() != 500 {
+		t.Errorf("expected default output tokens 500, got %d", ec.DefaultOutputTokensOrDefault())
 	}
 
 	ec2 := EstimateConfig{ConfirmThreshold: 2.5, DefaultOutputTokens: 1000}
-	if ec2.confirmThresholdOrDefault() != 2.5 {
-		t.Errorf("expected 2.5, got %f", ec2.confirmThresholdOrDefault())
+	if ec2.ConfirmThresholdOrDefault() != 2.5 {
+		t.Errorf("expected 2.5, got %f", ec2.ConfirmThresholdOrDefault())
 	}
-	if ec2.defaultOutputTokensOrDefault() != 1000 {
-		t.Errorf("expected 1000, got %d", ec2.defaultOutputTokensOrDefault())
+	if ec2.DefaultOutputTokensOrDefault() != 1000 {
+		t.Errorf("expected 1000, got %d", ec2.DefaultOutputTokensOrDefault())
 	}
 }
 

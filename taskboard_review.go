@@ -30,7 +30,7 @@ type devQALoopResult struct {
 //
 // Flow: Dev execute → QA review → (pass → done) | (fail → record failure → inject feedback + failures → retry)
 func (d *TaskBoardDispatcher) devQALoop(ctx context.Context, t TaskBoard, task Task, usedWorkflow bool, workflowName string) devQALoopResult {
-	maxRetries := d.engine.config.maxRetriesOrDefault() // default 3
+	maxRetries := d.engine.config.MaxRetriesOrDefault() // default 3
 
 	reviewer := d.engine.config.AutoDispatch.ReviewAgent
 	if reviewer == "" {

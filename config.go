@@ -7,814 +7,158 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"tetora/internal/messaging/gchat"
-	"tetora/internal/messaging/imessage"
-	"tetora/internal/messaging/line"
-	"tetora/internal/messaging/matrix"
-	"tetora/internal/messaging/signal"
+	"tetora/internal/config"
 	"tetora/internal/migrate"
-	"tetora/internal/messaging/slack"
-	"tetora/internal/messaging/teams"
-	tgbot "tetora/internal/messaging/telegram"
-	"tetora/internal/messaging/whatsapp"
 )
 
-// Config type aliases for messaging platforms whose bots are in internal/messaging.
-type MatrixConfig = matrix.Config
-type WhatsAppConfig = whatsapp.Config
-type SignalConfig = signal.Config
-type GoogleChatConfig = gchat.Config
-type LINEConfig = line.Config
-type TeamsConfig = teams.Config
-type IMessageConfig = imessage.Config
-type SlackBotConfig = slack.Config
-
-// --- Config Types ---
-
-type Config struct {
-	ClaudePath            string                     `json:"claudePath"`
-	MaxConcurrent         int                        `json:"maxConcurrent"`
-	DefaultModel          string                     `json:"defaultModel"`
-	DefaultTimeout        string                     `json:"defaultTimeout"`
-	DefaultBudget         float64                    `json:"defaultBudget"`
-	DefaultPermissionMode string                     `json:"defaultPermissionMode"`
-	DefaultAgent           string                     `json:"defaultAgent,omitempty"` // system-wide default agent
-	DefaultWorkdir        string                     `json:"defaultWorkdir"`
-	ListenAddr            string                     `json:"listenAddr"`
-	Telegram              TelegramConfig             `json:"telegram"`
-	MCPConfigs            map[string]json.RawMessage `json:"mcpConfigs"`
-	MCPServers            map[string]MCPServerConfig `json:"mcpServers,omitempty"`
-	Agents                 map[string]AgentConfig      `json:"agents"`
-	HistoryDB             string                     `json:"historyDB"`
-	JobsFile              string                     `json:"jobsFile"`
-	Log                   bool                       `json:"log"`
-	APIToken              string                     `json:"apiToken"`
-	AllowedDirs           []string                   `json:"allowedDirs"`
-	DefaultAddDirs        []string                   `json:"defaultAddDirs,omitempty"` // dirs injected as --add-dir for every task
-	CostAlert             CostAlertConfig            `json:"costAlert"`
-	Webhooks              []WebhookConfig            `json:"webhooks"`
-	DashboardAuth         DashboardAuthConfig        `json:"dashboardAuth"`
-	QuietHours            QuietHoursConfig           `json:"quietHours"`
-	Digest                DigestConfig               `json:"digest"`
-	Notifications         []NotificationChannel      `json:"notifications,omitempty"`
-	RateLimit             RateLimitConfig            `json:"rateLimit,omitempty"`
-	TLS                   TLSConfig                  `json:"tls,omitempty"`
-	SecurityAlert         SecurityAlertConfig        `json:"securityAlert,omitempty"`
-	AllowedIPs            []string                   `json:"allowedIPs,omitempty"`
-	MaxPromptLen          int                        `json:"maxPromptLen,omitempty"`
-	Providers             map[string]ProviderConfig  `json:"providers,omitempty"`
-	DefaultProvider       string                     `json:"defaultProvider,omitempty"`
-	Docker                DockerConfig               `json:"docker,omitempty"`
-	SmartDispatch         SmartDispatchConfig        `json:"smartDispatch,omitempty"`
-	Slack                 SlackBotConfig             `json:"slack,omitempty"`
-	Discord               DiscordBotConfig           `json:"discord,omitempty"`
-	WhatsApp              WhatsAppConfig             `json:"whatsapp,omitempty"`
-	LINE                  LINEConfig                 `json:"line,omitempty"`           // --- P15.1: LINE Channel ---
-	Matrix                MatrixConfig               `json:"matrix,omitempty"`         // --- P15.2: Matrix Channel ---
-	Teams                 TeamsConfig                `json:"teams,omitempty"`          // --- P15.3: Teams Channel ---
-	Signal                SignalConfig               `json:"signal,omitempty"`         // --- P15.4: Signal Channel ---
-	GoogleChat            GoogleChatConfig           `json:"googleChat,omitempty"`     // --- P15.5: Google Chat Channel ---
-	ConfigVersion         int                        `json:"configVersion,omitempty"`
-	KnowledgeDir          string                     `json:"knowledgeDir,omitempty"` // default: baseDir/knowledge/
-	AgentsDir             string                     `json:"agentsDir,omitempty"`    // default: baseDir/agents/
-	WorkspaceDir          string                     `json:"workspaceDir,omitempty"` // default: baseDir/workspace/
-	RuntimeDir            string                     `json:"runtimeDir,omitempty"`   // default: baseDir/runtime/
-	VaultDir              string                     `json:"vaultDir,omitempty"`     // default: baseDir/vault/
-	Skills                []SkillConfig              `json:"skills,omitempty"`
-	Session               SessionConfig              `json:"session,omitempty"`
-	Pricing               map[string]ModelPricing    `json:"pricing,omitempty"`
-	Estimate              EstimateConfig             `json:"estimate,omitempty"`
-	Logging               LoggingConfig              `json:"logging,omitempty"`
-	CircuitBreaker        CircuitBreakerConfig       `json:"circuitBreaker,omitempty"`
-	FallbackProviders     []string                   `json:"fallbackProviders,omitempty"`
-	SLA                   SLAConfig                  `json:"sla,omitempty"`
-	OfflineQueue          OfflineQueueConfig         `json:"offlineQueue,omitempty"`
-	Budgets               BudgetConfig               `json:"budgets,omitempty"`
-	DiskBudgetGB          float64                    `json:"diskBudgetGB,omitempty"` // minimum free disk (GB); default 1.0; refuse cron at 0.5GB
-	DiskWarnMB            int                        `json:"diskWarnMB,omitempty"`   // free disk warn threshold (MB); default 500; log WARN, job continues
-	DiskBlockMB           int                        `json:"diskBlockMB,omitempty"`  // free disk block threshold (MB); default 200; log ERROR, job skipped as skipped_disk_full
-	Reflection            ReflectionConfig           `json:"reflection,omitempty"`
-	NotifyIntel           NotifyIntelConfig          `json:"notifyIntel,omitempty"`
-	Trust                 TrustConfig                `json:"trust,omitempty"`
-	IncomingWebhooks      map[string]IncomingWebhookConfig `json:"incomingWebhooks,omitempty"`
-	Retention             RetentionConfig                  `json:"retention,omitempty"`
-	Tools                 ToolConfig                       `json:"tools,omitempty"`
-	Embedding             EmbeddingConfig                  `json:"embedding,omitempty"`
-	Proactive             ProactiveConfig                  `json:"proactive,omitempty"`
-	GroupChat             GroupChatConfig                  `json:"groupChat,omitempty"`
-	QuickActions          []QuickAction                    `json:"quickActions,omitempty"`
-	Voice                 VoiceConfig                      `json:"voice,omitempty"`
-	Push                  PushConfig                       `json:"push,omitempty"`
-	AccessControl         AccessControlConfig              `json:"accessControl,omitempty"`
-	AgentComm             AgentCommConfig                  `json:"agentComm,omitempty"`
-	SlotPressure          SlotPressureConfig               `json:"slotPressure,omitempty"`
-	Canvas                CanvasConfig                     `json:"canvas,omitempty"`
-	Plugins               map[string]PluginConfig          `json:"plugins,omitempty"` // --- P13.1: Plugin System ---
-	Sandbox               SandboxConfig                    `json:"sandbox,omitempty"` // --- P13.2: Sandbox Plugin ---
-	TaskBoard             TaskBoardConfig                  `json:"taskBoard,omitempty"` // --- P14.6: Built-in Task Board API ---
-	Security              SecurityConfig                   `json:"security,omitempty"` // --- P16.3: Prompt Injection Defense v2 ---
-	DailyNotes            DailyNotesConfig                 `json:"dailyNotes,omitempty"` // --- P17.3: Daily Notes ---
-	SkillStore            SkillStoreConfig                 `json:"skillStore,omitempty"` // --- P18.4: Self-Improving Skills ---
-	Usage                 UsageConfig                      `json:"usage,omitempty"`      // --- P18.1: Cost Dashboard ---
-	WorkflowTriggers      []WorkflowTriggerConfig          `json:"workflowTriggers,omitempty"` // --- P18.3: Workflow Triggers ---
-	OAuth                 OAuthConfig                      `json:"oauth,omitempty"`      // --- P18.2: OAuth 2.0 Framework ---
-	Reminders             ReminderConfig                   `json:"reminders,omitempty"`  // --- P19.3: Smart Reminders ---
-	Notes                 NotesConfig                      `json:"notes,omitempty"`      // --- P19.4: Notes/Obsidian Integration ---
-	HomeAssistant         HomeAssistantConfig              `json:"homeAssistant,omitempty"` // --- P20.1: Home Assistant ---
-	Device                DeviceConfig                     `json:"device,omitempty"`        // --- P20.4: Device Actions ---
-	IMessage              IMessageConfig                   `json:"imessage,omitempty"`      // --- P20.2: iMessage via BlueBubbles ---
-	Gmail                 GmailConfig                      `json:"gmail,omitempty"`         // --- P19.1: Gmail Integration ---
-	Calendar              CalendarConfig                   `json:"calendar,omitempty"`      // --- P19.2: Google Calendar ---
-	Twitter               TwitterConfig                    `json:"twitter,omitempty"`       // --- P20.3: Twitter/X Integration ---
-	WritingStyle          WritingStyleConfig               `json:"writingStyle,omitempty"`  // --- P21.2: Writing Style ---
-	Citation              CitationConfig                   `json:"citation,omitempty"`      // --- P21.4: Source Citation ---
-	BrowserRelay          BrowserRelayConfig               `json:"browserRelay,omitempty"`  // --- P21.6: Chrome Extension Relay ---
-	NotebookLM            NotebookLMConfig                 `json:"notebookLM,omitempty"`    // --- P21.7: NotebookLM Skill ---
-	ImageGen              ImageGenConfig                   `json:"imageGen,omitempty"`      // --- P22.3: Image Generation ---
-	Weather               WeatherConfig                    `json:"weather,omitempty"`       // --- P22.2: Weather Tools ---
-	Currency              CurrencyConfig                   `json:"currency,omitempty"`      // --- P22.2: Currency Tools ---
-	RSS                   RSSConfig                        `json:"rss,omitempty"`           // --- P22.2: RSS Tools ---
-	Translate             TranslateConfig                  `json:"translate,omitempty"`     // --- P22.2: Translate Tools ---
-	UserProfile           UserProfileConfig                `json:"userProfile,omitempty"`   // --- P23.1: User Profile & Emotional Memory ---
-	Ops                   OpsConfig                        `json:"ops,omitempty"`           // --- P23.7: Reliability & Operations ---
-	Finance               FinanceConfig                    `json:"finance,omitempty"`       // --- P23.4: Financial Tracking ---
-	TaskManager           TaskManagerConfig                `json:"taskManager,omitempty"`   // --- P23.2: Task Management ---
-	FileManager           FileManagerConfig                `json:"fileManager,omitempty"`   // --- P23.3: File & Document Processing ---
-	Spotify               SpotifyConfig                    `json:"spotify,omitempty"`       // --- P23.5: Media Control ---
-	YouTube               YouTubeConfig                    `json:"youtube,omitempty"`       // --- P23.5: Media Control ---
-	Podcast               PodcastConfig                    `json:"podcast,omitempty"`       // --- P23.5: Media Control ---
-	Family                FamilyConfig                     `json:"family,omitempty"`        // --- P23.6: Multi-User / Family Mode ---
-	EncryptionKey         string                           `json:"encryptionKey,omitempty"` // --- P27.2: Field-level encryption ($ENV_VAR supported) ---
-	StreamToChannels      bool                             `json:"streamToChannels,omitempty"` // --- P27.3: Stream status to messaging channels ---
-	ApprovalGates         ApprovalGateConfig               `json:"approvalGates,omitempty"`    // --- P28.0: Pre-execution approval gates ---
-	TimeTracking          TimeTrackingConfig               `json:"timeTracking,omitempty"`         // --- P29.2: Time Tracking ---
-	Lifecycle             LifecycleConfig                  `json:"lifecycle,omitempty"`             // --- P29.0: Lifecycle Automation ---
-	PromptBudget          PromptBudgetConfig               `json:"promptBudget,omitempty"`          // --- Tiered Prompt Builder ---
-	CronNotify            *bool                            `json:"cronNotify,omitempty"`             // nil/true = send cron notifications, false = suppress all
-	CronReplayHours       int                              `json:"cronReplayHours,omitempty"`        // hours to look back for missed jobs on startup (default 2)
-	Heartbeat             HeartbeatConfig                  `json:"heartbeat,omitempty"`              // --- Agent Heartbeat / Self-healing ---
-	Hooks                 HooksConfig                      `json:"hooks,omitempty"`                  // --- v3: Claude Code Hooks ---
-	PlanGate              PlanGateConfig                   `json:"planGate,omitempty"`                // --- v3: Plan Gate Mode ---
-	MCPBridge             MCPBridgeConfig                  `json:"mcpBridge,omitempty"`               // --- v3: MCP Server Bridge ---
-	Store                 StoreConfig                      `json:"store,omitempty"`                   // --- Template Marketplace ---
-
-	// Resolved at runtime (not serialized).
-	baseDir           string
-	mcpMu             sync.RWMutex
-	mcpPaths          map[string]string
-	tlsEnabled        bool
-	registry          *providerRegistry
-	circuits          *circuitRegistry
-	toolRegistry      *ToolRegistry
-	slotPressureGuard *SlotPressureGuard
-	discordBot *DiscordBot
-	hookRecv   *hookReceiver
-}
-
-// UnmarshalJSON implements backward compat: accepts both "roles" and "agents" keys.
-func (c *Config) UnmarshalJSON(data []byte) error {
-	// Use an alias to avoid infinite recursion.
-	type ConfigAlias Config
-	var alias ConfigAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
-		return err
-	}
-
-	// If "agents" is empty, try "roles" from raw JSON.
-	if len(alias.Agents) == 0 {
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err == nil {
-			if rolesRaw, ok := raw["roles"]; ok {
-				var roles map[string]AgentConfig
-				if err := json.Unmarshal(rolesRaw, &roles); err == nil && len(roles) > 0 {
-					alias.Agents = roles
-				}
-			}
-		}
-	}
-
-	// Use reflect to copy ConfigAlias → Config. Passing pointers avoids copylocks vet warnings.
-	// alias.mcpMu is always zero-initialized here (no json tag), so the copy is safe.
-	srcVal := reflect.ValueOf(&alias).Elem()
-	dstType := reflect.TypeOf((*Config)(nil)).Elem()
-	reflect.ValueOf(c).Elem().Set(srcVal.Convert(dstType))
-	return nil
-}
-
-// UnmarshalJSON implements backward compat: accepts both "defaultRole" and "defaultAgent".
-func (s *SmartDispatchConfig) UnmarshalJSON(data []byte) error {
-	type SDAlias SmartDispatchConfig
-	var alias SDAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
-		return err
-	}
-
-	if alias.DefaultAgent == "" {
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err == nil {
-			if drRaw, ok := raw["defaultRole"]; ok {
-				var dr string
-				if err := json.Unmarshal(drRaw, &dr); err == nil {
-					alias.DefaultAgent = dr
-				}
-			}
-		}
-	}
-
-	*s = SmartDispatchConfig(alias)
-	return nil
-}
-
-// UnmarshalJSON implements backward compat: accepts both "role" and "agent".
-func (r *RoutingRule) UnmarshalJSON(data []byte) error {
-	type RRAlias RoutingRule
-	var alias RRAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
-		return err
-	}
-
-	if alias.Agent == "" {
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err == nil {
-			if roleRaw, ok := raw["role"]; ok {
-				var role string
-				if err := json.Unmarshal(roleRaw, &role); err == nil {
-					alias.Agent = role
-				}
-			}
-		}
-	}
-
-	*r = RoutingRule(alias)
-	return nil
-}
-
-// UnmarshalJSON implements backward compat: accepts both "role" and "agent".
-func (b *RoutingBinding) UnmarshalJSON(data []byte) error {
-	type RBAlias RoutingBinding
-	var alias RBAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
-		return err
-	}
-
-	if alias.Agent == "" {
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err == nil {
-			if roleRaw, ok := raw["role"]; ok {
-				var role string
-				if err := json.Unmarshal(roleRaw, &role); err == nil {
-					alias.Agent = role
-				}
-			}
-		}
-	}
-
-	*b = RoutingBinding(alias)
-	return nil
-}
-
-// --- Tiered Prompt Builder: Budget Config ---
-
-// PromptBudgetConfig controls maximum character budgets for each section
-// of the tiered system prompt. Zero values use built-in defaults.
-type PromptBudgetConfig struct {
-	SoulMax      int `json:"soulMax,omitempty"`      // max chars for soul prompt (default 8000)
-	RulesMax     int `json:"rulesMax,omitempty"`      // max chars for workspace rules (default 4000)
-	KnowledgeMax int `json:"knowledgeMax,omitempty"`  // max chars for knowledge (default 8000)
-	SkillsMax        int `json:"skillsMax,omitempty"`        // max chars for skills (default 2000)
-	MaxSkillsPerTask int `json:"maxSkillsPerTask,omitempty"` // max skills injected per task (default 3)
-	ContextMax       int `json:"contextMax,omitempty"`       // max chars for session context (default 16000)
-	TotalMax         int `json:"totalMax,omitempty"`         // max total chars (default 40000)
-}
-
-func (c PromptBudgetConfig) soulMaxOrDefault() int      { if c.SoulMax > 0 { return c.SoulMax }; return 8000 }
-func (c PromptBudgetConfig) rulesMaxOrDefault() int     { if c.RulesMax > 0 { return c.RulesMax }; return 4000 }
-func (c PromptBudgetConfig) knowledgeMaxOrDefault() int { if c.KnowledgeMax > 0 { return c.KnowledgeMax }; return 8000 }
-func (c PromptBudgetConfig) skillsMaxOrDefault() int    { if c.SkillsMax > 0 { return c.SkillsMax }; return 4000 }
-func (c PromptBudgetConfig) maxSkillsPerTaskOrDefault() int { if c.MaxSkillsPerTask > 0 { return c.MaxSkillsPerTask }; return 3 }
-func (c PromptBudgetConfig) contextMaxOrDefault() int   { if c.ContextMax > 0 { return c.ContextMax }; return 16000 }
-func (c PromptBudgetConfig) totalMaxOrDefault() int     { if c.TotalMax > 0 { return c.TotalMax }; return 40000 }
-
-// --- P28.0: Approval Gates ---
-
-// ApprovalGateConfig configures pre-execution approval gates for high-risk tools.
-type ApprovalGateConfig struct {
-	Enabled          bool     `json:"enabled,omitempty"`
-	Timeout          int      `json:"timeout,omitempty"`          // seconds, default 120
-	Tools            []string `json:"tools,omitempty"`            // tool names requiring approval
-	AutoApproveTools []string `json:"autoApproveTools,omitempty"` // tools pre-approved at startup
-}
-
-// --- P21.2: Writing Style Guidelines ---
-type WritingStyleConfig struct {
-	Enabled    bool   `json:"enabled"`
-	Guidelines string `json:"guidelines,omitempty"`
-	FilePath   string `json:"filePath,omitempty"`
-}
-
-// BrowserRelayConfig configures the Chrome extension relay server.
-type BrowserRelayConfig struct {
-	Enabled bool   `json:"enabled"`
-	Port    int    `json:"port,omitempty"`  // default 18792
-	Token   string `json:"token,omitempty"` // auth token for extension
-}
-
-// NotebookLMConfig configures the NotebookLM skill.
-type NotebookLMConfig struct {
-	Enabled bool `json:"enabled"`
-}
-
-// CitationConfig controls source citation in agent responses.
-type CitationConfig struct {
-	Enabled bool   `json:"enabled"`
-	Format  string `json:"format,omitempty"` // "bracket" (default), "footnote", "inline"
-}
-
-// ImageGenConfig for AI image generation (DALL-E).
-type ImageGenConfig struct {
-	Enabled    bool    `json:"enabled"`
-	Provider   string  `json:"provider,omitempty"`  // "openai" (default)
-	APIKey     string  `json:"apiKey,omitempty"`     // $OPENAI_API_KEY
-	Model      string  `json:"model,omitempty"`      // "dall-e-3"
-	DailyLimit int     `json:"dailyLimit,omitempty"` // default 10
-	MaxCostDay float64 `json:"maxCostDay,omitempty"` // default 1.00 USD
-	Quality    string  `json:"quality,omitempty"`     // "standard" | "hd"
-}
-
-// WeatherConfig for Open-Meteo weather tools.
-type WeatherConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Location string `json:"defaultLocation,omitempty"`
-}
-
-// CurrencyConfig for Frankfurter currency tools.
-type CurrencyConfig struct {
-	Enabled bool `json:"enabled"`
-}
-
-// RSSConfig for RSS feed reader tools.
-type RSSConfig struct {
-	Enabled bool     `json:"enabled"`
-	Feeds   []string `json:"feeds,omitempty"`
-}
-
-// TranslateConfig for translation tools.
-type TranslateConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Provider string `json:"provider,omitempty"` // "lingva" (default) | "deepl"
-	APIKey   string `json:"apiKey,omitempty"`   // DeepL free tier key ($DEEPL_KEY)
-}
-
-// --- P23.1: User Profile & Emotional Memory ---
-
-// UserProfileConfig controls user profiling and emotional memory.
-type UserProfileConfig struct {
-	Enabled          bool `json:"enabled"`
-	SentimentEnabled bool `json:"sentiment,omitempty"`
-	AdaptPersonality bool `json:"adaptPersonality,omitempty"`
-}
-
-// --- P23.7: Reliability & Operations ---
-
-// OpsConfig controls reliability and operations features.
-type OpsConfig struct {
-	BackupSchedule string             `json:"backupSchedule,omitempty"` // cron expression
-	BackupRetain   int                `json:"backupRetain,omitempty"`   // default 7
-	BackupDir      string             `json:"backupDir,omitempty"`
-	HealthNotify   bool               `json:"healthNotify,omitempty"`
-	HealthCheckURL string             `json:"healthCheckUrl,omitempty"`
-	ExportEnabled  bool               `json:"exportEnabled,omitempty"`
-	MessageQueue   MessageQueueConfig `json:"messageQueue,omitempty"`
-}
-
-// MessageQueueConfig controls the message queue engine.
-type MessageQueueConfig struct {
-	Enabled       bool   `json:"enabled"`
-	RetryAttempts int    `json:"retryAttempts,omitempty"` // default 3
-	RetryBackoff  string `json:"retryBackoff,omitempty"`  // default "30s"
-	MaxQueueSize  int    `json:"maxQueueSize,omitempty"`  // default 1000
-}
-
-func (c OpsConfig) backupRetainOrDefault() int {
-	if c.BackupRetain > 0 {
-		return c.BackupRetain
-	}
-	return 7
-}
-
-func (c OpsConfig) backupDirResolved(baseDir string) string {
-	if c.BackupDir != "" {
-		return c.BackupDir
-	}
-	return filepath.Join(baseDir, "backups")
-}
-
-func (c MessageQueueConfig) retryAttemptsOrDefault() int {
-	if c.RetryAttempts > 0 {
-		return c.RetryAttempts
-	}
-	return 3
-}
-
-func (c MessageQueueConfig) maxQueueSizeOrDefault() int {
-	if c.MaxQueueSize > 0 {
-		return c.MaxQueueSize
-	}
-	return 1000
-}
-
-// --- P23.4: Financial Tracking ---
-
-// FinanceConfig controls expense tracking and budgets.
-type FinanceConfig struct {
-	Enabled         bool   `json:"enabled"`
-	DefaultCurrency string `json:"defaultCurrency,omitempty"` // default "TWD"
-	BudgetAlert     bool   `json:"budgetAlert,omitempty"`
-}
-
-func (c FinanceConfig) defaultCurrencyOrTWD() string {
-	if c.DefaultCurrency != "" {
-		return c.DefaultCurrency
-	}
-	return "TWD"
-}
-
-// --- P23.2: Task Management ---
-
-// TaskManagerConfig controls user-facing task management.
-type TaskManagerConfig struct {
-	Enabled        bool          `json:"enabled"`
-	DefaultProject string        `json:"defaultProject,omitempty"` // default "inbox"
-	ReviewSchedule string        `json:"reviewSchedule,omitempty"` // cron expression
-	Todoist        TodoistConfig `json:"todoist,omitempty"`
-	Notion         NotionConfig  `json:"notion,omitempty"`
-}
-
-// TodoistConfig configures Todoist integration.
-type TodoistConfig struct {
-	Enabled bool   `json:"enabled"`
-	APIKey  string `json:"apiKey,omitempty"` // $TODOIST_API_KEY
-}
-
-// NotionConfig configures Notion integration.
-type NotionConfig struct {
-	Enabled    bool   `json:"enabled"`
-	APIKey     string `json:"apiKey,omitempty"` // $NOTION_API_KEY
-	DatabaseID string `json:"databaseId,omitempty"`
-}
-
-func (c TaskManagerConfig) defaultProjectOrInbox() string {
-	if c.DefaultProject != "" {
-		return c.DefaultProject
-	}
-	return "inbox"
-}
-
-type WebhookConfig struct {
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Events  []string          `json:"events,omitempty"` // "success", "error", "timeout", "all"; empty = all
-}
-
-// TelegramConfig is an alias for the internal telegram.Config.
-// Note: JSON tag for chatId uses internal package's convention.
-type TelegramConfig = tgbot.Config
-
-type AgentConfig struct {
-	SoulFile          string          `json:"soulFile"`
-	Model             string          `json:"model"`
-	Description       string          `json:"description"`
-	Keywords          []string        `json:"keywords,omitempty"`          // routing keywords for smart dispatch
-	PermissionMode    string          `json:"permissionMode,omitempty"`
-	AllowedDirs       []string        `json:"allowedDirs,omitempty"`
-	Provider          string          `json:"provider,omitempty"`
-	Docker            *bool           `json:"docker,omitempty"`            // per-agent Docker sandbox override
-	FallbackProviders []string        `json:"fallbackProviders,omitempty"` // failover chain
-	TrustLevel        string          `json:"trustLevel,omitempty"`        // "observe", "suggest", "auto" (default "auto")
-	ToolPolicy        AgentToolPolicy  `json:"tools,omitempty"`             // tool access policy
-	ToolProfile       string          `json:"toolProfile,omitempty"`       // "minimal"|"standard"|"full"
-	Workspace         WorkspaceConfig `json:"workspace,omitempty"`         // workspace isolation config
-}
-
-type ProviderConfig struct {
-	Type              string `json:"type"`                         // "claude-cli" | "openai-compatible" | "claude-api" | "claude-code"
-	Path              string `json:"path,omitempty"`               // binary path for CLI providers
-	BaseURL           string `json:"baseUrl,omitempty"`            // API endpoint for API providers
-	APIKey            string `json:"apiKey,omitempty"`             // $ENV_VAR supported
-	Model             string `json:"model,omitempty"`              // default model for this provider
-	MaxTokens         int    `json:"maxTokens,omitempty"`          // max output tokens (default 8192 for claude-api)
-	FirstTokenTimeout string `json:"firstTokenTimeout,omitempty"` // e.g. "30s"; how long to wait for first SSE event (default "60s")
-}
-
-type CostAlertConfig struct {
-	DailyLimit      float64 `json:"dailyLimit"`
-	WeeklyLimit     float64 `json:"weeklyLimit"`
-	DailyTokenLimit int     `json:"dailyTokenLimit,omitempty"` // total (in+out) token cap per day; 0 = no bar
-	Action          string  `json:"action"`                    // "warn" or "pause"
-}
-
-type DashboardAuthConfig struct {
-	Enabled  bool   `json:"enabled"`           // false = no auth (default)
-	Username string `json:"username,omitempty"` // basic auth user (default "admin")
-	Password string `json:"password,omitempty"` // password or $ENV_VAR
-	Token    string `json:"token,omitempty"`    // alternative: static token cookie
-}
-
-type QuietHoursConfig struct {
-	Enabled bool   `json:"enabled"`          // false = disabled (default)
-	Start   string `json:"start,omitempty"`  // "23:00" (local time)
-	End     string `json:"end,omitempty"`    // "08:00" (local time)
-	TZ      string `json:"tz,omitempty"`     // timezone, default local
-	Digest  bool   `json:"digest,omitempty"` // true = send digest when quiet ends; false = discard
-}
-
-type DigestConfig struct {
-	Enabled bool   `json:"enabled"`           // false = disabled (default)
-	Time    string `json:"time,omitempty"`    // "08:00" default
-	TZ      string `json:"tz,omitempty"`      // timezone, default local
-}
-
-type NotificationChannel struct {
-	Name        string   `json:"name,omitempty"`        // named reference, e.g. "stock"; used in channel='discord:stock'
-	Type        string   `json:"type"`                  // "slack", "discord"
-	WebhookURL  string   `json:"webhookUrl"`            // webhook endpoint
-	Events      []string `json:"events,omitempty"`      // "all", "error", "success"; empty = all
-	MinPriority string   `json:"minPriority,omitempty"` // "critical", "high", "normal", "low"; empty = all
-}
-
-type RateLimitConfig struct {
-	Enabled   bool `json:"enabled"`
-	MaxPerMin int  `json:"maxPerMin,omitempty"` // default 60
-}
-
-type TLSConfig struct {
-	CertFile string `json:"certFile,omitempty"` // path to PEM cert file
-	KeyFile  string `json:"keyFile,omitempty"`  // path to PEM key file
-}
-
-type SecurityAlertConfig struct {
-	Enabled       bool `json:"enabled"`
-	FailThreshold int  `json:"failThreshold,omitempty"` // N failures in window → alert (default 10)
-	FailWindowMin int  `json:"failWindowMin,omitempty"` // window in minutes (default 5)
-}
-
-// SmartDispatchConfig configures the smart dispatch routing engine.
-type SmartDispatchConfig struct {
-	Enabled         bool             `json:"enabled"`
-	Coordinator     string           `json:"coordinator,omitempty"`     // agent name for LLM classification (default "琉璃")
-	DefaultAgent     string           `json:"defaultAgent,omitempty"`     // fallback if no match (default "琉璃")
-	ClassifyBudget  float64          `json:"classifyBudget,omitempty"`  // budget for classification LLM call (default 0.1)
-	ClassifyTimeout string           `json:"classifyTimeout,omitempty"` // timeout for classification (default "30s")
-	Review          bool             `json:"review,omitempty"`          // if true, reviews output after dispatch
-	ReviewLoop      bool             `json:"reviewLoop,omitempty"`      // if true, runs Dev↔QA retry loop (review → feedback → retry, max maxRetries)
-	MaxRetries      int              `json:"maxRetries,omitempty"`      // max QA retry attempts (default 3)
-	ReviewAgent     string           `json:"reviewAgent,omitempty"`     // agent for review (default: coordinator). set to e.g. "kougyoku" for adversarial QA
-	ReviewBudget    float64          `json:"reviewBudget,omitempty"`    // budget for review LLM call (default 0.2)
-	Rules           []RoutingRule    `json:"rules,omitempty"`           // explicit keyword rules (fast path)
-	Bindings        []RoutingBinding `json:"bindings,omitempty"`        // channel/user bindings (highest priority)
-	Fallback        string           `json:"fallback,omitempty"`        // "smart" (LLM routing) | "coordinator" (always default agent)
-}
-
-// maxRetriesOrDefault returns the configured max retries for the Dev↔QA loop, defaulting to 3.
-func (c SmartDispatchConfig) maxRetriesOrDefault() int {
-	if c.MaxRetries > 0 {
-		return c.MaxRetries
-	}
-	return 3
-}
-
-// RoutingRule is a keyword-based routing rule for fast-path matching.
-type RoutingRule struct {
-	Agent     string   `json:"agent"`                // target agent name
-	Keywords []string `json:"keywords"`            // case-insensitive keyword match (any = match)
-	Patterns []string `json:"patterns,omitempty"`  // regex patterns (any = match)
-}
-
-// RoutingBinding binds a channel/user/channelId/guildId to a specific agent.
-type RoutingBinding struct {
-	Channel   string `json:"channel"`             // "telegram", "slack", "discord", etc.
-	UserID    string `json:"userId,omitempty"`    // user ID (telegram, discord, etc.)
-	ChannelID string `json:"channelId,omitempty"` // channel/chat ID (slack, telegram group, etc.)
-	GuildID   string `json:"guildId,omitempty"`   // guild/server ID (discord)
-	Agent      string `json:"agent"`                // target agent name
-}
-
-// EstimateConfig configures pre-execution cost estimation.
-type EstimateConfig struct {
-	ConfirmThreshold    float64 `json:"confirmThreshold,omitempty"`    // cost threshold for TG confirmation (default $1.00)
-	DefaultOutputTokens int     `json:"defaultOutputTokens,omitempty"` // fallback output token estimate (default 500)
-}
-
-// ToolConfig configures the tool engine.
-type ToolConfig struct {
-	MaxIterations  int                       `json:"maxIterations,omitempty"`  // default 10
-	Timeout        int                       `json:"timeout,omitempty"`        // seconds, default 120
-	Builtin        map[string]bool           `json:"builtin,omitempty"`        // tool name -> enabled
-	Profiles       map[string]ToolProfile    `json:"profiles,omitempty"`       // custom profiles
-	DefaultProfile string                    `json:"defaultProfile,omitempty"` // default "standard"
-	TrustOverride  map[string]string         `json:"trustOverride,omitempty"`  // tool → trust level
-	ToolOutputLimit int                       `json:"toolOutputLimit,omitempty"` // max chars per tool output, default 10240
-	ToolTimeout     int                       `json:"toolTimeout,omitempty"`     // per-tool timeout in seconds, default 30
-	WebSearch       WebSearchConfig           `json:"webSearch,omitempty"`       // web search configuration
-	Vision          VisionConfig              `json:"vision,omitempty"`          // vision/image analysis configuration
-}
-
-// WebSearchConfig configures the web search tool.
-type WebSearchConfig struct {
-	Provider   string `json:"provider,omitempty"`   // "brave", "tavily", "searxng"
-	APIKey     string `json:"apiKey,omitempty"`     // API key (supports $ENV_VAR)
-	BaseURL    string `json:"baseURL,omitempty"`    // for searxng self-hosted
-	MaxResults int    `json:"maxResults,omitempty"` // default 5
-}
-
-// --- P13.4: Image Analysis ---
-
-// VisionConfig configures the image analysis tool.
-type VisionConfig struct {
-	Provider     string `json:"provider,omitempty"`     // "anthropic" | "openai" | "google"
-	APIKey       string `json:"apiKey,omitempty"`       // $ENV_VAR supported
-	Model        string `json:"model,omitempty"`        // provider-specific model name
-	MaxImageSize int    `json:"maxImageSize,omitempty"` // max bytes, default 5MB
-	BaseURL      string `json:"baseURL,omitempty"`      // custom API endpoint
-}
-
-// MCPServerConfig defines an MCP server managed by Tetora.
-type MCPServerConfig struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Enabled *bool             `json:"enabled,omitempty"` // default true
-}
-
-// confirmThresholdOrDefault returns the configured confirm threshold (default $1.00).
-func (c EstimateConfig) confirmThresholdOrDefault() float64 {
-	if c.ConfirmThreshold > 0 {
-		return c.ConfirmThreshold
-	}
-	return 1.0
-}
-
-// CircuitBreakerConfig configures the circuit breaker for provider failover.
-type CircuitBreakerConfig struct {
-	Enabled          bool   `json:"enabled,omitempty"`          // default true (enabled when any config present)
-	FailThreshold    int    `json:"failThreshold,omitempty"`    // failures before open (default 5)
-	SuccessThreshold int    `json:"successThreshold,omitempty"` // successes in half-open before close (default 2)
-	OpenTimeout      string `json:"openTimeout,omitempty"`      // duration before half-open (default "30s")
-}
-
-// defaultOutputTokensOrDefault returns the configured default output tokens (default 500).
-func (c EstimateConfig) defaultOutputTokensOrDefault() int {
-	if c.DefaultOutputTokens > 0 {
-		return c.DefaultOutputTokens
-	}
-	return 500
-}
-
-// SessionConfig configures channel session sync and context compaction.
-type SessionConfig struct {
-	ContextMessages int              `json:"contextMessages,omitempty"` // max messages to inject as context (default 20)
-	CompactAfter    int              `json:"compactAfter,omitempty"`    // compact when message_count > N (default 30) [deprecated: use Compaction.MaxMessages]
-	CompactKeep     int              `json:"compactKeep,omitempty"`     // keep last N messages after compact (default 10) [deprecated: use Compaction.CompactTo]
-	CompactTokens   int              `json:"compactTokens,omitempty"`   // compact when total_tokens_in > N (default 200000)
-	Compaction      CompactionConfig `json:"compaction,omitempty"`      // compaction settings
-}
-
-type LoggingConfig struct {
-	Level     string `json:"level,omitempty"`     // "debug", "info", "warn", "error" (default "info")
-	Format    string `json:"format,omitempty"`    // "text", "json" (default "text")
-	File      string `json:"file,omitempty"`      // log file path (default baseDir/logs/tetora.log)
-	MaxSizeMB int    `json:"maxSizeMB,omitempty"` // max file size before rotation in MB (default 50)
-	MaxFiles  int    `json:"maxFiles,omitempty"`  // rotated files to keep (default 5)
-}
-
-type VoiceConfig struct {
-	STT      STTConfig           `json:"stt,omitempty"`
-	TTS      TTSConfig           `json:"tts,omitempty"`
-	Wake     VoiceWakeConfig     `json:"wake,omitempty"`     // P16.2: wake word detection
-	Realtime VoiceRealtimeConfig `json:"realtime,omitempty"` // P16.2: OpenAI Realtime API
-}
-
-type STTConfig struct {
-	Enabled  bool   `json:"enabled,omitempty"`
-	Provider string `json:"provider,omitempty"` // "openai"
-	Model    string `json:"model,omitempty"`
-	Endpoint string `json:"endpoint,omitempty"`
-	APIKey   string `json:"apiKey,omitempty"` // supports $ENV_VAR
-	Language string `json:"language,omitempty"`
-}
-
-type TTSConfig struct {
-	Enabled  bool   `json:"enabled,omitempty"`
-	Provider string `json:"provider,omitempty"` // "openai", "elevenlabs"
-	Model    string `json:"model,omitempty"`
-	Endpoint string `json:"endpoint,omitempty"`
-	APIKey   string `json:"apiKey,omitempty"` // supports $ENV_VAR
-	Voice    string `json:"voice,omitempty"`
-	Format   string `json:"format,omitempty"` // "mp3", "opus"
-}
-
-type PushConfig struct {
-	Enabled         bool   `json:"enabled,omitempty"`
-	VAPIDPublicKey  string `json:"vapidPublicKey,omitempty"`  // base64url encoded
-	VAPIDPrivateKey string `json:"vapidPrivateKey,omitempty"` // base64url encoded
-	VAPIDEmail      string `json:"vapidEmail,omitempty"`      // contact email for VAPID
-	TTL             int    `json:"ttl,omitempty"`             // push message TTL in seconds (default 3600)
-}
-
-type AgentCommConfig struct {
-	Enabled            bool `json:"enabled,omitempty"`
-	MaxConcurrent      int  `json:"maxConcurrent,omitempty"`      // max concurrent agent_dispatch calls (default 3)
-	DefaultTimeout     int  `json:"defaultTimeout,omitempty"`     // seconds (default 900)
-	MaxDepth           int  `json:"maxDepth,omitempty"`           // --- P13.3: Nested Sub-Agents --- max nesting depth (default 3)
-	MaxChildrenPerTask int  `json:"maxChildrenPerTask,omitempty"` // --- P13.3: Nested Sub-Agents --- max concurrent children per parent (default 5)
-	ChildSem            int `json:"childSem,omitempty"` // child semaphore pool = maxConcurrent * this multiplier (default 2)
-}
-
-func (c LoggingConfig) levelOrDefault() string {
-	if c.Level != "" {
-		return c.Level
-	}
-	return "info"
-}
-func (c LoggingConfig) formatOrDefault() string {
-	if c.Format != "" {
-		return c.Format
-	}
-	return "text"
-}
-func (c LoggingConfig) maxSizeMBOrDefault() int {
-	if c.MaxSizeMB > 0 {
-		return c.MaxSizeMB
-	}
-	return 50
-}
-func (c LoggingConfig) maxFilesOrDefault() int {
-	if c.MaxFiles > 0 {
-		return c.MaxFiles
-	}
-	return 5
-}
-
-// ProactiveConfig configures the proactive agent engine.
-type ProactiveConfig struct {
-	Enabled bool             `json:"enabled,omitempty"`
-	Rules   []ProactiveRule  `json:"rules,omitempty"`
-}
-
-// GroupChatConfig configures group chat intelligence.
-type GroupChatConfig struct {
-	Activation    string                       `json:"activation,omitempty"`    // "mention", "keyword", "all"
-	Keywords      []string                     `json:"keywords,omitempty"`      // trigger keywords for "keyword" mode
-	ContextWindow int                          `json:"contextWindow,omitempty"` // messages to include for context (default 10)
-	RateLimit     GroupChatRateLimitConfig     `json:"rateLimit,omitempty"`
-	AllowedGroups map[string][]string          `json:"allowedGroups,omitempty"` // platform → group IDs
-	ThreadReply   bool                         `json:"threadReply,omitempty"`   // reply in threads
-	MentionNames  []string                     `json:"mentionNames,omitempty"`  // names that trigger activation (e.g. ["tetora", "テトラ"])
-}
-
-// GroupChatRateLimitConfig configures group chat rate limiting.
-type GroupChatRateLimitConfig struct {
-	MaxPerMin int  `json:"maxPerMin,omitempty"` // default 5
-	PerGroup  bool `json:"perGroup,omitempty"`  // per-group vs global rate limit
-}
-
-// sessionContextMessages returns the configured max context messages (default 20).
-func (c SessionConfig) contextMessagesOrDefault() int {
-	if c.ContextMessages > 0 {
-		return c.ContextMessages
-	}
-	return 20
-}
-
-// compactAfterOrDefault returns the configured compact threshold (default 30).
-func (c SessionConfig) compactAfterOrDefault() int {
-	if c.CompactAfter > 0 {
-		return c.CompactAfter
-	}
-	return 30
-}
-
-// compactKeepOrDefault returns the number of messages to keep after compaction (default 10).
-func (c SessionConfig) compactKeepOrDefault() int {
-	if c.CompactKeep > 0 {
-		return c.CompactKeep
-	}
-	return 10
-}
-
-// compactTokensOrDefault returns the token threshold for compaction (default 200000).
-func (c SessionConfig) compactTokensOrDefault() int {
-	if c.CompactTokens > 0 {
-		return c.CompactTokens
-	}
-	return 200000
-}
+// --- Type aliases pointing to internal/config ---
+
+type Config = config.Config
+
+type PromptBudgetConfig = config.PromptBudgetConfig
+type ApprovalGateConfig = config.ApprovalGateConfig
+type WritingStyleConfig = config.WritingStyleConfig
+type BrowserRelayConfig = config.BrowserRelayConfig
+type NotebookLMConfig = config.NotebookLMConfig
+type CitationConfig = config.CitationConfig
+type ImageGenConfig = config.ImageGenConfig
+type WeatherConfig = config.WeatherConfig
+type CurrencyConfig = config.CurrencyConfig
+type RSSConfig = config.RSSConfig
+type TranslateConfig = config.TranslateConfig
+type UserProfileConfig = config.UserProfileConfig
+type OpsConfig = config.OpsConfig
+type MessageQueueConfig = config.MessageQueueConfig
+type FinanceConfig = config.FinanceConfig
+type TaskManagerConfig = config.TaskManagerConfig
+type TodoistConfig = config.TodoistConfig
+type NotionConfig = config.NotionConfig
+type WebhookConfig = config.WebhookConfig
+type AgentConfig = config.AgentConfig
+type ProviderConfig = config.ProviderConfig
+type CostAlertConfig = config.CostAlertConfig
+type DashboardAuthConfig = config.DashboardAuthConfig
+type QuietHoursConfig = config.QuietHoursConfig
+type DigestConfig = config.DigestConfig
+type NotificationChannel = config.NotificationChannel
+type RateLimitConfig = config.RateLimitConfig
+type TLSConfig = config.TLSConfig
+type SecurityAlertConfig = config.SecurityAlertConfig
+type SmartDispatchConfig = config.SmartDispatchConfig
+type RoutingRule = config.RoutingRule
+type RoutingBinding = config.RoutingBinding
+type EstimateConfig = config.EstimateConfig
+type ToolConfig = config.ToolConfig
+type WebSearchConfig = config.WebSearchConfig
+type VisionConfig = config.VisionConfig
+type MCPServerConfig = config.MCPServerConfig
+type CircuitBreakerConfig = config.CircuitBreakerConfig
+type SessionConfig = config.SessionConfig
+type LoggingConfig = config.LoggingConfig
+type VoiceConfig = config.VoiceConfig
+type STTConfig = config.STTConfig
+type TTSConfig = config.TTSConfig
+type PushConfig = config.PushConfig
+type AgentCommConfig = config.AgentCommConfig
+type ProactiveConfig = config.ProactiveConfig
+type GroupChatConfig = config.GroupChatConfig
+type GroupChatRateLimitConfig = config.GroupChatRateLimitConfig
+
+// Messaging platform type aliases (configs already defined in internal/messaging packages,
+// re-exported via internal/config).
+type TelegramConfig = config.TelegramConfig
+type MatrixConfig = config.MatrixConfig
+type WhatsAppConfig = config.WhatsAppConfig
+type SignalConfig = config.SignalConfig
+type GoogleChatConfig = config.GoogleChatConfig
+type LINEConfig = config.LINEConfig
+type TeamsConfig = config.TeamsConfig
+type IMessageConfig = config.IMessageConfig
+type SlackBotConfig = config.SlackBotConfig
+
+// Integration type aliases.
+type GmailConfig = config.GmailConfig
+type SpotifyConfig = config.SpotifyConfig
+type TwitterConfig = config.TwitterConfig
+type PodcastConfig = config.PodcastConfig
+type HomeAssistantConfig = config.HomeAssistantConfig
+type NotesConfig = config.NotesConfig
+
+// Other type aliases from internal/config.
+type AgentToolPolicy = config.AgentToolPolicy
+type CompactionConfig = config.CompactionConfig
+type ToolProfile = config.ToolProfile
+type WorkspaceConfig = config.WorkspaceConfig
+type SandboxMode = config.SandboxMode
+type DockerConfig = config.DockerConfig
+type SandboxConfig = config.SandboxConfig
+type PluginConfig = config.PluginConfig
+type OAuthConfig = config.OAuthConfig
+type OAuthServiceConfig = config.OAuthServiceConfig
+type EmbeddingConfig = config.EmbeddingConfig
+type MMRConfig = config.MMRConfig
+type TemporalConfig = config.TemporalConfig
+type InjectionDefenseConfig = config.InjectionDefenseConfig
+type SecurityConfig = config.SecurityConfig
+type TrustConfig = config.TrustConfig
+type TaskBoardConfig = config.TaskBoardConfig
+type TaskBoardDispatchConfig = config.TaskBoardDispatchConfig
+type GitWorkflowConfig = config.GitWorkflowConfig
+type WorkflowTriggerConfig = config.WorkflowTriggerConfig
+type TriggerSpec = config.TriggerSpec
+type OfflineQueueConfig = config.OfflineQueueConfig
+type ReflectionConfig = config.ReflectionConfig
+type NotifyIntelConfig = config.NotifyIntelConfig
+type IncomingWebhookConfig = config.IncomingWebhookConfig
+type RetentionConfig = config.RetentionConfig
+type AccessControlConfig = config.AccessControlConfig
+type SlotPressureConfig = config.SlotPressureConfig
+type CanvasConfig = config.CanvasConfig
+type DailyNotesConfig = config.DailyNotesConfig
+type UsageConfig = config.UsageConfig
+type HeartbeatConfig = config.HeartbeatConfig
+type HooksConfig = config.HooksConfig
+type PlanGateConfig = config.PlanGateConfig
+type MCPBridgeConfig = config.MCPBridgeConfig
+type StoreConfig = config.StoreConfig
+type ReminderConfig = config.ReminderConfig
+type DeviceConfig = config.DeviceConfig
+type CalendarConfig = config.CalendarConfig
+type FileManagerConfig = config.FileManagerConfig
+type YouTubeConfig = config.YouTubeConfig
+type FamilyConfig = config.FamilyConfig
+type TimeTrackingConfig = config.TimeTrackingConfig
+type LifecycleConfig = config.LifecycleConfig
+type DiscordBotConfig = config.DiscordBotConfig
+type DiscordRouteConfig = config.DiscordRouteConfig
+type DiscordComponentsConfig = config.DiscordComponentsConfig
+type DiscordThreadBindingsConfig = config.DiscordThreadBindingsConfig
+type DiscordReactionsConfig = config.DiscordReactionsConfig
+type DiscordForumBoardConfig = config.DiscordForumBoardConfig
+type DiscordVoiceConfig = config.DiscordVoiceConfig
+type DiscordVoiceAutoJoin = config.DiscordVoiceAutoJoin
+type DiscordVoiceTTSConfig = config.DiscordVoiceTTSConfig
+type DiscordTerminalConfig = config.DiscordTerminalConfig
+type SLAConfig = config.SLAConfig
+type BudgetConfig = config.BudgetConfig
+type AutoDowngradeConfig = config.AutoDowngradeConfig
+type ModelPricing = config.ModelPricing
+type SkillConfig = config.SkillConfig
+type SkillStoreConfig = config.SkillStoreConfig
+type SpriteConfig = config.SpriteConfig
+type QuickAction = config.QuickAction
+type QuickActionParam = config.QuickActionParam
+type ProactiveRule = config.ProactiveRule
+type ProactiveTrigger = config.ProactiveTrigger
+type ProactiveAction = config.ProactiveAction
+type ProactiveDelivery = config.ProactiveDelivery
+type VoiceWakeConfig = config.VoiceWakeConfig
+type VoiceRealtimeConfig = config.VoiceRealtimeConfig
 
 // --- Config Loading ---
 
@@ -860,7 +204,7 @@ func tryLoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	cfg.baseDir = filepath.Dir(path)
+	cfg.BaseDir = filepath.Dir(path)
 
 	// Defaults.
 	if cfg.MaxConcurrent <= 0 {
@@ -943,84 +287,84 @@ func tryLoadConfig(path string) (*Config, error) {
 
 	// Knowledge dir default.
 	if cfg.KnowledgeDir == "" {
-		cfg.KnowledgeDir = filepath.Join(cfg.baseDir, "knowledge")
+		cfg.KnowledgeDir = filepath.Join(cfg.BaseDir, "knowledge")
 	}
 	if !filepath.IsAbs(cfg.KnowledgeDir) {
-		cfg.KnowledgeDir = filepath.Join(cfg.baseDir, cfg.KnowledgeDir)
+		cfg.KnowledgeDir = filepath.Join(cfg.BaseDir, cfg.KnowledgeDir)
 	}
 
 	// Agents dir default.
 	if cfg.AgentsDir == "" {
-		cfg.AgentsDir = filepath.Join(cfg.baseDir, "agents")
+		cfg.AgentsDir = filepath.Join(cfg.BaseDir, "agents")
 	}
 	if !filepath.IsAbs(cfg.AgentsDir) {
-		cfg.AgentsDir = filepath.Join(cfg.baseDir, cfg.AgentsDir)
+		cfg.AgentsDir = filepath.Join(cfg.BaseDir, cfg.AgentsDir)
 	}
 
 	// Workspace dir default.
 	if cfg.WorkspaceDir == "" {
-		cfg.WorkspaceDir = filepath.Join(cfg.baseDir, "workspace")
+		cfg.WorkspaceDir = filepath.Join(cfg.BaseDir, "workspace")
 	}
 	if !filepath.IsAbs(cfg.WorkspaceDir) {
-		cfg.WorkspaceDir = filepath.Join(cfg.baseDir, cfg.WorkspaceDir)
+		cfg.WorkspaceDir = filepath.Join(cfg.BaseDir, cfg.WorkspaceDir)
 	}
 
 	// Runtime dir default.
 	if cfg.RuntimeDir == "" {
-		cfg.RuntimeDir = filepath.Join(cfg.baseDir, "runtime")
+		cfg.RuntimeDir = filepath.Join(cfg.BaseDir, "runtime")
 	}
 	if !filepath.IsAbs(cfg.RuntimeDir) {
-		cfg.RuntimeDir = filepath.Join(cfg.baseDir, cfg.RuntimeDir)
+		cfg.RuntimeDir = filepath.Join(cfg.BaseDir, cfg.RuntimeDir)
 	}
 
 	// Vault dir default.
 	if cfg.VaultDir == "" {
-		cfg.VaultDir = filepath.Join(cfg.baseDir, "vault")
+		cfg.VaultDir = filepath.Join(cfg.BaseDir, "vault")
 	}
 	if !filepath.IsAbs(cfg.VaultDir) {
-		cfg.VaultDir = filepath.Join(cfg.baseDir, cfg.VaultDir)
+		cfg.VaultDir = filepath.Join(cfg.BaseDir, cfg.VaultDir)
 	}
 
 	// Resolve relative paths to config dir.
 	if !filepath.IsAbs(cfg.JobsFile) {
-		cfg.JobsFile = filepath.Join(cfg.baseDir, cfg.JobsFile)
+		cfg.JobsFile = filepath.Join(cfg.BaseDir, cfg.JobsFile)
 	}
 	if !filepath.IsAbs(cfg.HistoryDB) {
-		cfg.HistoryDB = filepath.Join(cfg.baseDir, cfg.HistoryDB)
+		cfg.HistoryDB = filepath.Join(cfg.BaseDir, cfg.HistoryDB)
 	}
 	if cfg.DefaultWorkdir != "" && !filepath.IsAbs(cfg.DefaultWorkdir) {
-		cfg.DefaultWorkdir = filepath.Join(cfg.baseDir, cfg.DefaultWorkdir)
+		cfg.DefaultWorkdir = filepath.Join(cfg.BaseDir, cfg.DefaultWorkdir)
 	}
 
 	// Resolve TLS paths relative to config dir.
 	if cfg.TLS.CertFile != "" && !filepath.IsAbs(cfg.TLS.CertFile) {
-		cfg.TLS.CertFile = filepath.Join(cfg.baseDir, cfg.TLS.CertFile)
+		cfg.TLS.CertFile = filepath.Join(cfg.BaseDir, cfg.TLS.CertFile)
 	}
 	if cfg.TLS.KeyFile != "" && !filepath.IsAbs(cfg.TLS.KeyFile) {
-		cfg.TLS.KeyFile = filepath.Join(cfg.baseDir, cfg.TLS.KeyFile)
+		cfg.TLS.KeyFile = filepath.Join(cfg.BaseDir, cfg.TLS.KeyFile)
 	}
-	cfg.tlsEnabled = cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != ""
+	cfg.TLSEnabled = cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != ""
 
 	// Resolve $ENV_VAR references in secret fields.
-	cfg.resolveSecrets()
+	resolveSecrets(&cfg)
 
 	// Write MCP configs to temp files for --mcp-config flag.
-	cfg.resolveMCPPaths()
+	resolveMCPPaths(&cfg)
 
 	// Validate config.
-	cfg.validate()
+	validateConfig(&cfg)
 
 	// Initialize provider registry.
-	cfg.registry = initProviders(&cfg)
+	cfg.Runtime.ProviderRegistry = initProviders(&cfg)
 
 	// Initialize circuit breaker registry.
-	cfg.circuits = newCircuitRegistry(cfg.CircuitBreaker)
+	cfg.Runtime.CircuitRegistry = newCircuitRegistry(cfg.CircuitBreaker)
 
 	return &cfg, nil
 }
 
-// validate checks config values and logs warnings for common mistakes.
-func (cfg *Config) validate() {
+// validateConfig checks config values and logs warnings for common mistakes.
+func validateConfig(cfg *Config) {
 	// Check claude binary exists.
 	claudePath := cfg.ClaudePath
 	if claudePath == "" {
@@ -1065,7 +409,7 @@ func (cfg *Config) validate() {
 	}
 
 	// Validate TLS cert/key files.
-	if cfg.tlsEnabled {
+	if cfg.TLSEnabled {
 		if _, err := os.Stat(cfg.TLS.CertFile); err != nil {
 			logWarn("tls.certFile does not exist", "path", cfg.TLS.CertFile)
 		}
@@ -1157,7 +501,7 @@ func resolveEnvRef(value, fieldName string) string {
 }
 
 // resolveSecrets resolves $ENV_VAR references in secret config fields.
-func (cfg *Config) resolveSecrets() {
+func resolveSecrets(cfg *Config) {
 	cfg.APIToken = resolveEnvRef(cfg.APIToken, "apiToken")
 	cfg.Telegram.BotToken = resolveEnvRef(cfg.Telegram.BotToken, "telegram.botToken")
 	if cfg.DashboardAuth.Password != "" {
@@ -1238,7 +582,7 @@ func (cfg *Config) resolveSecrets() {
 	if cfg.Push.VAPIDPrivateKey != "" {
 		cfg.Push.VAPIDPrivateKey = resolveEnvRef(cfg.Push.VAPIDPrivateKey, "push.vapidPrivateKey")
 	}
-	// --- P13.1: Plugin System --- Resolve plugin env vars.
+	// Resolve plugin env vars.
 	for name, pcfg := range cfg.Plugins {
 		if len(pcfg.Env) > 0 {
 			for k, v := range pcfg.Env {
@@ -1247,22 +591,22 @@ func (cfg *Config) resolveSecrets() {
 			cfg.Plugins[name] = pcfg
 		}
 	}
-	// --- P13.4: Image Analysis --- Resolve Vision API key.
+	// Resolve Vision API key.
 	if cfg.Tools.Vision.APIKey != "" {
 		cfg.Tools.Vision.APIKey = resolveEnvRef(cfg.Tools.Vision.APIKey, "tools.vision.apiKey")
 	}
-	// --- P15.1: LINE Channel --- Resolve LINE credentials.
+	// Resolve LINE credentials.
 	if cfg.LINE.ChannelSecret != "" {
 		cfg.LINE.ChannelSecret = resolveEnvRef(cfg.LINE.ChannelSecret, "line.channelSecret")
 	}
 	if cfg.LINE.ChannelAccessToken != "" {
 		cfg.LINE.ChannelAccessToken = resolveEnvRef(cfg.LINE.ChannelAccessToken, "line.channelAccessToken")
 	}
-	// --- P15.2: Matrix Channel --- Resolve Matrix access token.
+	// Resolve Matrix access token.
 	if cfg.Matrix.AccessToken != "" {
 		cfg.Matrix.AccessToken = resolveEnvRef(cfg.Matrix.AccessToken, "matrix.accessToken")
 	}
-	// --- P15.3: Teams Channel --- Resolve Teams credentials.
+	// Resolve Teams credentials.
 	if cfg.Teams.AppID != "" {
 		cfg.Teams.AppID = resolveEnvRef(cfg.Teams.AppID, "teams.appId")
 	}
@@ -1272,26 +616,26 @@ func (cfg *Config) resolveSecrets() {
 	if cfg.Teams.TenantID != "" {
 		cfg.Teams.TenantID = resolveEnvRef(cfg.Teams.TenantID, "teams.tenantId")
 	}
-	// --- P15.4: Signal Channel --- Resolve Signal credentials.
+	// Resolve Signal credentials.
 	if cfg.Signal.PhoneNumber != "" {
 		cfg.Signal.PhoneNumber = resolveEnvRef(cfg.Signal.PhoneNumber, "signal.phoneNumber")
 	}
-	// --- P15.5: Google Chat Channel --- Resolve Google Chat credentials.
+	// Resolve Google Chat credentials.
 	if cfg.GoogleChat.ServiceAccountKey != "" {
 		cfg.GoogleChat.ServiceAccountKey = resolveEnvRef(cfg.GoogleChat.ServiceAccountKey, "googleChat.serviceAccountKey")
 	}
-	// --- P20.1: Home Assistant --- Resolve HA token.
+	// Resolve Home Assistant token.
 	cfg.HomeAssistant.Token = resolveEnvRef(cfg.HomeAssistant.Token, "homeAssistant.token")
-	// --- P20.2: iMessage via BlueBubbles --- Resolve BB password.
+	// Resolve iMessage via BlueBubbles password.
 	cfg.IMessage.Password = resolveEnvRef(cfg.IMessage.Password, "imessage.password")
-	// --- P18.2: OAuth 2.0 Framework --- Resolve OAuth secrets.
+	// Resolve OAuth secrets.
 	cfg.OAuth.EncryptionKey = resolveEnvRef(cfg.OAuth.EncryptionKey, "oauth.encryptionKey")
 	for name, svc := range cfg.OAuth.Services {
 		svc.ClientID = resolveEnvRef(svc.ClientID, fmt.Sprintf("oauth.services.%s.clientId", name))
 		svc.ClientSecret = resolveEnvRef(svc.ClientSecret, fmt.Sprintf("oauth.services.%s.clientSecret", name))
 		cfg.OAuth.Services[name] = svc
 	}
-	// --- P23.2: Task Management --- Resolve Todoist/Notion API keys.
+	// Resolve Todoist/Notion API keys.
 	if cfg.TaskManager.Todoist.APIKey != "" {
 		cfg.TaskManager.Todoist.APIKey = resolveEnvRef(cfg.TaskManager.Todoist.APIKey, "taskManager.todoist.apiKey")
 	}
@@ -1300,20 +644,20 @@ func (cfg *Config) resolveSecrets() {
 	}
 }
 
-func (cfg *Config) resolveMCPPaths() {
+func resolveMCPPaths(cfg *Config) {
 	if len(cfg.MCPConfigs) == 0 {
 		return
 	}
-	dir := filepath.Join(cfg.baseDir, "mcp")
+	dir := filepath.Join(cfg.BaseDir, "mcp")
 	os.MkdirAll(dir, 0o755)
-	cfg.mcpPaths = make(map[string]string)
+	cfg.MCPPaths = make(map[string]string)
 	for name, raw := range cfg.MCPConfigs {
 		path := filepath.Join(dir, name+".json")
 		if err := os.WriteFile(path, raw, 0o644); err != nil {
 			logWarn("write mcp config failed", "name", name, "error", err)
 			continue
 		}
-		cfg.mcpPaths[name] = path
+		cfg.MCPPaths[name] = path
 	}
 }
 
@@ -1381,13 +725,12 @@ func tryLoadConfigForVersioning(configPath string) *Config {
 	if json.Unmarshal(data, &cfg) != nil {
 		return nil
 	}
-	cfg.baseDir = filepath.Dir(configPath)
+	cfg.BaseDir = filepath.Dir(configPath)
 	if cfg.HistoryDB == "" {
 		cfg.HistoryDB = "history.db"
 	}
 	if !filepath.IsAbs(cfg.HistoryDB) {
-		cfg.HistoryDB = filepath.Join(cfg.baseDir, cfg.HistoryDB)
+		cfg.HistoryDB = filepath.Join(cfg.BaseDir, cfg.HistoryDB)
 	}
 	return &cfg
 }
-

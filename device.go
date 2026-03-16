@@ -17,16 +17,7 @@ import (
 
 // --- P20.4: Device Actions ---
 
-// DeviceConfig configures device action tools (camera, screen, clipboard, etc.).
-type DeviceConfig struct {
-	Enabled          bool   `json:"enabled"`
-	OutputDir        string `json:"outputDir,omitempty"`   // default: baseDir + "/outputs"
-	CameraEnabled    bool   `json:"camera,omitempty"`      // enable camera_snap tool
-	ScreenEnabled    bool   `json:"screen,omitempty"`      // enable screen_capture tool
-	ClipboardEnabled bool   `json:"clipboard,omitempty"`   // enable clipboard tools
-	NotifyEnabled    bool   `json:"notify,omitempty"`      // enable notification_send tool
-	LocationEnabled  bool   `json:"location,omitempty"`    // enable location_get tool (macOS only)
-}
+
 
 // safeFilenameRe matches only safe filename characters: alphanumeric, dash, underscore, dot.
 var safeFilenameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -37,7 +28,7 @@ var safeFilenameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 func deviceOutputPath(cfg *Config, filename, ext string) (string, error) {
 	outDir := cfg.Device.OutputDir
 	if outDir == "" {
-		outDir = filepath.Join(cfg.baseDir, "outputs")
+		outDir = filepath.Join(cfg.BaseDir, "outputs")
 	}
 
 	if filename == "" {
@@ -523,7 +514,7 @@ func registerDeviceTools(r *ToolRegistry, cfg *Config) {
 func ensureDeviceOutputDir(cfg *Config) {
 	outDir := cfg.Device.OutputDir
 	if outDir == "" {
-		outDir = filepath.Join(cfg.baseDir, "outputs")
+		outDir = filepath.Join(cfg.BaseDir, "outputs")
 	}
 	os.MkdirAll(outDir, 0o755)
 	logInfo("device actions enabled", "outputDir", outDir, "platform", runtime.GOOS)

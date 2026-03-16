@@ -28,7 +28,7 @@ func testFileManagerService(t *testing.T) (*storage.Service, string) {
 		HistoryDB:   dbPath,
 		FileManager: FileManagerConfig{Enabled: true, StorageDir: storageDir, MaxSizeMB: 10},
 	}
-	cfg.baseDir = dir
+	cfg.BaseDir = dir
 	return newFileManagerService(cfg), dir
 }
 
@@ -118,7 +118,7 @@ func TestStoreFileMaxSize(t *testing.T) {
 		HistoryDB:   dbPath,
 		FileManager: FileManagerConfig{Enabled: true, StorageDir: storageDir, MaxSizeMB: 1},
 	}
-	cfg.baseDir = dir
+	cfg.BaseDir = dir
 	svc := newFileManagerService(cfg)
 
 	bigData := make([]byte, 2*1024*1024) // 2 MB

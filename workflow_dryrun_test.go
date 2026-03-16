@@ -219,14 +219,13 @@ func TestDryRunStatusPrefix(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	cfg := &Config{
-		baseDir:               dir,
+		BaseDir:               dir,
 		HistoryDB:             dbPath,
 		DefaultModel:          "sonnet",
 		DefaultTimeout:        "5m",
 		DefaultPermissionMode: "plan",
 		DefaultWorkdir:        dir,
 		DefaultProvider:       "claude",
-		registry:              initProviders(&Config{}),
 	}
 	sem := make(chan struct{}, 4)
 
@@ -260,14 +259,13 @@ func TestShadowStatusPrefix(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	cfg := &Config{
-		baseDir:               dir,
+		BaseDir:               dir,
 		HistoryDB:             dbPath,
 		DefaultModel:          "sonnet",
 		DefaultTimeout:        "5m",
 		DefaultPermissionMode: "plan",
 		DefaultWorkdir:        dir,
 		DefaultProvider:       "claude",
-		registry:              initProviders(&Config{}),
 	}
 	sem := make(chan struct{}, 4)
 

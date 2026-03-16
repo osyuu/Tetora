@@ -11,14 +11,6 @@ import (
 	"sync"
 )
 
-// --- Config ---
-
-// DiscordReactionsConfig configures emoji lifecycle reactions for agent processing.
-type DiscordReactionsConfig struct {
-	Enabled bool              `json:"enabled,omitempty"`
-	Emojis  map[string]string `json:"emojis,omitempty"` // phase -> emoji override
-}
-
 // --- Default Phase Emojis ---
 
 // Lifecycle phases and their default emoji representations.

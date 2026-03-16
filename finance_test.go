@@ -669,12 +669,12 @@ func TestToolExpenseAdd_NotInitialized(t *testing.T) {
 
 func TestFinanceConfig_DefaultCurrency(t *testing.T) {
 	cfg := FinanceConfig{}
-	if got := cfg.defaultCurrencyOrTWD(); got != "TWD" {
+	if got := cfg.DefaultCurrencyOrTWD(); got != "TWD" {
 		t.Errorf("default currency: got %s, want TWD", got)
 	}
 
 	cfg.DefaultCurrency = "JPY"
-	if got := cfg.defaultCurrencyOrTWD(); got != "JPY" {
+	if got := cfg.DefaultCurrencyOrTWD(); got != "JPY" {
 		t.Errorf("custom currency: got %s, want JPY", got)
 	}
 }

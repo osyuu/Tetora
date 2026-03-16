@@ -9,17 +9,6 @@ import (
 	"strings"
 )
 
-// DockerConfig holds Docker sandbox settings for isolated execution.
-type DockerConfig struct {
-	Enabled  bool     `json:"enabled"`
-	Image    string   `json:"image,omitempty"`      // e.g. "tetora/sandbox:latest"
-	Network  string   `json:"network,omitempty"`    // "none" (default) | "host" | "bridge"
-	Memory   string   `json:"memory,omitempty"`     // e.g. "512m", "2g"
-	CPUs     string   `json:"cpus,omitempty"`       // e.g. "1.0", "2.0"
-	ReadOnly bool     `json:"readOnly,omitempty"`   // --read-only root filesystem
-	EnvPass  []string `json:"envPass,omitempty"`    // env var names to pass through
-}
-
 // buildDockerCmd wraps a claude CLI invocation in `docker run`.
 // The workdir is mounted at /workspace inside the container.
 // addDirs get unique mount points under /mnt/.

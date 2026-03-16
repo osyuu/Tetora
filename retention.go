@@ -15,25 +15,6 @@ import (
 
 // --- Retention Config ---
 
-type RetentionConfig struct {
-	History     int      `json:"history,omitempty"`     // days to keep job_runs (default 90)
-	Sessions    int      `json:"sessions,omitempty"`    // days to keep sessions (default 30)
-	AuditLog    int      `json:"auditLog,omitempty"`    // days to keep audit_log (default 365)
-	Logs        int      `json:"logs,omitempty"`        // days to keep log files (default 14)
-	Workflows   int      `json:"workflows,omitempty"`   // days to keep workflow_runs (default 90)
-	Reflections int      `json:"reflections,omitempty"` // days to keep reflections (default 60)
-	SLA         int      `json:"sla,omitempty"`         // days to keep sla_checks (default 90)
-	TrustEvents int      `json:"trustEvents,omitempty"` // days to keep trust_events (default 90)
-	Handoffs    int      `json:"handoffs,omitempty"`    // days to keep handoffs/agent_messages (default 60)
-	Queue       int      `json:"queue,omitempty"`       // days to keep offline_queue items (default 7)
-	Versions    int      `json:"versions,omitempty"`    // days to keep config_versions (default 180)
-	Outputs     int      `json:"outputs,omitempty"`     // days to keep output files (default 30)
-	Uploads     int      `json:"uploads,omitempty"`     // days to keep upload files (default 7)
-	Memory         int      `json:"memory,omitempty"`         // days before stale memory archival (default 30)
-	ClaudeSessions int      `json:"claudeSessions,omitempty"` // days to keep Claude CLI session artifacts (default 3)
-	PIIPatterns    []string `json:"piiPatterns,omitempty"`     // regex patterns for PII redaction
-}
-
 // retentionDays returns the configured value, or the fallback if not set.
 func retentionDays(configured, fallback int) int {
 	if configured > 0 {
@@ -417,17 +398,17 @@ func runRetention(cfg *Config) []RetentionResult {
 
 	// Output files
 	days := retentionDays(cfg.Retention.Outputs, 30)
-	cleanupOutputs(cfg.baseDir, days)
+	cleanupOutputs(cfg.BaseDir, days)
 	results = append(results, RetentionResult{Table: "outputs", Deleted: -1})
 
 	// Upload files
 	days = retentionDays(cfg.Retention.Uploads, 7)
-	upload.Cleanup(filepath.Join(cfg.baseDir, "uploads"), days)
+	upload.Cleanup(filepath.Join(cfg.BaseDir, "uploads"), days)
 	results = append(results, RetentionResult{Table: "uploads", Deleted: -1})
 
 	// Log files
 	days = retentionDays(cfg.Retention.Logs, 14)
-	logDir := filepath.Join(cfg.baseDir, "logs")
+	logDir := filepath.Join(cfg.BaseDir, "logs")
 	n := cleanupLogFiles(logDir, days)
 	results = append(results, RetentionResult{Table: "log_files", Deleted: n})
 

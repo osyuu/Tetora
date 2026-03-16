@@ -37,14 +37,6 @@ type CanvasMessage struct {
 	Message   json.RawMessage `json:"message"`
 }
 
-// CanvasConfig configures the canvas engine.
-type CanvasConfig struct {
-	Enabled         bool   `json:"enabled,omitempty"`
-	MaxIframeHeight string `json:"maxIframeHeight,omitempty"`
-	AllowScripts    bool   `json:"allowScripts,omitempty"`
-	CSP             string `json:"csp,omitempty"`
-}
-
 // newCanvasEngine creates a new canvas engine.
 func newCanvasEngine(cfg *Config, mcpHost *MCPHost) *CanvasEngine {
 	return &CanvasEngine{

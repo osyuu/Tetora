@@ -47,7 +47,7 @@ func testConfigWithTools(tools ...*ToolDef) *Config {
 	for _, t := range tools {
 		r.tools[t.Name] = t
 	}
-	cfg.toolRegistry = r
+	cfg.Runtime.ToolRegistry = r
 	return cfg
 }
 
@@ -379,7 +379,7 @@ func TestConfigReload_Race(t *testing.T) {
 				return
 			default:
 				// Simulate reload by re-registering.
-				cfg.toolRegistry.Register(echo)
+				cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(echo)
 				reloads.Add(1)
 			}
 		}

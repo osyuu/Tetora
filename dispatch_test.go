@@ -755,10 +755,10 @@ func TestCitationInjection(t *testing.T) {
 
 func TestListFiltered_NilAllowed(t *testing.T) {
 	cfg := newTestConfig()
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 	// With nil allowed, should return all tools.
-	all := cfg.toolRegistry.List()
-	filtered := cfg.toolRegistry.ListFiltered(nil)
+	all := cfg.Runtime.ToolRegistry.(*ToolRegistry).List()
+	filtered := cfg.Runtime.ToolRegistry.(*ToolRegistry).ListFiltered(nil)
 	if len(filtered) != len(all) {
 		t.Errorf("ListFiltered(nil) returned %d tools, want %d", len(filtered), len(all))
 	}
@@ -766,10 +766,10 @@ func TestListFiltered_NilAllowed(t *testing.T) {
 
 func TestListFiltered_EmptyAllowed(t *testing.T) {
 	cfg := newTestConfig()
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 	// With empty map, should return all tools.
-	all := cfg.toolRegistry.List()
-	filtered := cfg.toolRegistry.ListFiltered(map[string]bool{})
+	all := cfg.Runtime.ToolRegistry.(*ToolRegistry).List()
+	filtered := cfg.Runtime.ToolRegistry.(*ToolRegistry).ListFiltered(map[string]bool{})
 	if len(filtered) != len(all) {
 		t.Errorf("ListFiltered(empty) returned %d tools, want %d", len(filtered), len(all))
 	}

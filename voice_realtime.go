@@ -19,22 +19,6 @@ import (
 	"time"
 )
 
-// --- Voice Realtime Config ---
-
-type VoiceWakeConfig struct {
-	Enabled   bool     `json:"enabled,omitempty"`
-	WakeWords []string `json:"wakeWords,omitempty"` // ["テトラ", "tetora", "hey tetora"]
-	Threshold float64  `json:"threshold,omitempty"` // VAD sensitivity (0.0-1.0), default 0.6
-}
-
-type VoiceRealtimeConfig struct {
-	Enabled  bool   `json:"enabled,omitempty"`
-	Provider string `json:"provider,omitempty"` // "openai"
-	Model    string `json:"model,omitempty"`    // "gpt-4o-realtime-preview"
-	APIKey   string `json:"apiKey,omitempty"`   // $ENV_VAR supported
-	Voice    string `json:"voice,omitempty"`    // "alloy", "shimmer", etc.
-}
-
 // --- Voice Realtime Engine ---
 
 // VoiceRealtimeEngine manages wake word detection and OpenAI Realtime API relay.
@@ -249,7 +233,7 @@ func (vre *VoiceRealtimeEngine) handleRealtimeWebSocket(w http.ResponseWriter, r
 		ctx:          ctx,
 		cancel:       cancel,
 		voiceEngine:  vre.voiceEngine,
-		toolRegistry: vre.cfg.toolRegistry,
+		toolRegistry: vre.cfg.Runtime.ToolRegistry.(*ToolRegistry),
 	}
 
 	vre.sessions.Store(sessionID, sess)

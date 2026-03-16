@@ -451,15 +451,10 @@ func (s *mcpBridgeServer) errorResponse(id int, code int, msg string) jsonRPCRes
 
 // --- MCP Bridge Config File Generation ---
 
-// MCPBridgeConfig holds configuration for the MCP bridge.
-type MCPBridgeConfig struct {
-	Enabled bool `json:"enabled,omitempty"` // default: true
-}
-
 // generateMCPBridgeConfig creates the ~/.tetora/mcp/bridge.json config file
 // that Claude Code uses to connect to the Tetora MCP server.
 func generateMCPBridgeConfig(cfg *Config) error {
-	baseDir := cfg.baseDir
+	baseDir := cfg.BaseDir
 	if baseDir == "" {
 		homeDir, _ := os.UserHomeDir()
 		baseDir = filepath.Join(homeDir, ".tetora")

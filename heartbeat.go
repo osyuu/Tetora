@@ -9,50 +9,6 @@ import (
 
 // --- Agent Heartbeat / Self-healing ---
 
-// HeartbeatConfig configures the agent heartbeat monitor.
-type HeartbeatConfig struct {
-	Enabled          bool   `json:"enabled,omitempty"`          // enable heartbeat monitoring (default false)
-	Interval         string `json:"interval,omitempty"`         // check interval (default "30s")
-	StallThreshold   string `json:"stallThreshold,omitempty"`   // no output for this duration = stalled (default "5m")
-	TimeoutWarnRatio float64 `json:"timeoutWarnRatio,omitempty"` // warn when elapsed > ratio * timeout (default 0.8)
-	AutoCancel       bool   `json:"autoCancel,omitempty"`       // cancel tasks stalled longer than 2x stallThreshold
-	NotifyOnStall    bool   `json:"notifyOnStall,omitempty"`    // send notification when a task stalls (default true)
-}
-
-func (c HeartbeatConfig) intervalOrDefault() time.Duration {
-	if c.Interval != "" {
-		if d, err := time.ParseDuration(c.Interval); err == nil && d > 0 {
-			return d
-		}
-	}
-	return 30 * time.Second
-}
-
-func (c HeartbeatConfig) stallThresholdOrDefault() time.Duration {
-	if c.StallThreshold != "" {
-		if d, err := time.ParseDuration(c.StallThreshold); err == nil && d > 0 {
-			return d
-		}
-	}
-	return 5 * time.Minute
-}
-
-func (c HeartbeatConfig) timeoutWarnRatioOrDefault() float64 {
-	if c.TimeoutWarnRatio > 0 && c.TimeoutWarnRatio < 1 {
-		return c.TimeoutWarnRatio
-	}
-	return 0.8
-}
-
-func (c HeartbeatConfig) notifyOnStallOrDefault() bool {
-	// Default true when heartbeat is enabled.
-	// The JSON zero value (false) means "not explicitly set" — we default to true.
-	// To explicitly disable, user must set notifyOnStall: false AND we check Enabled.
-	// Since Go can't distinguish "not set" from "set to false" for bool,
-	// we always notify unless autoCancel handles it silently.
-	return c.NotifyOnStall || (!c.NotifyOnStall && !c.AutoCancel)
-}
-
 // HeartbeatMonitor periodically checks running tasks for signs of being stuck.
 type HeartbeatMonitor struct {
 	cfg      HeartbeatConfig
@@ -89,14 +45,14 @@ func newHeartbeatMonitor(cfg HeartbeatConfig, state *dispatchState, notifyFn fun
 
 // Start begins the heartbeat monitor loop. Blocks until ctx is cancelled.
 func (h *HeartbeatMonitor) Start(ctx context.Context) {
-	interval := h.cfg.intervalOrDefault()
+	interval := h.cfg.IntervalOrDefault()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	logInfo("heartbeat monitor started",
 		"interval", interval.String(),
-		"stallThreshold", h.cfg.stallThresholdOrDefault().String(),
-		"timeoutWarnRatio", fmt.Sprintf("%.0f%%", h.cfg.timeoutWarnRatioOrDefault()*100),
+		"stallThreshold", h.cfg.StallThresholdOrDefault().String(),
+		"timeoutWarnRatio", fmt.Sprintf("%.0f%%", h.cfg.TimeoutWarnRatioOrDefault()*100),
 		"autoCancel", h.cfg.AutoCancel)
 
 	for {
@@ -148,8 +104,8 @@ func (h *HeartbeatMonitor) check() {
 	h.stats.LastCheck = time.Now()
 	h.mu.Unlock()
 
-	stallThreshold := h.cfg.stallThresholdOrDefault()
-	warnRatio := h.cfg.timeoutWarnRatioOrDefault()
+	stallThreshold := h.cfg.StallThresholdOrDefault()
+	warnRatio := h.cfg.TimeoutWarnRatioOrDefault()
 	now := time.Now()
 
 	h.state.mu.Lock()
@@ -226,7 +182,7 @@ func (h *HeartbeatMonitor) check() {
 				})
 
 				// Notify.
-				if h.notifyFn != nil && h.cfg.notifyOnStallOrDefault() {
+				if h.notifyFn != nil && h.cfg.NotifyOnStallOrDefault() {
 					h.notifyFn(fmt.Sprintf("Agent heartbeat alert: task %s (%s) has stalled — no output for %s",
 						shortID, t.name, silent.Round(time.Second)))
 				}
@@ -299,7 +255,7 @@ func (h *HeartbeatMonitor) check() {
 					// We emit this warning when elapsed first crosses warnRatio * timeout.
 					// Since check() runs periodically, we allow a window of 2 intervals.
 					boundary := time.Duration(float64(timeout) * warnRatio)
-					if elapsed-boundary < 2*h.cfg.intervalOrDefault() {
+					if elapsed-boundary < 2*h.cfg.IntervalOrDefault() {
 						h.mu.Lock()
 						h.stats.TimeoutWarnings++
 						h.mu.Unlock()

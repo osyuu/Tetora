@@ -10,11 +10,6 @@ import (
 
 // --- P29.2: Time Tracking ---
 
-// TimeTrackingConfig holds configuration for time tracking.
-type TimeTrackingConfig struct {
-	Enabled bool `json:"enabled"`
-}
-
 // globalTimeTracking is the singleton time tracking service.
 var globalTimeTracking *TimeTrackingService
 

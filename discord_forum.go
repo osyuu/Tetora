@@ -9,15 +9,6 @@ import (
 	"time"
 )
 
-// --- Config ---
-
-// DiscordForumBoardConfig configures a Discord Forum channel as a Kanban task board.
-type DiscordForumBoardConfig struct {
-	Enabled        bool              `json:"enabled,omitempty"`
-	ForumChannelID string            `json:"forumChannelId,omitempty"` // Discord Forum channel ID
-	Tags           map[string]string `json:"tags,omitempty"`           // status -> tag_id mapping
-}
-
 // --- Status Constants ---
 
 const (
@@ -210,7 +201,7 @@ func (fb *discordForumBoard) handleAssign(threadID, guildID, role string) error 
 
 	// Bind thread to agent via P14.2 thread binding store.
 	if fb.bot.threads != nil && fb.bot.cfg.Discord.ThreadBindings.Enabled {
-		ttl := fb.bot.cfg.Discord.ThreadBindings.threadBindingsTTL()
+		ttl := fb.bot.cfg.Discord.ThreadBindings.ThreadBindingsTTL()
 		sessionID := fb.bot.threads.bind(guildID, threadID, role, ttl)
 		logInfo("discord forum thread assigned",
 			"thread", threadID, "agent", role, "session", sessionID)

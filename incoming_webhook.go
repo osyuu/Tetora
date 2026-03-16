@@ -13,20 +13,6 @@ import (
 
 // --- Incoming Webhook Types ---
 
-// IncomingWebhookConfig defines an incoming webhook that triggers agent execution.
-type IncomingWebhookConfig struct {
-	Agent     string `json:"agent"`               // target agent for dispatch
-	Template string `json:"template,omitempty"`  // prompt template with {{payload.xxx}} placeholders
-	Secret   string `json:"secret,omitempty"`    // $ENV_VAR supported; HMAC-SHA256 signature verification
-	Filter   string `json:"filter,omitempty"`    // simple condition: "payload.action == 'opened'"
-	Workflow string `json:"workflow,omitempty"`  // workflow name to trigger instead of dispatch
-	Enabled  *bool  `json:"enabled,omitempty"`   // default true
-}
-
-func (c IncomingWebhookConfig) isEnabled() bool {
-	return webhook.Config{Enabled: c.Enabled}.IsEnabled()
-}
-
 // IncomingWebhookResult is the response from processing an incoming webhook.
 type IncomingWebhookResult struct {
 	Name     string `json:"name"`
@@ -86,7 +72,7 @@ func handleIncomingWebhook(ctx context.Context, cfg *Config, name string, r *htt
 		}
 	}
 
-	if !whCfg.isEnabled() {
+	if !whCfg.IsEnabled() {
 		return IncomingWebhookResult{Name: name, Status: "disabled"}
 	}
 

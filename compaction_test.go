@@ -56,17 +56,17 @@ func TestCompactionConfig_Defaults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.config.maxMessages(); got != tt.want["maxMessages"] {
-				t.Errorf("maxMessages() = %v, want %v", got, tt.want["maxMessages"])
+			if got := compactionMaxMessages(tt.config); got != tt.want["maxMessages"] {
+				t.Errorf("compactionMaxMessages() = %v, want %v", got, tt.want["maxMessages"])
 			}
-			if got := tt.config.compactTo(); got != tt.want["compactTo"] {
-				t.Errorf("compactTo() = %v, want %v", got, tt.want["compactTo"])
+			if got := compactionCompactTo(tt.config); got != tt.want["compactTo"] {
+				t.Errorf("compactionCompactTo() = %v, want %v", got, tt.want["compactTo"])
 			}
-			if got := tt.config.model(); got != tt.want["model"] {
-				t.Errorf("model() = %v, want %v", got, tt.want["model"])
+			if got := compactionModel(tt.config); got != tt.want["model"] {
+				t.Errorf("compactionModel() = %v, want %v", got, tt.want["model"])
 			}
-			if got := tt.config.maxCost(); got != tt.want["maxCost"] {
-				t.Errorf("maxCost() = %v, want %v", got, tt.want["maxCost"])
+			if got := compactionMaxCost(tt.config); got != tt.want["maxCost"] {
+				t.Errorf("compactionMaxCost() = %v, want %v", got, tt.want["maxCost"])
 			}
 		})
 	}

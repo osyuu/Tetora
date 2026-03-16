@@ -28,15 +28,6 @@ import (
 	"tetora/internal/storage"
 )
 
-// --- Config type aliases ---
-
-type GmailConfig = gmail.Config
-type SpotifyConfig = spotify.Config
-type TwitterConfig = twitter.Config
-type PodcastConfig = podcast.Config
-type HomeAssistantConfig = homeassistant.Config
-type NotesConfig = notes.Config
-
 // --- Service type aliases ---
 
 type GmailService = gmail.Service
@@ -236,7 +227,7 @@ func newNotesService(cfg *Config) *NotesService {
 			return storeEmbedding(cfg.HistoryDB, "notes", name, content, vec, meta)
 		}
 	}
-	return notes.New(cfg.Notes, cfg.baseDir, cfg.Embedding.Enabled, embedFn, logInfo, logWarn, logDebug)
+	return notes.New(cfg.Notes, cfg.BaseDir, cfg.Embedding.Enabled, embedFn, logInfo, logWarn, logDebug)
 }
 
 // Global notes service with thread-safe access (matches original pattern).

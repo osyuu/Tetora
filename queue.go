@@ -9,31 +9,6 @@ import (
 	"time"
 )
 
-// --- Offline Queue Config ---
-
-// OfflineQueueConfig configures the offline task queue.
-type OfflineQueueConfig struct {
-	Enabled  bool   `json:"enabled,omitempty"`  // default: true when circuitBreaker is configured
-	TTL      string `json:"ttl,omitempty"`      // max time in queue before expiry (default "1h")
-	MaxItems int    `json:"maxItems,omitempty"` // max queued items (default 100)
-}
-
-func (c OfflineQueueConfig) ttlOrDefault() time.Duration {
-	if c.TTL != "" {
-		if d, err := time.ParseDuration(c.TTL); err == nil && d > 0 {
-			return d
-		}
-	}
-	return 1 * time.Hour
-}
-
-func (c OfflineQueueConfig) maxItemsOrDefault() int {
-	if c.MaxItems > 0 {
-		return c.MaxItems
-	}
-	return 100
-}
-
 // --- Queue Item ---
 
 // QueueItem represents a task buffered in the offline queue.
@@ -337,11 +312,11 @@ const maxQueueRetries = 3
 
 // anyProviderAvailable checks if at least one provider's circuit allows requests.
 func (d *queueDrainer) anyProviderAvailable() bool {
-	if d.cfg.circuits == nil {
+	if d.cfg.Runtime.CircuitRegistry == nil {
 		return true // no circuit breaker = always available
 	}
 	for name := range d.cfg.Providers {
-		cb := d.cfg.circuits.Get(name)
+		cb := d.cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(name)
 		if cb.State() != CircuitOpen {
 			return true
 		}

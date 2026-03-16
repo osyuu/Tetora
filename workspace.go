@@ -7,18 +7,6 @@ import (
 
 // --- Workspace Types ---
 
-// WorkspaceConfig defines the isolated workspace for an agent.
-type WorkspaceConfig struct {
-	Dir        string       `json:"dir,omitempty"`        // workspace directory path
-	SoulFile   string       `json:"soulFile,omitempty"`   // agent personality file
-	MCPServers []string     `json:"mcpServers,omitempty"` // allowed MCP server names
-	Sandbox    *SandboxMode `json:"sandbox,omitempty"`    // sandbox mode override
-}
-
-// SandboxMode controls whether the agent runs in a sandboxed environment.
-type SandboxMode struct {
-	Mode string `json:"mode"` // "off", "on", "non-main"
-}
 
 // SessionScope defines trust and tool constraints per session type.
 type SessionScope struct {
@@ -111,12 +99,12 @@ func initDirectories(cfg *Config) error {
 		filepath.Join(cfg.RuntimeDir, "security"),
 		filepath.Join(cfg.RuntimeDir, "cron-runs"),
 		// Databases
-		filepath.Join(cfg.baseDir, "dbs"),
+		filepath.Join(cfg.BaseDir, "dbs"),
 		// Vault (import snapshots)
 		cfg.VaultDir,
 		// Media assets
-		filepath.Join(cfg.baseDir, "media"),
-		filepath.Join(cfg.baseDir, "media", "sprites"),
+		filepath.Join(cfg.BaseDir, "media"),
+		filepath.Join(cfg.BaseDir, "media", "sprites"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -131,7 +119,7 @@ func initDirectories(cfg *Config) error {
 		}
 	}
 	// Write default sprite config if not present.
-	if err := initSpriteConfig(filepath.Join(cfg.baseDir, "media", "sprites")); err != nil {
+	if err := initSpriteConfig(filepath.Join(cfg.BaseDir, "media", "sprites")); err != nil {
 		logWarn("sprite config init failed", "error", err)
 	}
 

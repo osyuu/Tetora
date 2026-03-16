@@ -322,7 +322,7 @@ func buildProviderRequest(cfg *Config, task Task, agentName, providerName string
 	}
 
 	if task.MCP != "" {
-		if mcpPath, ok := cfg.mcpPaths[task.MCP]; ok {
+		if mcpPath, ok := cfg.MCPPaths[task.MCP]; ok {
 			req.MCPPath = mcpPath
 		}
 	}
@@ -338,8 +338,8 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 
 	var lastErr string
 	for i, providerName := range candidates {
-		if cfg.circuits != nil {
-			cb := cfg.circuits.Get(providerName)
+		if cfg.Runtime.CircuitRegistry != nil {
+			cb := cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(providerName)
 			if !cb.Allow() {
 				logDebugCtx(ctx, "circuit open, skipping provider", "provider", providerName)
 				if i == 0 && len(candidates) > 1 {
@@ -367,8 +367,8 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 
 		if errMsg != "" {
 			if provider.IsTransientError(errMsg) {
-				if cfg.circuits != nil {
-					cfg.circuits.Get(providerName).RecordFailure()
+				if cfg.Runtime.CircuitRegistry != nil {
+					cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(providerName).RecordFailure()
 				}
 				logWarnCtx(ctx, "provider transient error", "provider", providerName, "error", errMsg)
 				lastErr = fmt.Sprintf("provider %s: %s", providerName, errMsg)
@@ -390,8 +390,8 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 		}
 
 		if errMsg == "" {
-			if cfg.circuits != nil {
-				cfg.circuits.Get(providerName).RecordSuccess()
+			if cfg.Runtime.CircuitRegistry != nil {
+				cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(providerName).RecordSuccess()
 			}
 			if result == nil {
 				result = &provider.Result{}

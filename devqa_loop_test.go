@@ -20,7 +20,7 @@ func TestSmartDispatchMaxRetriesOrDefault(t *testing.T) {
 	}
 	for _, tt := range tests {
 		c := SmartDispatchConfig{MaxRetries: tt.input}
-		got := c.maxRetriesOrDefault()
+		got := c.MaxRetriesOrDefault()
 		if got != tt.want {
 			t.Errorf("SmartDispatchConfig{MaxRetries: %d}.maxRetriesOrDefault() = %d, want %d", tt.input, got, tt.want)
 		}
@@ -144,8 +144,8 @@ func TestReviewLoopConfig(t *testing.T) {
 	if !cfg.ReviewLoop {
 		t.Error("ReviewLoop should be true")
 	}
-	if cfg.maxRetriesOrDefault() != 2 {
-		t.Errorf("maxRetriesOrDefault() = %d, want 2", cfg.maxRetriesOrDefault())
+	if cfg.MaxRetriesOrDefault() != 2 {
+		t.Errorf("MaxRetriesOrDefault() = %d, want 2", cfg.MaxRetriesOrDefault())
 	}
 
 	// Verify ReviewLoop field on TaskBoardDispatchConfig.

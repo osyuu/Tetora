@@ -9,7 +9,7 @@ import (
 
 func TestWorkflowLoadSave(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	w := &Workflow{
 		Name: "test-pipeline",
@@ -50,7 +50,7 @@ func TestWorkflowLoadSave(t *testing.T) {
 
 func TestWorkflowList(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	// Empty dir.
 	wfs, err := listWorkflows(cfg)
@@ -76,7 +76,7 @@ func TestWorkflowList(t *testing.T) {
 
 func TestWorkflowDelete(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	saveWorkflow(cfg, &Workflow{Name: "to-delete", Steps: []WorkflowStep{{ID: "s1", Prompt: "x"}}})
 

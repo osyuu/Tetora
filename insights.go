@@ -161,5 +161,5 @@ func insightsDBPath(cfg *Config) string {
 	if cfg.HistoryDB != "" {
 		return cfg.HistoryDB
 	}
-	return filepath.Join(cfg.baseDir, "history.db")
+	return filepath.Join(cfg.BaseDir, "history.db")
 }

@@ -11,36 +11,6 @@ import (
 
 // --- P17.3a: Daily Notes ---
 
-type DailyNotesConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Dir      string `json:"dir,omitempty"`      // default "~/.tetora/notes/"
-	Schedule string `json:"schedule,omitempty"` // cron expression, default "0 0 * * *"
-}
-
-// dirOrDefault returns the configured notes directory (default ~/.tetora/notes/).
-func (c DailyNotesConfig) dirOrDefault(baseDir string) string {
-	if c.Dir != "" {
-		dir := c.Dir
-		if strings.HasPrefix(dir, "~/") {
-			home, _ := os.UserHomeDir()
-			dir = filepath.Join(home, dir[2:])
-		}
-		if !filepath.IsAbs(dir) {
-			dir = filepath.Join(baseDir, dir)
-		}
-		return dir
-	}
-	return filepath.Join(baseDir, "notes")
-}
-
-// scheduleOrDefault returns the configured cron schedule (default "0 0 * * *" — daily at midnight).
-func (c DailyNotesConfig) scheduleOrDefault() string {
-	if c.Schedule != "" {
-		return c.Schedule
-	}
-	return "0 0 * * *"
-}
-
 // generateDailyNote creates a markdown summary of the previous day's activity.
 // Returns the markdown content and an error if query fails.
 func generateDailyNote(cfg *Config, date time.Time) (string, error) {
@@ -174,7 +144,7 @@ func writeDailyNote(cfg *Config, date time.Time, content string) error {
 		return nil
 	}
 
-	notesDir := cfg.DailyNotes.dirOrDefault(cfg.baseDir)
+	notesDir := cfg.DailyNotes.DirOrDefault(cfg.BaseDir)
 	if err := os.MkdirAll(notesDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir notes: %w", err)
 	}
@@ -197,7 +167,7 @@ func registerDailyNotesJob(ctx context.Context, cfg *Config, cronEngine *CronEng
 		return
 	}
 
-	schedule := cfg.DailyNotes.scheduleOrDefault()
+	schedule := cfg.DailyNotes.ScheduleOrDefault()
 	expr, err := parseCronExpr(schedule)
 	if err != nil {
 		logWarn("daily notes schedule invalid", "schedule", schedule, "error", err)

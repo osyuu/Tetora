@@ -349,7 +349,7 @@ func TestPluginToolRegistration(t *testing.T) {
 		},
 		Tools: ToolConfig{},
 	}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	host := NewPluginHost(cfg)
 	if err := host.Start("test-tools"); err != nil {
@@ -358,7 +358,7 @@ func TestPluginToolRegistration(t *testing.T) {
 	defer host.StopAll()
 
 	// Check tools are registered.
-	tool, ok := cfg.toolRegistry.Get("browser_navigate")
+	tool, ok := cfg.Runtime.ToolRegistry.(*ToolRegistry).Get("browser_navigate")
 	if !ok {
 		t.Fatal("browser_navigate should be registered")
 	}
@@ -366,7 +366,7 @@ func TestPluginToolRegistration(t *testing.T) {
 		t.Error("plugin tool should not be marked as builtin")
 	}
 
-	tool2, ok := cfg.toolRegistry.Get("browser_click")
+	tool2, ok := cfg.Runtime.ToolRegistry.(*ToolRegistry).Get("browser_click")
 	if !ok {
 		t.Fatal("browser_click should be registered")
 	}
@@ -477,20 +477,20 @@ func TestPluginConfigValidation(t *testing.T) {
 
 func TestPluginSearchTools(t *testing.T) {
 	cfg := &Config{Tools: ToolConfig{}}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	// Register some extra tools to search.
-	cfg.toolRegistry.Register(&ToolDef{
+	cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name:        "browser_navigate",
 		Description: "Navigate browser to a URL",
 		Handler:     func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) { return "", nil },
 	})
-	cfg.toolRegistry.Register(&ToolDef{
+	cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name:        "browser_screenshot",
 		Description: "Take a screenshot of the browser",
 		Handler:     func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) { return "", nil },
 	})
-	cfg.toolRegistry.Register(&ToolDef{
+	cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name:        "docker_exec",
 		Description: "Execute a command in Docker container",
 		Handler:     func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) { return "", nil },
@@ -531,10 +531,10 @@ func TestPluginSearchTools(t *testing.T) {
 
 func TestPluginExecuteTool(t *testing.T) {
 	cfg := &Config{Tools: ToolConfig{}}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	// Register a test tool.
-	cfg.toolRegistry.Register(&ToolDef{
+	cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name:        "test_echo",
 		Description: "Echo input back",
 		Handler: func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
@@ -568,21 +568,21 @@ func TestPluginExecuteTool(t *testing.T) {
 
 func TestPluginCodeModeThreshold(t *testing.T) {
 	cfg := &Config{Tools: ToolConfig{}}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	// Initially we have built-in tools (< threshold likely).
-	initialCount := len(cfg.toolRegistry.List())
+	initialCount := len(cfg.Runtime.ToolRegistry.(*ToolRegistry).List())
 
 	// Add tools until we exceed the threshold.
 	for i := 0; i <= codeModeTotalThreshold-initialCount+1; i++ {
-		cfg.toolRegistry.Register(&ToolDef{
+		cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 			Name:        fmt.Sprintf("extra_tool_%d", i),
 			Description: fmt.Sprintf("Extra tool %d", i),
 			Handler:     func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) { return "", nil },
 		})
 	}
 
-	if !shouldUseCodeMode(cfg.toolRegistry) {
+	if !shouldUseCodeMode(cfg.Runtime.ToolRegistry.(*ToolRegistry)) {
 		t.Error("should use code mode when tools > threshold")
 	}
 

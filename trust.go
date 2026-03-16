@@ -53,20 +53,6 @@ func nextTrustLevel(current string) string {
 
 // --- Trust Config ---
 
-// TrustConfig configures trust gradient behavior.
-type TrustConfig struct {
-	Enabled          bool `json:"enabled,omitempty"`
-	PromoteThreshold int  `json:"promoteThreshold,omitempty"` // consecutive successes before suggesting promotion (default 10)
-	AutoPromote      bool `json:"autoPromote,omitempty"`      // auto-promote without asking (default false, just suggest)
-}
-
-func (c TrustConfig) promoteThresholdOrDefault() int {
-	if c.PromoteThreshold > 0 {
-		return c.PromoteThreshold
-	}
-	return 10
-}
-
 // --- Trust Status ---
 
 // TrustStatus holds the trust state for a single agent.
@@ -212,7 +198,7 @@ func queryTrustEvents(dbPath, role string, limit int) ([]map[string]any, error) 
 func getTrustStatus(cfg *Config, role string) TrustStatus {
 	level := resolveTrustLevel(cfg, role)
 	consecutiveSuccess := queryConsecutiveSuccess(cfg.HistoryDB, role)
-	threshold := cfg.Trust.promoteThresholdOrDefault()
+	threshold := cfg.Trust.PromoteThresholdOrDefault()
 	next := nextTrustLevel(level)
 	promoteReady := next != "" && consecutiveSuccess >= threshold
 
@@ -298,7 +284,7 @@ func checkTrustPromotion(ctx context.Context, cfg *Config, agentName string) str
 	}
 
 	consecutiveSuccess := queryConsecutiveSuccess(cfg.HistoryDB, agentName)
-	threshold := cfg.Trust.promoteThresholdOrDefault()
+	threshold := cfg.Trust.PromoteThresholdOrDefault()
 
 	if consecutiveSuccess < threshold {
 		return ""

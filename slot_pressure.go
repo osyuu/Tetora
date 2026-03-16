@@ -14,17 +14,6 @@ import (
 // Non-interactive tasks wait in a poll queue when slots are scarce;
 // interactive tasks always acquire immediately but get a warning when pressure is high.
 
-// SlotPressureConfig is the JSON-serializable configuration.
-type SlotPressureConfig struct {
-	Enabled               bool   `json:"enabled,omitempty"`               // default false
-	ReservedSlots         int    `json:"reservedSlots,omitempty"`         // default 2
-	WarnThreshold         int    `json:"warnThreshold,omitempty"`         // default 3
-	NonInteractiveTimeout string `json:"nonInteractiveTimeout,omitempty"` // default "5m"
-	PollInterval          string `json:"pollInterval,omitempty"`          // default "2s"
-	MonitorEnabled        bool   `json:"monitorEnabled,omitempty"`        // default false
-	MonitorInterval       string `json:"monitorInterval,omitempty"`       // default "30s"
-}
-
 // AcquireResult is returned by AcquireSlot with optional warning text.
 type AcquireResult struct {
 	Warning string // non-empty when pressure is high (for interactive sessions)

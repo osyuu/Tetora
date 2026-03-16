@@ -14,59 +14,7 @@ import (
 
 // --- P16.3: Prompt Injection Defense v2 ---
 
-// InjectionDefenseConfig configures prompt injection defense layers.
-type InjectionDefenseConfig struct {
-	Level              string  `json:"level,omitempty"`              // "basic" | "structured" | "llm"
-	LLMJudgeProvider   string  `json:"llmJudgeProvider,omitempty"`   // provider for L3 judge (default "claude-api")
-	LLMJudgeThreshold  float64 `json:"llmJudgeThreshold,omitempty"`  // confidence threshold (default 0.8)
-	BlockOnSuspicious  bool    `json:"blockOnSuspicious,omitempty"`  // true = reject, false = warn only
-	CacheSize          int     `json:"cacheSize,omitempty"`          // max cached judge results (default 1000)
-	CacheTTL           string  `json:"cacheTTL,omitempty"`           // cache entry TTL (default "1h")
-	EnableFingerprint  bool    `json:"enableFingerprint,omitempty"`  // deduplicate identical inputs (default true)
-	FailOpen           bool    `json:"failOpen,omitempty"`           // if true, allow on judge failure (default false = fail-closed)
-}
 
-// levelOrDefault returns the configured defense level (default "basic").
-func (c InjectionDefenseConfig) levelOrDefault() string {
-	if c.Level != "" {
-		return c.Level
-	}
-	return "basic"
-}
-
-// llmJudgeProviderOrDefault returns the configured LLM judge provider (default "claude-api").
-func (c InjectionDefenseConfig) llmJudgeProviderOrDefault() string {
-	if c.LLMJudgeProvider != "" {
-		return c.LLMJudgeProvider
-	}
-	return "claude-api"
-}
-
-// llmJudgeThresholdOrDefault returns the configured threshold (default 0.8).
-func (c InjectionDefenseConfig) llmJudgeThresholdOrDefault() float64 {
-	if c.LLMJudgeThreshold > 0 {
-		return c.LLMJudgeThreshold
-	}
-	return 0.8
-}
-
-// cacheSizeOrDefault returns the configured cache size (default 1000).
-func (c InjectionDefenseConfig) cacheSizeOrDefault() int {
-	if c.CacheSize > 0 {
-		return c.CacheSize
-	}
-	return 1000
-}
-
-// cacheTTLOrDefault returns the configured cache TTL (default 1h).
-func (c InjectionDefenseConfig) cacheTTLOrDefault() time.Duration {
-	if c.CacheTTL != "" {
-		if d, err := time.ParseDuration(c.CacheTTL); err == nil {
-			return d
-		}
-	}
-	return time.Hour
-}
 
 // --- L1: Static Pattern Detection ---
 
@@ -284,8 +232,8 @@ var judgeCacheOnce sync.Once
 func getJudgeCache(cfg *Config) *judgeCache {
 	judgeCacheOnce.Do(func() {
 		globalJudgeCache = newJudgeCache(
-			cfg.Security.InjectionDefense.cacheSizeOrDefault(),
-			cfg.Security.InjectionDefense.cacheTTLOrDefault(),
+			cfg.Security.InjectionDefense.CacheSizeOrDefault(),
+			cfg.Security.InjectionDefense.CacheTTLOrDefault(),
 		)
 	})
 	return globalJudgeCache
@@ -344,8 +292,8 @@ Only flag clear injection attempts with high confidence.`
 	userPrompt := fmt.Sprintf("Analyze this input:\n\n%s", input)
 
 	// Call LLM judge.
-	providerName := cfg.Security.InjectionDefense.llmJudgeProviderOrDefault()
-	provider, err := cfg.registry.Get(providerName)
+	providerName := cfg.Security.InjectionDefense.LlmJudgeProviderOrDefault()
+	provider, err := cfg.Runtime.ProviderRegistry.(*providerRegistry).Get(providerName)
 	if err != nil {
 		return nil, fmt.Errorf("judge provider not available: %w", err)
 	}
@@ -403,15 +351,11 @@ Only flag clear injection attempts with high confidence.`
 
 // --- Unified Defense Entry Point ---
 
-// SecurityConfig holds all security-related configuration.
-type SecurityConfig struct {
-	InjectionDefense InjectionDefenseConfig `json:"injectionDefense,omitempty"`
-}
 
 // checkInjection performs multi-layer injection defense on user input.
 // Returns (isAllowed, modifiedPrompt, warningMessage, error).
 func checkInjection(ctx context.Context, cfg *Config, prompt string, agentName string) (bool, string, string, error) {
-	level := cfg.Security.InjectionDefense.levelOrDefault()
+	level := cfg.Security.InjectionDefense.LevelOrDefault()
 
 	// L1: Static pattern detection (always run, very fast).
 	if pattern, isSuspicious := detectStaticPatterns(prompt); isSuspicious {
@@ -446,7 +390,7 @@ func checkInjection(ctx context.Context, cfg *Config, prompt string, agentName s
 			return false, "", fmt.Sprintf("injection judge unavailable: %v", err), nil
 		}
 
-		threshold := cfg.Security.InjectionDefense.llmJudgeThresholdOrDefault()
+		threshold := cfg.Security.InjectionDefense.LlmJudgeThresholdOrDefault()
 
 		if !judgeResult.IsSafe && judgeResult.Confidence >= threshold {
 			logWarnCtx(ctx, "L3 judge flagged input", "confidence", judgeResult.Confidence,
@@ -474,7 +418,7 @@ func checkInjection(ctx context.Context, cfg *Config, prompt string, agentName s
 // applyInjectionDefense applies prompt injection defense to a task.
 // This is called in dispatch.go before task execution.
 func applyInjectionDefense(ctx context.Context, cfg *Config, task *Task) error {
-	if cfg.Security.InjectionDefense.levelOrDefault() == "basic" &&
+	if cfg.Security.InjectionDefense.LevelOrDefault() == "basic" &&
 	   !cfg.Security.InjectionDefense.BlockOnSuspicious {
 		// Basic mode with no blocking — skip for performance.
 		return nil

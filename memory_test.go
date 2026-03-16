@@ -21,7 +21,7 @@ func tempMemoryCfg(t *testing.T) *Config {
 	wsDir := filepath.Join(dir, "workspace")
 	os.MkdirAll(filepath.Join(wsDir, "memory"), 0o755)
 	return &Config{
-		baseDir:      dir,
+		BaseDir:      dir,
 		WorkspaceDir: wsDir,
 	}
 }

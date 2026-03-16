@@ -17,11 +17,11 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if cfg.toolRegistry == nil {
+		if cfg.Runtime.ToolRegistry == nil {
 			json.NewEncoder(w).Encode([]any{})
 			return
 		}
-		tools := cfg.toolRegistry.List()
+		tools := cfg.Runtime.ToolRegistry.(*ToolRegistry).List()
 		result := make([]map[string]any, 0, len(tools))
 		for _, t := range tools {
 			var schema map[string]any

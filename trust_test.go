@@ -390,12 +390,12 @@ func TestSaveRoleTrustLevel(t *testing.T) {
 
 func TestPromoteThresholdOrDefault(t *testing.T) {
 	cfg := TrustConfig{}
-	if v := cfg.promoteThresholdOrDefault(); v != 10 {
+	if v := cfg.PromoteThresholdOrDefault(); v != 10 {
 		t.Errorf("default = %d, want 10", v)
 	}
 
 	cfg = TrustConfig{PromoteThreshold: 20}
-	if v := cfg.promoteThresholdOrDefault(); v != 20 {
+	if v := cfg.PromoteThresholdOrDefault(); v != 20 {
 		t.Errorf("custom = %d, want 20", v)
 	}
 }
@@ -471,7 +471,7 @@ func TestTrustAPISetLevel(t *testing.T) {
 	}
 	data, _ := json.MarshalIndent(cfgJSON, "", "  ")
 	os.WriteFile(configPath, data, 0o644)
-	cfg.baseDir = dir
+	cfg.BaseDir = dir
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/trust/", func(w http.ResponseWriter, r *http.Request) {

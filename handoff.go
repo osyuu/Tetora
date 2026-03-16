@@ -512,7 +512,7 @@ func processAutoDelegations(ctx context.Context, cfg *Config, delegations []Auto
 			FromAgent:      fromAgent,
 			ToAgent:        d.Agent,
 			FromStepID:    fromStepID,
-			Context:       truncateStr(originalOutput, cfg.PromptBudget.contextMaxOrDefault()),
+			Context:       truncateStr(originalOutput, cfg.PromptBudget.ContextMaxOrDefault()),
 			Instruction:   d.Task,
 			Status:        "pending",
 			ToSessionID:   toSessionID,

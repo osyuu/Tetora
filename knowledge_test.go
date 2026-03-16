@@ -209,7 +209,7 @@ func TestKnowledgeDirHasFilesNonExistent(t *testing.T) {
 }
 
 func TestKnowledgeDir(t *testing.T) {
-	cfg := &Config{baseDir: "/tmp/tetora"}
+	cfg := &Config{BaseDir: "/tmp/tetora"}
 
 	if got := knowledgeDir(cfg); got != "/tmp/tetora/knowledge" {
 		t.Errorf("knowledgeDir (default) = %q, want %q", got, "/tmp/tetora/knowledge")

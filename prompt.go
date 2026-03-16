@@ -17,7 +17,7 @@ type PromptInfo struct {
 
 // promptsDir returns the prompts directory path, creating it if needed.
 func promptsDir(cfg *Config) string {
-	dir := filepath.Join(cfg.baseDir, "prompts")
+	dir := filepath.Join(cfg.BaseDir, "prompts")
 	os.MkdirAll(dir, 0o755)
 	return dir
 }

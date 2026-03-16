@@ -11,28 +11,6 @@ import (
 
 // --- P18.3: Workflow Trigger Engine ---
 
-// WorkflowTriggerConfig defines a trigger that automatically executes a workflow.
-type WorkflowTriggerConfig struct {
-	Name         string            `json:"name"`
-	WorkflowName string            `json:"workflowName"`
-	Enabled      *bool             `json:"enabled,omitempty"`
-	Trigger      TriggerSpec       `json:"trigger"`
-	Variables    map[string]string `json:"variables,omitempty"`
-	Cooldown     string            `json:"cooldown,omitempty"` // e.g. "5m", "1h"
-}
-
-func (t WorkflowTriggerConfig) isEnabled() bool {
-	return t.Enabled == nil || *t.Enabled
-}
-
-// TriggerSpec defines when and how a trigger fires.
-type TriggerSpec struct {
-	Type    string `json:"type"`              // "cron", "event", "webhook"
-	Cron    string `json:"cron,omitempty"`     // cron expression (5-field)
-	TZ      string `json:"tz,omitempty"`       // timezone for cron
-	Event   string `json:"event,omitempty"`    // SSE event type to match
-	Webhook string `json:"webhook,omitempty"`  // webhook path suffix
-}
 
 // TriggerInfo provides status information about a configured trigger.
 type TriggerInfo struct {
@@ -124,7 +102,7 @@ func (e *WorkflowTriggerEngine) Start(ctx context.Context) {
 
 	enabled := 0
 	for _, t := range e.triggers {
-		if t.isEnabled() {
+		if t.IsEnabled() {
 			enabled++
 		}
 	}
@@ -211,7 +189,7 @@ func (e *WorkflowTriggerEngine) checkCronTriggers(ctx context.Context) {
 	e.mu.RUnlock()
 
 	for _, t := range triggers {
-		if !t.isEnabled() || t.Trigger.Type != "cron" || t.Trigger.Cron == "" {
+		if !t.IsEnabled() || t.Trigger.Type != "cron" || t.Trigger.Cron == "" {
 			continue
 		}
 
@@ -282,7 +260,7 @@ func (e *WorkflowTriggerEngine) matchEventTriggers(ctx context.Context, event SS
 	e.mu.RUnlock()
 
 	for _, t := range triggers {
-		if !t.isEnabled() || t.Trigger.Type != "event" || t.Trigger.Event == "" {
+		if !t.IsEnabled() || t.Trigger.Type != "event" || t.Trigger.Event == "" {
 			continue
 		}
 
@@ -341,7 +319,7 @@ func (e *WorkflowTriggerEngine) HandleWebhookTrigger(triggerName string, payload
 		e.mu.Unlock()
 		return fmt.Errorf("webhook trigger %q not found", triggerName)
 	}
-	if !found.isEnabled() {
+	if !found.IsEnabled() {
 		e.mu.Unlock()
 		return fmt.Errorf("webhook trigger %q is disabled", triggerName)
 	}
@@ -474,7 +452,7 @@ func (e *WorkflowTriggerEngine) ListTriggers() []TriggerInfo {
 			Name:         t.Name,
 			WorkflowName: t.WorkflowName,
 			Type:         t.Trigger.Type,
-			Enabled:      t.isEnabled(),
+			Enabled:      t.IsEnabled(),
 			Cooldown:     t.Cooldown,
 		}
 
@@ -526,7 +504,7 @@ func (e *WorkflowTriggerEngine) FireTrigger(name string) error {
 	if found == nil {
 		return fmt.Errorf("trigger %q not found", name)
 	}
-	if !found.isEnabled() {
+	if !found.IsEnabled() {
 		return fmt.Errorf("trigger %q is disabled", name)
 	}
 

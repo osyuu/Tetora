@@ -9,11 +9,10 @@ import (
 )
 
 // Type aliases — root code continues to use bare names.
-type BudgetConfig = cost.BudgetConfig
+// BudgetConfig and AutoDowngradeConfig are aliased in config.go via internal/config.
 type GlobalBudget = cost.GlobalBudget
 type AgentBudget = cost.AgentBudget
 type WorkflowBudget = cost.WorkflowBudget
-type AutoDowngradeConfig = cost.AutoDowngradeConfig
 type DowngradeThreshold = cost.DowngradeThreshold
 type BudgetCheckResult = cost.BudgetCheckResult
 type BudgetStatus = cost.BudgetStatus

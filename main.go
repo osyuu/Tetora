@@ -239,7 +239,7 @@ func main() {
 	if cfg.Log && cfg.Logging.Level == "" {
 		cfg.Logging.Level = "debug"
 	}
-	defaultLogger = initLogger(cfg.Logging, cfg.baseDir)
+	defaultLogger = initLogger(cfg.Logging, cfg.BaseDir)
 
 	// Shared concurrency semaphore — limits total concurrent claude sessions.
 	sem := make(chan struct{}, cfg.MaxConcurrent)
@@ -250,14 +250,15 @@ func main() {
 
 	// Initialize slot pressure guard if enabled.
 	if cfg.SlotPressure.Enabled {
-		cfg.slotPressureGuard = &SlotPressureGuard{
+		cfg.Runtime.SlotPressureGuard = &SlotPressureGuard{
 			cfg:    cfg.SlotPressure,
 			sem:    sem,
 			semCap: cfg.MaxConcurrent,
 		}
+		spg := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard)
 		logInfo("slot pressure guard enabled",
-			"reserved", cfg.slotPressureGuard.reservedSlots(),
-			"warnThreshold", cfg.slotPressureGuard.warnThreshold())
+			"reserved", spg.reservedSlots(),
+			"warnThreshold", spg.warnThreshold())
 	}
 
 	state := newDispatchState()
@@ -270,7 +271,7 @@ func main() {
 
 	// Initialize hooks event receiver.
 	hookRecv := newHookReceiver(state.broker, cfg)
-	cfg.hookRecv = hookRecv
+	cfg.Runtime.HookRecv = hookRecv
 
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
@@ -395,7 +396,7 @@ func main() {
 				logWarn("init finance tables failed", "error", err)
 			} else {
 				app.Finance = newFinanceService(cfg)
-				logInfo("finance service initialized", "defaultCurrency", cfg.Finance.defaultCurrencyOrTWD())
+				logInfo("finance service initialized", "defaultCurrency", cfg.Finance.DefaultCurrencyOrTWD())
 			}
 		}
 
@@ -405,7 +406,7 @@ func main() {
 				logWarn("init task_manager tables failed", "error", err)
 			} else {
 				app.TaskManager = newTaskManagerService(cfg)
-				logInfo("task manager initialized", "defaultProject", cfg.TaskManager.defaultProjectOrInbox())
+				logInfo("task manager initialized", "defaultProject", cfg.TaskManager.DefaultProjectOrInbox())
 			}
 		}
 
@@ -415,7 +416,7 @@ func main() {
 				logWarn("init file_manager tables failed", "error", err)
 			} else {
 				app.FileManager = newFileManagerService(cfg)
-				logInfo("file manager initialized", "storageDir", cfg.FileManager.storageDirOrDefault(cfg.baseDir))
+				logInfo("file manager initialized", "storageDir", cfg.FileManager.StorageDirOrDefault(cfg.BaseDir))
 			}
 		}
 
@@ -443,7 +444,7 @@ func main() {
 					logWarn("init family service failed", "error", err)
 				} else {
 					app.Family = svc
-					logInfo("family mode initialized", "maxUsers", cfg.Family.maxUsersOrDefault())
+					logInfo("family mode initialized", "maxUsers", cfg.Family.MaxUsersOrDefault())
 				}
 			}
 		}
@@ -525,21 +526,21 @@ func main() {
 		}
 
 		// Init outputs directory + cleanup.
-		os.MkdirAll(filepath.Join(cfg.baseDir, "outputs"), 0o755)
-		cleanupOutputs(cfg.baseDir, retentionDays(cfg.Retention.Outputs, 30))
+		os.MkdirAll(filepath.Join(cfg.BaseDir, "outputs"), 0o755)
+		cleanupOutputs(cfg.BaseDir, retentionDays(cfg.Retention.Outputs, 30))
 
 		// Init uploads directory + cleanup.
-		uploadDir := upload.InitDir(cfg.baseDir)
+		uploadDir := upload.InitDir(cfg.BaseDir)
 		upload.Cleanup(uploadDir, retentionDays(cfg.Retention.Uploads, 7))
 		logInfo("uploads dir initialized", "path", uploadDir)
 
 		// Init knowledge base directory.
-		knowledge.InitDir(cfg.baseDir)
+		knowledge.InitDir(cfg.BaseDir)
 		logInfo("knowledge base initialized", "path", cfg.KnowledgeDir)
 
 		// Init tool registry.
-		cfg.toolRegistry = NewToolRegistry(cfg)
-		logInfo("tool registry initialized", "tools", len(cfg.toolRegistry.List()))
+		cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
+		logInfo("tool registry initialized", "tools", len(cfg.Runtime.ToolRegistry.(*ToolRegistry).List()))
 
 		// Init directories for agents, workspace, and runtime.
 		if err := initDirectories(cfg); err != nil {
@@ -561,7 +562,7 @@ func main() {
 		if cfg.Ops.BackupSchedule != "" && cfg.HistoryDB != "" {
 			bsched := newBackupScheduler(cfg)
 			bsched.Start(ctx)
-			logInfo("backup scheduler started", "schedule", cfg.Ops.BackupSchedule, "retain", cfg.Ops.backupRetainOrDefault())
+			logInfo("backup scheduler started", "schedule", cfg.Ops.BackupSchedule, "retain", cfg.Ops.BackupRetainOrDefault())
 		}
 
 		// Periodic cleanup (daily): uses retention config for all tables.
@@ -638,8 +639,8 @@ func main() {
 		}
 
 		// Startup disk check.
-		if cfg.baseDir != "" {
-			free := diskFreeBytes(cfg.baseDir)
+		if cfg.BaseDir != "" {
+			free := diskFreeBytes(cfg.BaseDir)
 			freeGB := float64(free) / (1024 * 1024 * 1024)
 			budgetGB := cfg.DiskBudgetGB
 			if budgetGB <= 0 {
@@ -654,12 +655,13 @@ func main() {
 		}
 
 		// Wire slot pressure guard to notification chain and SSE broker.
-		if cfg.slotPressureGuard != nil {
-			cfg.slotPressureGuard.notifyFn = notifyFn
-			cfg.slotPressureGuard.broker = state.broker
+		if cfg.Runtime.SlotPressureGuard != nil {
+			spg := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard)
+			spg.notifyFn = notifyFn
+			spg.broker = state.broker
 			if cfg.SlotPressure.MonitorEnabled {
-				go cfg.slotPressureGuard.RunMonitor(ctx)
-				logInfo("slot pressure monitor started", "interval", cfg.slotPressureGuard.monitorInterval().String())
+				go spg.RunMonitor(ctx)
+				logInfo("slot pressure monitor started", "interval", spg.monitorInterval().String())
 			}
 		}
 
@@ -753,10 +755,10 @@ func main() {
 				childSem: childSem,
 				state:    state,
 				notifyFn: notifyFn,
-				ttl:      cfg.OfflineQueue.ttlOrDefault(),
+				ttl:      cfg.OfflineQueue.TtlOrDefault(),
 			}
 			go drainer.run(ctx)
-			logInfo("offline queue enabled", "ttl", drainer.ttl.String(), "maxItems", cfg.OfflineQueue.maxItemsOrDefault())
+			logInfo("offline queue enabled", "ttl", drainer.ttl.String(), "maxItems", cfg.OfflineQueue.MaxItemsOrDefault())
 		}
 
 		// Initialize Slack bot (uses HTTP push, no polling needed).
@@ -781,8 +783,8 @@ func main() {
 		var discordBot *DiscordBot
 		if cfg.Discord.Enabled && cfg.Discord.BotToken != "" {
 			discordBot = newDiscordBot(cfg, state, sem, childSem, cron)
-			state.discordBot = discordBot // P14.1: store for interaction handler
-			cfg.discordBot = discordBot   // provider approval routing
+			state.discordBot = discordBot       // P14.1: store for interaction handler
+			cfg.Runtime.DiscordBot = discordBot // provider approval routing
 			logInfo("discord bot enabled")
 
 			// Wire Discord into notification chain.
@@ -798,7 +800,7 @@ func main() {
 		// Start MCP host.
 		var mcpHost *MCPHost
 		if len(cfg.MCPServers) > 0 {
-			mcpHost = newMCPHost(cfg, cfg.toolRegistry)
+			mcpHost = newMCPHost(cfg, cfg.Runtime.ToolRegistry.(*ToolRegistry))
 			if err := mcpHost.Start(ctx); err != nil {
 				logError("MCP host start failed: %v", err)
 			} else {
@@ -908,7 +910,7 @@ func main() {
 			} else {
 				app.Reminder = newReminderEngine(cfg, notifyFn)
 				app.Reminder.Start()
-				logInfo("reminder engine started", "checkInterval", cfg.Reminders.checkIntervalOrDefault().String(), "maxPerUser", cfg.Reminders.maxPerUserOrDefault())
+				logInfo("reminder engine started", "checkInterval", cfg.Reminders.CheckIntervalOrDefault().String(), "maxPerUser", cfg.Reminders.MaxPerUserOrDefault())
 			}
 		}
 
@@ -916,7 +918,7 @@ func main() {
 		if cfg.Notes.Enabled {
 			notesSvc := newNotesService(cfg)
 			setGlobalNotesService(notesSvc)
-			logInfo("notes service initialized", "vault", cfg.Notes.VaultPathResolved(cfg.baseDir))
+			logInfo("notes service initialized", "vault", cfg.Notes.VaultPathResolved(cfg.BaseDir))
 		}
 
 		// --- P19.5: Unified Presence/Typing Indicators --- Initialize presence manager.
@@ -1056,7 +1058,7 @@ func main() {
 				srvInstance.cfgMu.RLock()
 				oldCfg := srvInstance.cfg
 				srvInstance.cfgMu.RUnlock()
-				newCfg.toolRegistry = oldCfg.toolRegistry
+				newCfg.Runtime.ToolRegistry = oldCfg.Runtime.ToolRegistry
 
 				// Log config diff.
 				logConfigDiff(oldCfg, newCfg)

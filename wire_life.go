@@ -104,7 +104,7 @@ func makeLifeDB() lifedb.DB {
 func newFinanceService(cfg *Config) *FinanceService {
 	encFn := func(v string) string { return encryptField(cfg, v) }
 	decFn := func(v string) string { return decryptField(cfg, v) }
-	return finance.New(cfg.HistoryDB, cfg.Finance.defaultCurrencyOrTWD(), makeLifeDB(), encFn, decFn)
+	return finance.New(cfg.HistoryDB, cfg.Finance.DefaultCurrencyOrTWD(), makeLifeDB(), encFn, decFn)
 }
 
 func initFinanceDB(dbPath string) error {
@@ -176,7 +176,7 @@ func newPriceWatchEngine(cfg *Config) *PriceWatchEngine {
 
 func newReminderEngine(cfg *Config, notifyFn func(string)) *ReminderEngine {
 	internalCfg := reminder.Config{
-		CheckInterval: cfg.Reminders.checkIntervalOrDefault(),
+		CheckInterval: cfg.Reminders.CheckIntervalOrDefault(),
 		MaxPerUser:    cfg.Reminders.MaxPerUser,
 	}
 	return reminder.New(cfg.HistoryDB, internalCfg, makeLifeDB(), notifyFn, nextCronTime)
@@ -195,7 +195,7 @@ func initTimeTrackingDB(dbPath string) error {
 }
 
 func newDailyNotesService(cfg *Config) *DailyNotesService {
-	notesDir := cfg.DailyNotes.dirOrDefault(cfg.baseDir)
+	notesDir := cfg.DailyNotes.DirOrDefault(cfg.BaseDir)
 	return dailynotes.New(cfg.HistoryDB, notesDir, makeLifeDB())
 }
 
@@ -271,7 +271,7 @@ func initUserProfileDB(dbPath string) error {
 
 func newTaskManagerService(cfg *Config) *TaskManagerService {
 	return tasks.New(cfg.HistoryDB, tasks.Config{
-		DefaultProject: cfg.TaskManager.defaultProjectOrInbox(),
+		DefaultProject: cfg.TaskManager.DefaultProjectOrInbox(),
 	}, makeLifeDB(), newUUID)
 }
 

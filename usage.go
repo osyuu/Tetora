@@ -7,12 +7,6 @@ import (
 
 // --- P18.1: Cost Dashboard + Usage Tracking ---
 
-// UsageConfig configures the cost footer displayed on channel responses.
-type UsageConfig struct {
-	ShowFooter     bool   `json:"showFooter,omitempty"`     // append cost footer to channel responses
-	FooterTemplate string `json:"footerTemplate,omitempty"` // default: "tokensIn in/tokensOut out ~$cost"
-}
-
 // --- Usage Summary Types ---
 
 // UsageSummary is the aggregate cost/token summary for a time period.

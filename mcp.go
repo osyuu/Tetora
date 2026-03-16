@@ -24,8 +24,8 @@ type MCPConfigInfo struct {
 // --- CRUD ---
 
 func listMCPConfigs(cfg *Config) []MCPConfigInfo {
-	cfg.mcpMu.RLock()
-	defer cfg.mcpMu.RUnlock()
+	cfg.MCPMu.RLock()
+	defer cfg.MCPMu.RUnlock()
 
 	if len(cfg.MCPConfigs) == 0 {
 		return nil
@@ -49,8 +49,8 @@ func listMCPConfigs(cfg *Config) []MCPConfigInfo {
 }
 
 func getMCPConfig(cfg *Config, name string) (json.RawMessage, error) {
-	cfg.mcpMu.RLock()
-	defer cfg.mcpMu.RUnlock()
+	cfg.MCPMu.RLock()
+	defer cfg.MCPMu.RUnlock()
 
 	raw, ok := cfg.MCPConfigs[name]
 	if !ok {
@@ -79,7 +79,7 @@ func setMCPConfig(cfg *Config, configPath, name string, config json.RawMessage) 
 	}
 
 	// Write MCP file for immediate use (outside lock to avoid holding lock during I/O).
-	mcpDir := filepath.Join(cfg.baseDir, "mcp")
+	mcpDir := filepath.Join(cfg.BaseDir, "mcp")
 	if err := os.MkdirAll(mcpDir, 0o755); err != nil {
 		return fmt.Errorf("create mcp dir: %w", err)
 	}
@@ -89,24 +89,24 @@ func setMCPConfig(cfg *Config, configPath, name string, config json.RawMessage) 
 	}
 
 	// Update in-memory under lock.
-	cfg.mcpMu.Lock()
+	cfg.MCPMu.Lock()
 	if cfg.MCPConfigs == nil {
 		cfg.MCPConfigs = make(map[string]json.RawMessage)
 	}
 	cfg.MCPConfigs[name] = config
-	if cfg.mcpPaths == nil {
-		cfg.mcpPaths = make(map[string]string)
+	if cfg.MCPPaths == nil {
+		cfg.MCPPaths = make(map[string]string)
 	}
-	cfg.mcpPaths[name] = path
-	cfg.mcpMu.Unlock()
+	cfg.MCPPaths[name] = path
+	cfg.MCPMu.Unlock()
 
 	return nil
 }
 
 func deleteMCPConfig(cfg *Config, configPath, name string) error {
-	cfg.mcpMu.RLock()
+	cfg.MCPMu.RLock()
 	_, ok := cfg.MCPConfigs[name]
-	cfg.mcpMu.RUnlock()
+	cfg.MCPMu.RUnlock()
 	if !ok {
 		return fmt.Errorf("MCP config %q not found", name)
 	}
@@ -116,16 +116,16 @@ func deleteMCPConfig(cfg *Config, configPath, name string) error {
 	}
 
 	// Determine file path and update in-memory under lock.
-	cfg.mcpMu.Lock()
+	cfg.MCPMu.Lock()
 	var filePath string
-	if p, ok := cfg.mcpPaths[name]; ok {
+	if p, ok := cfg.MCPPaths[name]; ok {
 		filePath = p
-		delete(cfg.mcpPaths, name)
+		delete(cfg.MCPPaths, name)
 	} else {
-		filePath = filepath.Join(cfg.baseDir, "mcp", name+".json")
+		filePath = filepath.Join(cfg.BaseDir, "mcp", name+".json")
 	}
 	delete(cfg.MCPConfigs, name)
-	cfg.mcpMu.Unlock()
+	cfg.MCPMu.Unlock()
 
 	// Remove MCP file outside lock.
 	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {

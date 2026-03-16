@@ -15,7 +15,7 @@ func knowledgeDir(cfg *Config) string {
 	if cfg.KnowledgeDir != "" {
 		return cfg.KnowledgeDir
 	}
-	return filepath.Join(cfg.baseDir, "knowledge")
+	return filepath.Join(cfg.BaseDir, "knowledge")
 }
 
 // SearchResult represents a matched knowledge chunk.

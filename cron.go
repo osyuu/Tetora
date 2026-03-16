@@ -381,10 +381,10 @@ func (ce *CronEngine) diskBlockThresholdMB() int {
 // warning  = below diskWarnMB threshold (default 500 MB)
 // critical = below diskBlockMB threshold (default 200 MB)
 func (ce *CronEngine) checkDisk() (status string, freeGB float64) {
-	if ce.cfg.baseDir == "" {
+	if ce.cfg.BaseDir == "" {
 		return "ok", 0
 	}
-	free := diskFreeBytes(ce.cfg.baseDir)
+	free := diskFreeBytes(ce.cfg.BaseDir)
 	freeGB = float64(free) / (1024 * 1024 * 1024)
 	freeMB := freeGB * 1024
 	switch {
@@ -927,8 +927,8 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 	}
 
 	// Register worker origin with cron-specific JobID.
-	if ce.cfg.hookRecv != nil && task.SessionID != "" {
-		ce.cfg.hookRecv.RegisterOrigin(task.SessionID, &workerOrigin{
+	if ce.cfg.Runtime.HookRecv != nil && task.SessionID != "" {
+		ce.cfg.Runtime.HookRecv.(*hookReceiver).RegisterOrigin(task.SessionID, &workerOrigin{
 			TaskID:   task.ID,
 			TaskName: j.Name,
 			Source:   jobSource,
@@ -957,8 +957,8 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 			task.SessionID = newUUID()
 
 			// Re-register origin for the new session.
-			if ce.cfg.hookRecv != nil {
-				ce.cfg.hookRecv.RegisterOrigin(task.SessionID, &workerOrigin{
+			if ce.cfg.Runtime.HookRecv != nil {
+				ce.cfg.Runtime.HookRecv.(*hookReceiver).RegisterOrigin(task.SessionID, &workerOrigin{
 					TaskID:   task.ID,
 					TaskName: j.Name,
 					Source:   jobSource,

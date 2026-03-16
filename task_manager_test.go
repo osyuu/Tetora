@@ -628,13 +628,13 @@ func TestTaskFieldToColumn(t *testing.T) {
 
 func TestDefaultProjectOrInbox(t *testing.T) {
 	cfg := TaskManagerConfig{}
-	if cfg.defaultProjectOrInbox() != "inbox" {
-		t.Errorf("expected 'inbox', got %q", cfg.defaultProjectOrInbox())
+	if cfg.DefaultProjectOrInbox() != "inbox" {
+		t.Errorf("expected 'inbox', got %q", cfg.DefaultProjectOrInbox())
 	}
 
 	cfg.DefaultProject = "work"
-	if cfg.defaultProjectOrInbox() != "work" {
-		t.Errorf("expected 'work', got %q", cfg.defaultProjectOrInbox())
+	if cfg.DefaultProjectOrInbox() != "work" {
+		t.Errorf("expected 'work', got %q", cfg.DefaultProjectOrInbox())
 	}
 }
 

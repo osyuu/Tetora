@@ -16,20 +16,6 @@ import (
 // Coexists with the headless CLI dispatch mode — Terminal is for interactive,
 // CLI is for automated dispatch. Both can run simultaneously.
 
-// DiscordTerminalConfig holds configuration for the terminal bridge feature.
-type DiscordTerminalConfig struct {
-	Enabled      bool     `json:"enabled"`
-	AllowedUsers []string `json:"allowedUsers,omitempty"` // Discord user IDs (empty = channel allowlist only)
-	MaxSessions  int      `json:"maxSessions,omitempty"`  // default 3
-	CaptureRows  int      `json:"captureRows,omitempty"`  // tmux pane height, default 40
-	CaptureCols  int      `json:"captureCols,omitempty"`  // tmux pane width, default 120
-	IdleTimeout  string   `json:"idleTimeout,omitempty"`  // default "30m"
-	ClaudePath   string   `json:"claudePath,omitempty"`   // falls back to cfg.ClaudePath
-	CodexPath    string   `json:"codexPath,omitempty"`    // path to codex binary
-	DefaultTool  string   `json:"defaultTool,omitempty"`  // "claude" (default) or "codex"
-	Workdir      string   `json:"workdir,omitempty"`      // default working directory
-}
-
 // terminalSession represents a single interactive tmux session.
 type terminalSession struct {
 	ID           string

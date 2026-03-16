@@ -273,20 +273,20 @@ func TestThreadBindingStore_OverrideBind(t *testing.T) {
 func TestThreadBindingsConfigTTL(t *testing.T) {
 	// Default (zero value).
 	cfg := DiscordThreadBindingsConfig{}
-	if cfg.threadBindingsTTL() != 24*time.Hour {
-		t.Errorf("expected 24h default, got %v", cfg.threadBindingsTTL())
+	if cfg.ThreadBindingsTTL() != 24*time.Hour {
+		t.Errorf("expected 24h default, got %v", cfg.ThreadBindingsTTL())
 	}
 
 	// Custom value.
 	cfg = DiscordThreadBindingsConfig{TTLHours: 48}
-	if cfg.threadBindingsTTL() != 48*time.Hour {
-		t.Errorf("expected 48h, got %v", cfg.threadBindingsTTL())
+	if cfg.ThreadBindingsTTL() != 48*time.Hour {
+		t.Errorf("expected 48h, got %v", cfg.ThreadBindingsTTL())
 	}
 
 	// Negative value defaults to 24h.
 	cfg = DiscordThreadBindingsConfig{TTLHours: -1}
-	if cfg.threadBindingsTTL() != 24*time.Hour {
-		t.Errorf("expected 24h for negative, got %v", cfg.threadBindingsTTL())
+	if cfg.ThreadBindingsTTL() != 24*time.Hour {
+		t.Errorf("expected 24h for negative, got %v", cfg.ThreadBindingsTTL())
 	}
 }
 

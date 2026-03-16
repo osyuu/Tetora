@@ -17,16 +17,6 @@ import (
 
 // --- Plugin Config Types ---
 
-// PluginConfig defines a plugin in the config file.
-type PluginConfig struct {
-	Type      string            `json:"type"`                // "channel", "tool", "sandbox", "provider", "memory"
-	Command   string            `json:"command"`             // binary path or name
-	Args      []string          `json:"args,omitempty"`      // command arguments
-	Env       map[string]string `json:"env,omitempty"`       // environment variables ($ENV_VAR supported)
-	AutoStart bool              `json:"autoStart,omitempty"` // start when daemon starts
-	Tools     []string          `json:"tools,omitempty"`     // tool names (for type=tool)
-}
-
 // validPluginTypes enumerates valid plugin type strings.
 var validPluginTypes = map[string]bool{
 	"channel":  true,
@@ -348,7 +338,7 @@ func (h *PluginHost) Start(name string) error {
 	logInfo("plugin started", "name", name, "type", pcfg.Type, "command", pcfg.Command)
 
 	// Register plugin tools in the tool registry.
-	if pcfg.Type == "tool" && len(pcfg.Tools) > 0 && h.cfg.toolRegistry != nil {
+	if pcfg.Type == "tool" && len(pcfg.Tools) > 0 && h.cfg.Runtime.ToolRegistry != nil {
 		for _, toolName := range pcfg.Tools {
 			h.registerPluginTool(name, toolName)
 		}
@@ -363,7 +353,7 @@ func (h *PluginHost) registerPluginTool(pluginName, toolName string) {
 	pluginRef := pluginName // capture for closure
 	toolRef := toolName     // capture for closure
 
-	h.cfg.toolRegistry.Register(&ToolDef{
+	h.cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name:        toolRef,
 		Description: fmt.Sprintf("Plugin tool (%s) provided by plugin %q", toolRef, pluginRef),
 		InputSchema: json.RawMessage(`{"type": "object", "properties": {"input": {"type": "object", "description": "Tool input"}}, "required": []}`),
@@ -549,14 +539,14 @@ func toolSearchTools(ctx context.Context, cfg *Config, input json.RawMessage) (s
 		args.Limit = 10
 	}
 
-	if cfg.toolRegistry == nil {
+	if cfg.Runtime.ToolRegistry == nil {
 		return "[]", nil
 	}
 
 	query := strings.ToLower(args.Query)
 	var results []map[string]string
 
-	for _, tool := range cfg.toolRegistry.List() {
+	for _, tool := range cfg.Runtime.ToolRegistry.(*ToolRegistry).List() {
 		// Match by name or description.
 		nameMatch := strings.Contains(strings.ToLower(tool.Name), query)
 		descMatch := strings.Contains(strings.ToLower(tool.Description), query)
@@ -588,11 +578,11 @@ func toolExecuteTool(ctx context.Context, cfg *Config, input json.RawMessage) (s
 		return "", fmt.Errorf("name is required")
 	}
 
-	if cfg.toolRegistry == nil {
+	if cfg.Runtime.ToolRegistry == nil {
 		return "", fmt.Errorf("tool registry not initialized")
 	}
 
-	tool, ok := cfg.toolRegistry.Get(args.Name)
+	tool, ok := cfg.Runtime.ToolRegistry.(*ToolRegistry).Get(args.Name)
 	if !ok {
 		return "", fmt.Errorf("tool %q not found", args.Name)
 	}

@@ -108,8 +108,8 @@ func (mq *MessageQueueEngine) Enqueue(channel, target, text string, priority int
 		return fmt.Errorf("channel, target, and text are required")
 	}
 
-	maxRetries := mq.cfg.Ops.MessageQueue.retryAttemptsOrDefault()
-	maxSize := mq.cfg.Ops.MessageQueue.maxQueueSizeOrDefault()
+	maxRetries := mq.cfg.Ops.MessageQueue.RetryAttemptsOrDefault()
+	maxSize := mq.cfg.Ops.MessageQueue.MaxQueueSizeOrDefault()
 
 	// Check queue size limit.
 	rows, err := queryDB(mq.dbPath, "SELECT COUNT(*) as cnt FROM message_queue WHERE status IN ('pending','sending')")
@@ -434,7 +434,7 @@ func toolExportData(ctx context.Context, cfg *Config, input json.RawMessage) (st
 		return "", fmt.Errorf("data export is not enabled in config (ops.exportEnabled)")
 	}
 
-	result, err := export.UserData(cfg.HistoryDB, cfg.baseDir, args.UserID)
+	result, err := export.UserData(cfg.HistoryDB, cfg.BaseDir, args.UserID)
 	if err != nil {
 		return "", fmt.Errorf("export failed: %w", err)
 	}

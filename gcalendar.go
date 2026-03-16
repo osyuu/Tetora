@@ -11,14 +11,6 @@ import (
 // Service struct and method implementations are in internal/life/calendar/.
 // This file keeps tool handlers, config types, and the global singleton.
 
-// CalendarConfig holds Calendar integration settings.
-type CalendarConfig struct {
-	Enabled    bool   `json:"enabled"`
-	CalendarID string `json:"calendarId,omitempty"` // default "primary"
-	TimeZone   string `json:"timeZone,omitempty"`   // default local timezone
-	MaxResults int    `json:"maxResults,omitempty"`  // default 10
-}
-
 var globalCalendarService *CalendarService
 
 // --- Tool Handlers ---

@@ -275,20 +275,20 @@ func TestCountPendingQueue(t *testing.T) {
 func TestOfflineQueueConfigDefaults(t *testing.T) {
 	// Zero value.
 	var c OfflineQueueConfig
-	if c.ttlOrDefault() != 1*time.Hour {
-		t.Errorf("default TTL = %v, want 1h", c.ttlOrDefault())
+	if c.TtlOrDefault() != 1*time.Hour {
+		t.Errorf("default TTL = %v, want 1h", c.TtlOrDefault())
 	}
-	if c.maxItemsOrDefault() != 100 {
-		t.Errorf("default maxItems = %d, want 100", c.maxItemsOrDefault())
+	if c.MaxItemsOrDefault() != 100 {
+		t.Errorf("default maxItems = %d, want 100", c.MaxItemsOrDefault())
 	}
 
 	// Custom values.
 	c = OfflineQueueConfig{TTL: "30m", MaxItems: 50}
-	if c.ttlOrDefault() != 30*time.Minute {
-		t.Errorf("custom TTL = %v, want 30m", c.ttlOrDefault())
+	if c.TtlOrDefault() != 30*time.Minute {
+		t.Errorf("custom TTL = %v, want 30m", c.TtlOrDefault())
 	}
-	if c.maxItemsOrDefault() != 50 {
-		t.Errorf("custom maxItems = %d, want 50", c.maxItemsOrDefault())
+	if c.MaxItemsOrDefault() != 50 {
+		t.Errorf("custom maxItems = %d, want 50", c.MaxItemsOrDefault())
 	}
 }
 

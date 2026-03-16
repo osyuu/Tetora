@@ -11,29 +11,6 @@ import (
 
 // --- P19.3: Smart Reminders ---
 
-// ReminderConfig configures the reminder engine.
-type ReminderConfig struct {
-	Enabled       bool   `json:"enabled,omitempty"`
-	CheckInterval string `json:"checkInterval,omitempty"` // default "30s"
-	MaxPerUser    int    `json:"maxPerUser,omitempty"`    // default 50
-}
-
-func (rc ReminderConfig) checkIntervalOrDefault() time.Duration {
-	if rc.CheckInterval != "" {
-		if d, err := time.ParseDuration(rc.CheckInterval); err == nil && d > 0 {
-			return d
-		}
-	}
-	return 30 * time.Second
-}
-
-func (rc ReminderConfig) maxPerUserOrDefault() int {
-	if rc.MaxPerUser > 0 {
-		return rc.MaxPerUser
-	}
-	return 50
-}
-
 // nextCronTime computes the next occurrence of a cron expression after the given time.
 // Reuses parseCronExpr and nextRunAfter from cron.go.
 func nextCronTime(expr string, after time.Time) time.Time {

@@ -9,28 +9,28 @@ import (
 
 func TestDailyNotesConfig(t *testing.T) {
 	cfg := DailyNotesConfig{}
-	if cfg.scheduleOrDefault() != "0 0 * * *" {
-		t.Errorf("default schedule wrong: got %s", cfg.scheduleOrDefault())
+	if cfg.ScheduleOrDefault() != "0 0 * * *" {
+		t.Errorf("default schedule wrong: got %s", cfg.ScheduleOrDefault())
 	}
 
 	cfg.Schedule = "0 12 * * *"
-	if cfg.scheduleOrDefault() != "0 12 * * *" {
-		t.Errorf("custom schedule wrong: got %s", cfg.scheduleOrDefault())
+	if cfg.ScheduleOrDefault() != "0 12 * * *" {
+		t.Errorf("custom schedule wrong: got %s", cfg.ScheduleOrDefault())
 	}
 
 	baseDir := "/tmp/tetora-test"
-	if cfg.dirOrDefault(baseDir) != "/tmp/tetora-test/notes" {
-		t.Errorf("default dir wrong: got %s", cfg.dirOrDefault(baseDir))
+	if cfg.DirOrDefault(baseDir) != "/tmp/tetora-test/notes" {
+		t.Errorf("default dir wrong: got %s", cfg.DirOrDefault(baseDir))
 	}
 
 	cfg.Dir = "custom_notes"
-	if cfg.dirOrDefault(baseDir) != "/tmp/tetora-test/custom_notes" {
-		t.Errorf("relative dir wrong: got %s", cfg.dirOrDefault(baseDir))
+	if cfg.DirOrDefault(baseDir) != "/tmp/tetora-test/custom_notes" {
+		t.Errorf("relative dir wrong: got %s", cfg.DirOrDefault(baseDir))
 	}
 
 	cfg.Dir = "/absolute/path"
-	if cfg.dirOrDefault(baseDir) != "/absolute/path" {
-		t.Errorf("absolute dir wrong: got %s", cfg.dirOrDefault(baseDir))
+	if cfg.DirOrDefault(baseDir) != "/absolute/path" {
+		t.Errorf("absolute dir wrong: got %s", cfg.DirOrDefault(baseDir))
 	}
 }
 
@@ -58,7 +58,7 @@ func TestGenerateDailyNote(t *testing.T) {
 	}
 
 	cfg := &Config{
-		baseDir:   tmpDir,
+		BaseDir:   tmpDir,
 		HistoryDB: dbPath,
 	}
 
@@ -95,7 +95,7 @@ func TestGenerateDailyNote(t *testing.T) {
 func TestWriteDailyNote(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &Config{
-		baseDir: tmpDir,
+		BaseDir: tmpDir,
 		DailyNotes: DailyNotesConfig{
 			Enabled: true,
 			Dir:     "notes",
@@ -109,7 +109,7 @@ func TestWriteDailyNote(t *testing.T) {
 		t.Fatalf("write note: %v", err)
 	}
 
-	notesDir := cfg.DailyNotes.dirOrDefault(tmpDir)
+	notesDir := cfg.DailyNotes.DirOrDefault(tmpDir)
 	filename := date.Format("2006-01-02") + ".md"
 	filePath := filepath.Join(notesDir, filename)
 

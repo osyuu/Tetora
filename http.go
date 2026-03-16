@@ -485,8 +485,8 @@ func startHTTPServer(s *Server) *http.Server {
 	s.canvasEngine = newCanvasEngine(cfg, s.mcpHost)
 
 	// Register canvas tools.
-	if cfg.toolRegistry != nil {
-		registerCanvasTools(cfg.toolRegistry, s.canvasEngine, cfg)
+	if cfg.Runtime.ToolRegistry != nil {
+		registerCanvasTools(cfg.Runtime.ToolRegistry.(*ToolRegistry), s.canvasEngine, cfg)
 	}
 
 	// Initialize Voice Realtime Engine (P16.2).
@@ -567,7 +567,7 @@ func startHTTPServer(s *Server) *http.Server {
 	}
 
 	// Start with TLS if configured.
-	if cfg.tlsEnabled {
+	if cfg.TLSEnabled {
 		srv.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}

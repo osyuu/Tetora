@@ -50,7 +50,7 @@ func truncateToolOutput(output string, limit int) string {
 // 6. Repeat until no more tool_use or max iterations
 func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, agentName string, registry *providerRegistry, eventCh chan<- SSEEvent, broker *sseBroker) *ProviderResult {
 	// Check if tool engine is enabled and we have a tool registry.
-	if cfg.toolRegistry == nil {
+	if cfg.Runtime.ToolRegistry == nil {
 		return executeWithProvider(ctx, cfg, task, agentName, registry, eventCh)
 	}
 
@@ -91,7 +91,7 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 			}
 		}
 	}
-	tools := cfg.toolRegistry.ListFiltered(allowed)
+	tools := cfg.Runtime.ToolRegistry.(*ToolRegistry).ListFiltered(allowed)
 	if len(tools) == 0 {
 		// No tools available, use regular execution.
 		return executeWithProvider(ctx, cfg, task, agentName, registry, eventCh)
@@ -269,7 +269,7 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 			}
 
 			// Get tool handler.
-			tool, ok := cfg.toolRegistry.Get(tc.Name)
+			tool, ok := cfg.Runtime.ToolRegistry.(*ToolRegistry).Get(tc.Name)
 			if !ok {
 				toolResults = append(toolResults, ToolResult{
 					ToolUseID: tc.ID,

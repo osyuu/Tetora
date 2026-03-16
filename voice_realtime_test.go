@@ -169,11 +169,11 @@ func TestVoiceRealtimeEngineInit(t *testing.T) {
 
 func TestBuildToolDefinitions(t *testing.T) {
 	cfg := &Config{}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	// Register a sample tool.
 	schema := json.RawMessage(`{"type":"object","properties":{"arg1":{"type":"string"}},"required":["arg1"]}`)
-	cfg.toolRegistry.Register(&ToolDef{
+	cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name:        "test_tool",
 		Description: "A test tool",
 		InputSchema: schema,
@@ -184,7 +184,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 
 	sess := &realtimeSession{
 		cfg:          cfg,
-		toolRegistry: cfg.toolRegistry,
+		toolRegistry: cfg.Runtime.ToolRegistry.(*ToolRegistry),
 	}
 
 	tools := sess.buildToolDefinitions()
@@ -318,11 +318,11 @@ func TestSilenceDetectionLogic(t *testing.T) {
 
 func TestToolExecution(t *testing.T) {
 	cfg := &Config{}
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 
 	executed := false
 	schema := json.RawMessage(`{"type":"object"}`)
-	cfg.toolRegistry.Register(&ToolDef{
+	cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name:        "mock_tool",
 		Description: "Mock tool",
 		InputSchema: schema,
@@ -334,7 +334,7 @@ func TestToolExecution(t *testing.T) {
 
 	sess := &realtimeSession{
 		cfg:          cfg,
-		toolRegistry: cfg.toolRegistry,
+		toolRegistry: cfg.Runtime.ToolRegistry.(*ToolRegistry),
 		ctx:          context.Background(),
 	}
 

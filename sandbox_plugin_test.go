@@ -11,29 +11,29 @@ import (
 
 func TestSandboxConfig_DefaultImage(t *testing.T) {
 	sc := SandboxConfig{}
-	if sc.defaultImageOrDefault() != "ubuntu:22.04" {
-		t.Errorf("expected ubuntu:22.04, got %s", sc.defaultImageOrDefault())
+	if sc.DefaultImageOrDefault() != "ubuntu:22.04" {
+		t.Errorf("expected ubuntu:22.04, got %s", sc.DefaultImageOrDefault())
 	}
 }
 
 func TestSandboxConfig_CustomImage(t *testing.T) {
 	sc := SandboxConfig{DefaultImage: "alpine:3.19"}
-	if sc.defaultImageOrDefault() != "alpine:3.19" {
-		t.Errorf("expected alpine:3.19, got %s", sc.defaultImageOrDefault())
+	if sc.DefaultImageOrDefault() != "alpine:3.19" {
+		t.Errorf("expected alpine:3.19, got %s", sc.DefaultImageOrDefault())
 	}
 }
 
 func TestSandboxConfig_DefaultNetwork(t *testing.T) {
 	sc := SandboxConfig{}
-	if sc.networkOrDefault() != "none" {
-		t.Errorf("expected none, got %s", sc.networkOrDefault())
+	if sc.NetworkOrDefault() != "none" {
+		t.Errorf("expected none, got %s", sc.NetworkOrDefault())
 	}
 }
 
 func TestSandboxConfig_CustomNetwork(t *testing.T) {
 	sc := SandboxConfig{Network: "bridge"}
-	if sc.networkOrDefault() != "bridge" {
-		t.Errorf("expected bridge, got %s", sc.networkOrDefault())
+	if sc.NetworkOrDefault() != "bridge" {
+		t.Errorf("expected bridge, got %s", sc.NetworkOrDefault())
 	}
 }
 

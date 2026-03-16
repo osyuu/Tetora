@@ -13,19 +13,6 @@ import (
 
 // --- P23.5: YouTube Subtitle Extraction & Video Summary ---
 
-// YouTubeConfig holds YouTube tools settings.
-type YouTubeConfig struct {
-	Enabled   bool   `json:"enabled"`
-	YtDlpPath string `json:"ytDlpPath,omitempty"` // default "yt-dlp"
-}
-
-func (c YouTubeConfig) ytDlpOrDefault() string {
-	if c.YtDlpPath != "" {
-		return c.YtDlpPath
-	}
-	return "yt-dlp"
-}
-
 // YouTubeVideoInfo holds metadata about a YouTube video.
 type YouTubeVideoInfo struct {
 	ID          string `json:"id"`

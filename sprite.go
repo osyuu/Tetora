@@ -23,8 +23,8 @@ const (
 )
 
 // --- Type Aliases ---
+// SpriteConfig is aliased in config.go via internal/config.
 
-type SpriteConfig = sprite.Config
 type SpriteStateDef = sprite.StateDef
 type AgentSpriteDef = sprite.AgentDef
 type agentSpriteTracker = sprite.Tracker

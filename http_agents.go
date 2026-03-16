@@ -716,7 +716,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 			}
 
 			// Persist to config.json.
-			configPath := filepath.Join(cfg.baseDir, "config.json")
+			configPath := filepath.Join(cfg.BaseDir, "config.json")
 			if err := saveAgentTrustLevel(configPath, agentName, body.Level); err != nil {
 				logWarn("persist trust level failed", "agent", agentName, "error", err)
 			}

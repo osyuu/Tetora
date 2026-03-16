@@ -362,8 +362,8 @@ func (s *Server) handleHookNotify(w http.ResponseWriter, r *http.Request) {
 	msg := prefix + body.Message
 
 	// Try Discord notification channel.
-	if cfg.discordBot != nil {
-		cfg.discordBot.sendNotify(msg)
+	if cfg.Runtime.DiscordBot != nil {
+		cfg.Runtime.DiscordBot.(*DiscordBot).sendNotify(msg)
 	}
 
 	// Publish to SSE for dashboard.
@@ -841,7 +841,7 @@ func (s *Server) handlePlanGate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send to Discord if available.
-	if bot := cfg.discordBot; bot != nil {
+	if bot, _ := cfg.Runtime.DiscordBot.(*DiscordBot); bot != nil {
 		embed := buildPlanReviewEmbed(review)
 		customApprove := "pgate_approve:" + gateID
 		customReject := "pgate_reject:" + gateID
@@ -1001,7 +1001,7 @@ func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
 	// Send to Discord.
 	var cleanupIDs []string
 	var cleanupBot *DiscordBot
-	if bot := cfg.discordBot; bot != nil {
+	if bot, _ := cfg.Runtime.DiscordBot.(*DiscordBot); bot != nil {
 		notifyCh := bot.notifyChannelID()
 		if notifyCh != "" {
 			cleanupBot = bot
@@ -1217,18 +1217,6 @@ func (hr *hookReceiver) cleanupStaleHookWorkers() {
 		}
 	}
 	hr.workerOriginsMu.Unlock()
-}
-
-// --- Config ---
-
-// HooksConfig holds configuration for the hooks event receiver.
-type HooksConfig struct {
-	Enabled bool `json:"enabled,omitempty"` // default: true when hooks are installed
-}
-
-// PlanGateConfig configures plan gate behavior.
-type PlanGateConfig struct {
-	Mode string `json:"mode,omitempty"` // "hook" (default): blocking approve/deny; "keyboard": allow + Discord keyboard control
 }
 
 // --- Auth bypass for hooks endpoint ---

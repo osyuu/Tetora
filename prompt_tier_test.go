@@ -109,7 +109,7 @@ func TestBuildTieredPromptSimpleShorterThanComplex(t *testing.T) {
 
 func TestBuildTieredPromptSimpleClearsAddDirs(t *testing.T) {
 	cfg := &Config{
-		baseDir: "/tmp/tetora",
+		BaseDir: "/tmp/tetora",
 		Agents: map[string]AgentConfig{
 			"test": {},
 		},
@@ -133,7 +133,7 @@ func TestBuildTieredPromptSimpleClearsAddDirs(t *testing.T) {
 
 func TestBuildTieredPromptClaudeCodeSkipsInjection(t *testing.T) {
 	cfg := &Config{
-		baseDir: "/tmp/tetora",
+		BaseDir: "/tmp/tetora",
 		Agents: map[string]AgentConfig{
 			"test": {Provider: "cc"},
 		},

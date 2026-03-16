@@ -2,8 +2,7 @@ package main
 
 import "tetora/internal/quickaction"
 
-type QuickAction = quickaction.Action
-type QuickActionParam = quickaction.Param
+// QuickAction and QuickActionParam are aliased in config.go via internal/config.
 type QuickActionEngine = quickaction.Engine
 
 func newQuickActionEngine(cfg *Config) *QuickActionEngine {

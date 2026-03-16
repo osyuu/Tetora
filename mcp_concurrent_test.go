@@ -481,9 +481,9 @@ func TestConfigConcurrentCRUD(t *testing.T) {
 	os.WriteFile(configPath, []byte(`{}`), 0o644)
 
 	cfg := &Config{
-		baseDir:    dir,
+		BaseDir:    dir,
 		MCPConfigs: make(map[string]json.RawMessage),
-		mcpPaths:   make(map[string]string),
+		MCPPaths:   make(map[string]string),
 	}
 
 	raw := json.RawMessage(`{"mcpServers":{"t":{"command":"echo","args":["ok"]}}}`)

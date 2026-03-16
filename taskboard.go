@@ -45,50 +45,7 @@ type TaskComment struct {
 	CreatedAt string `json:"createdAt"`
 }
 
-type TaskBoardDispatchConfig struct {
-	Enabled               bool    `json:"enabled"`
-	Interval              string  `json:"interval,omitempty"`              // default "5m"
-	DefaultModel          string  `json:"defaultModel,omitempty"`          // override model for auto-dispatched tasks
-	MaxBudget             float64 `json:"maxBudget,omitempty"`             // max cost per task in USD (default: no limit)
-	DefaultAgent          string  `json:"defaultAgent,omitempty"`          // fallback agent for unassigned todo tasks
-	BacklogAgent          string  `json:"backlogAgent,omitempty"`          // agent for backlog triage (default: "ruri")
-	ReviewAgent           string  `json:"reviewAgent,omitempty"`           // agent for review verification (default: "ruri")
-	EscalateAssignee      string  `json:"escalateAssignee,omitempty"`      // assign review-rejected tasks to this user (default: "takuma")
-	StuckThreshold        string  `json:"stuckThreshold,omitempty"`        // max time a task can be in "doing" before reset (default: "2h")
-	MaxConcurrentTasks    int     `json:"maxConcurrentTasks,omitempty"`    // max tasks dispatched per scan cycle (default: 3)
-	BacklogTriageInterval string  `json:"backlogTriageInterval,omitempty"` // interval between backlog triage runs (default: "1h")
-	ReviewLoop            bool    `json:"reviewLoop,omitempty"`            // enable automated Dev↔QA loop (review → feedback → retry, max maxRetries)
-}
 
-// GitWorkflowConfig controls branch naming and merge behavior for agent dispatch.
-type GitWorkflowConfig struct {
-	BranchConvention string   `json:"branchConvention,omitempty"` // template: "{type}/{agent}-{description}" (default)
-	Types            []string `json:"types,omitempty"`            // allowed types (default: feat,fix,refactor,chore)
-	DefaultType      string   `json:"defaultType,omitempty"`      // fallback type (default: "feat")
-	AutoMerge        bool     `json:"autoMerge,omitempty"`        // merge back to main on done (default: true for worktree)
-}
-
-type TaskBoardConfig struct {
-	Enabled       bool                    `json:"enabled"`
-	MaxRetries    int                     `json:"maxRetries,omitempty"`    // default 3
-	RequireReview bool                    `json:"requireReview,omitempty"` // quality gate
-	AutoDispatch  TaskBoardDispatchConfig `json:"autoDispatch,omitempty"`
-	DefaultWorkflow string                 `json:"defaultWorkflow,omitempty"` // workflow name for all dispatched tasks (empty = no workflow)
-	GitCommit     bool                    `json:"gitCommit,omitempty"`    // auto-commit on task done
-	GitPush       bool                    `json:"gitPush,omitempty"`      // auto-push after commit (requires gitCommit)
-	GitPR         bool                    `json:"gitPR,omitempty"`        // auto-create GitHub PR after push (requires gitPush)
-	GitWorktree   bool                    `json:"gitWorktree,omitempty"` // use git worktrees for task isolation (zero file conflicts)
-	GitWorkflow   GitWorkflowConfig       `json:"gitWorkflow,omitempty"` // branch naming convention
-	IdleAnalyze   bool                    `json:"idleAnalyze,omitempty"`  // auto-analyze when idle
-	ProblemScan   bool                    `json:"problemScan,omitempty"` // scan output for latent issues after task completion
-}
-
-func (c TaskBoardConfig) maxRetriesOrDefault() int {
-	if c.MaxRetries > 0 {
-		return c.MaxRetries
-	}
-	return 3
-}
 
 // --- Task Board Engine ---
 
@@ -613,7 +570,7 @@ func (tb *TaskBoardEngine) GetThread(taskID string) ([]TaskComment, error) {
 // Uses CAS (Compare-And-Swap) pattern on retry_count to prevent double-increment races.
 // Skips tasks flagged as cancelled (not retryable).
 func (tb *TaskBoardEngine) AutoRetryFailed() error {
-	maxRetries := tb.config.maxRetriesOrDefault()
+	maxRetries := tb.config.MaxRetriesOrDefault()
 	sql := fmt.Sprintf(`
 		SELECT id, retry_count FROM tasks WHERE status = 'failed' AND retry_count < %d
 	`, maxRetries)

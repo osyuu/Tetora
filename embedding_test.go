@@ -589,24 +589,24 @@ func TestEmbeddingConfig(t *testing.T) {
 	// Test default values
 	cfg := EmbeddingConfig{}
 
-	if lambda := cfg.mmrLambdaOrDefault(); lambda != 0.7 {
-		t.Errorf("mmrLambdaOrDefault() = %f, want 0.7", lambda)
+	if lambda := cfg.MmrLambdaOrDefault(); lambda != 0.7 {
+		t.Errorf("MmrLambdaOrDefault() = %f, want 0.7", lambda)
 	}
 
-	if halfLife := cfg.decayHalfLifeOrDefault(); halfLife != 30.0 {
-		t.Errorf("decayHalfLifeOrDefault() = %f, want 30.0", halfLife)
+	if halfLife := cfg.DecayHalfLifeOrDefault(); halfLife != 30.0 {
+		t.Errorf("DecayHalfLifeOrDefault() = %f, want 30.0", halfLife)
 	}
 
 	// Test custom values
 	cfg.MMR.Lambda = 0.5
 	cfg.TemporalDecay.HalfLifeDays = 60.0
 
-	if lambda := cfg.mmrLambdaOrDefault(); lambda != 0.5 {
-		t.Errorf("mmrLambdaOrDefault() = %f, want 0.5", lambda)
+	if lambda := cfg.MmrLambdaOrDefault(); lambda != 0.5 {
+		t.Errorf("MmrLambdaOrDefault() = %f, want 0.5", lambda)
 	}
 
-	if halfLife := cfg.decayHalfLifeOrDefault(); halfLife != 60.0 {
-		t.Errorf("decayHalfLifeOrDefault() = %f, want 60.0", halfLife)
+	if halfLife := cfg.DecayHalfLifeOrDefault(); halfLife != 60.0 {
+		t.Errorf("DecayHalfLifeOrDefault() = %f, want 60.0", halfLife)
 	}
 }
 

@@ -82,7 +82,7 @@ func TestDeviceOutputPathGenerated(t *testing.T) {
 			OutputDir: "/tmp/tetora-test-outputs",
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	path, err := deviceOutputPath(cfg, "", ".png")
 	if err != nil {
@@ -105,7 +105,7 @@ func TestDeviceOutputPathDefaultDir(t *testing.T) {
 	cfg := &Config{
 		Device: DeviceConfig{Enabled: true},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	path, err := deviceOutputPath(cfg, "", ".png")
 	if err != nil {
@@ -123,7 +123,7 @@ func TestDeviceOutputPathCustomFilename(t *testing.T) {
 			OutputDir: "/tmp/out",
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	path, err := deviceOutputPath(cfg, "myshot.png", ".png")
 	if err != nil {
@@ -141,7 +141,7 @@ func TestDeviceOutputPathNoExtension(t *testing.T) {
 			OutputDir: "/tmp/out",
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	path, err := deviceOutputPath(cfg, "myshot", ".png")
 	if err != nil {
@@ -159,7 +159,7 @@ func TestDeviceOutputPathTraversal(t *testing.T) {
 			OutputDir: "/tmp/out",
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	cases := []string{
 		"../../../etc/passwd",
@@ -182,7 +182,7 @@ func TestDeviceOutputPathUnsafeChars(t *testing.T) {
 			OutputDir: "/tmp/out",
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	cases := []string{
 		"foo bar.png",   // space
@@ -205,7 +205,7 @@ func TestDeviceOutputPathUniqueness(t *testing.T) {
 			OutputDir: "/tmp/out",
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	seen := make(map[string]bool)
 	for i := 0; i < 100; i++ {
@@ -310,7 +310,7 @@ func TestNotificationCommandConstruction(t *testing.T) {
 	cfg := &Config{
 		Device: DeviceConfig{Enabled: true, NotifyEnabled: true},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	input, _ := json.Marshal(map[string]string{
 		"title": "Test Title",
@@ -338,7 +338,7 @@ func TestCameraSnapFilenameGeneration(t *testing.T) {
 			OutputDir:     "/tmp/test-device-outputs",
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	// Test auto-generated filename.
 	path, err := deviceOutputPath(cfg, "", ".png")
@@ -390,7 +390,7 @@ func TestClipboardRoundtrip(t *testing.T) {
 			ClipboardEnabled: true,
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	ctx := context.Background()
 	testText := "tetora-device-test-" + time.Now().Format("150405")
@@ -425,7 +425,7 @@ func TestEnsureDeviceOutputDir(t *testing.T) {
 			OutputDir: filepath.Join(tmpDir, "outputs"),
 		},
 	}
-	cfg.baseDir = tmpDir
+	cfg.BaseDir = tmpDir
 
 	ensureDeviceOutputDir(cfg)
 
@@ -448,7 +448,7 @@ func TestEnsureDeviceOutputDirDefault(t *testing.T) {
 			// No OutputDir set — should use baseDir/outputs.
 		},
 	}
-	cfg.baseDir = tmpDir
+	cfg.BaseDir = tmpDir
 
 	ensureDeviceOutputDir(cfg)
 
@@ -471,7 +471,7 @@ func TestScreenCaptureRegionParsing(t *testing.T) {
 			OutputDir:     "/tmp/test-device-screen",
 		},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	// Invalid region should fail at validation.
 	input, _ := json.Marshal(map[string]string{
@@ -502,7 +502,7 @@ func TestClipboardSetEmptyText(t *testing.T) {
 	cfg := &Config{
 		Device: DeviceConfig{Enabled: true, ClipboardEnabled: true},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	input, _ := json.Marshal(map[string]string{"text": ""})
 	ctx := context.Background()
@@ -516,7 +516,7 @@ func TestNotificationSendEmptyText(t *testing.T) {
 	cfg := &Config{
 		Device: DeviceConfig{Enabled: true, NotifyEnabled: true},
 	}
-	cfg.baseDir = "/tmp/tetora"
+	cfg.BaseDir = "/tmp/tetora"
 
 	input, _ := json.Marshal(map[string]string{"title": "Test", "text": ""})
 	ctx := context.Background()

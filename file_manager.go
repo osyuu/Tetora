@@ -14,34 +14,16 @@ import (
 
 // --- P23.3: File & Document Processing ---
 
-// FileManagerConfig configures the file management system.
-type FileManagerConfig struct {
-	Enabled    bool   `json:"enabled"`
-	StorageDir string `json:"storageDir,omitempty"` // default: {baseDir}/files
-	MaxSizeMB  int    `json:"maxSizeMB,omitempty"`  // default: 50
-}
 
-func (c FileManagerConfig) storageDirOrDefault(baseDir string) string {
-	if c.StorageDir != "" {
-		return c.StorageDir
-	}
-	return filepath.Join(baseDir, "files")
-}
 
-func (c FileManagerConfig) maxSizeOrDefault() int {
-	if c.MaxSizeMB > 0 {
-		return c.MaxSizeMB
-	}
-	return 50
-}
 
 // globalFileManager is exposed for tool handlers.
 var globalFileManager *storage.Service
 
 // newFileManagerService constructs a storage.Service from Config.
 func newFileManagerService(cfg *Config) *storage.Service {
-	dir := cfg.FileManager.storageDirOrDefault(cfg.baseDir)
-	return storage.New(cfg.HistoryDB, dir, cfg.FileManager.maxSizeOrDefault(), makeLifeDB(), newUUID)
+	dir := cfg.FileManager.StorageDirOrDefault(cfg.BaseDir)
+	return storage.New(cfg.HistoryDB, dir, cfg.FileManager.MaxSizeOrDefault(), makeLifeDB(), newUUID)
 }
 
 // --- Tool Handlers ---

@@ -17,38 +17,17 @@ import (
 	"time"
 )
 
-// --- Embedding Config ---
+// --- Embedding helpers ---
+// EmbeddingConfig, MMRConfig, and TemporalConfig are aliased in config.go via internal/config.
 
-type EmbeddingConfig struct {
-	Enabled       bool           `json:"enabled,omitempty"`
-	Provider      string         `json:"provider,omitempty"`      // "openai" or compatible
-	Model         string         `json:"model,omitempty"`         // "text-embedding-3-small"
-	Endpoint      string         `json:"endpoint,omitempty"`
-	APIKey        string         `json:"apiKey,omitempty"`        // supports $ENV_VAR
-	Dimensions    int            `json:"dimensions,omitempty"`    // 1536
-	BatchSize     int            `json:"batchSize,omitempty"`     // 20
-	MMR           MMRConfig      `json:"mmr,omitempty"`
-	TemporalDecay TemporalConfig `json:"temporalDecay,omitempty"`
-}
-
-type MMRConfig struct {
-	Enabled bool    `json:"enabled,omitempty"`
-	Lambda  float64 `json:"lambda,omitempty"` // default 0.7
-}
-
-type TemporalConfig struct {
-	Enabled      bool    `json:"enabled,omitempty"`
-	HalfLifeDays float64 `json:"halfLifeDays,omitempty"` // default 30
-}
-
-func (cfg EmbeddingConfig) mmrLambdaOrDefault() float64 {
+func embeddingMMRLambdaOrDefault(cfg EmbeddingConfig) float64 {
 	if cfg.MMR.Lambda > 0 {
 		return cfg.MMR.Lambda
 	}
 	return 0.7
 }
 
-func (cfg EmbeddingConfig) decayHalfLifeOrDefault() float64 {
+func embeddingDecayHalfLifeOrDefault(cfg EmbeddingConfig) float64 {
 	if cfg.TemporalDecay.HalfLifeDays > 0 {
 		return cfg.TemporalDecay.HalfLifeDays
 	}
@@ -469,7 +448,7 @@ func hybridSearch(ctx context.Context, cfg *Config, query string, source string,
 
 		// Apply temporal decay if enabled.
 		if cfg.Embedding.TemporalDecay.Enabled {
-			halfLife := cfg.Embedding.decayHalfLifeOrDefault()
+			halfLife := embeddingDecayHalfLifeOrDefault(cfg.Embedding)
 			for i := range merged {
 				if merged[i].CreatedAt != "" {
 					if createdAt, err := time.Parse(time.RFC3339, merged[i].CreatedAt); err == nil {
@@ -489,7 +468,7 @@ func hybridSearch(ctx context.Context, cfg *Config, query string, source string,
 
 		// MMR re-ranking if enabled.
 		if cfg.Embedding.MMR.Enabled && len(merged) > topK {
-			merged = mmrRerank(merged, queryVec, cfg.Embedding.mmrLambdaOrDefault(), topK)
+			merged = mmrRerank(merged, queryVec, cfg.Embedding.MmrLambdaOrDefault(), topK)
 		}
 
 		if topK > len(merged) {
@@ -506,7 +485,7 @@ func hybridSearch(ctx context.Context, cfg *Config, query string, source string,
 
 	// 6. Apply temporal decay if enabled.
 	if cfg.Embedding.TemporalDecay.Enabled {
-		halfLife := cfg.Embedding.decayHalfLifeOrDefault()
+		halfLife := cfg.Embedding.DecayHalfLifeOrDefault()
 		for i := range merged {
 			if merged[i].CreatedAt != "" {
 				if createdAt, err := time.Parse(time.RFC3339, merged[i].CreatedAt); err == nil {
@@ -526,7 +505,7 @@ func hybridSearch(ctx context.Context, cfg *Config, query string, source string,
 
 	// 7. MMR re-ranking if enabled.
 	if cfg.Embedding.MMR.Enabled && len(merged) > topK {
-		merged = mmrRerank(merged, queryVec, cfg.Embedding.mmrLambdaOrDefault(), topK)
+		merged = mmrRerank(merged, queryVec, cfg.Embedding.MmrLambdaOrDefault(), topK)
 	}
 
 	if topK > len(merged) {

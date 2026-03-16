@@ -43,7 +43,7 @@ func TestRestoreWorkflowVersion(t *testing.T) {
 	initVersionDB(dbPath)
 
 	cfg := &Config{
-		baseDir:   dir,
+		BaseDir:   dir,
 		HistoryDB: dbPath,
 	}
 

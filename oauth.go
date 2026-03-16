@@ -18,24 +18,6 @@ import (
 
 // --- P18.2: OAuth 2.0 Generic Framework ---
 
-// OAuthConfig holds top-level OAuth settings.
-type OAuthConfig struct {
-	Services      map[string]OAuthServiceConfig `json:"services,omitempty"`
-	EncryptionKey string                        `json:"encryptionKey,omitempty"` // $ENV_VAR supported
-	RedirectBase  string                        `json:"redirectBase,omitempty"` // e.g. "https://my.domain.com"
-}
-
-// OAuthServiceConfig configures a single OAuth 2.0 service.
-type OAuthServiceConfig struct {
-	Name         string            `json:"name"`
-	ClientID     string            `json:"clientId"`               // supports $ENV_VAR
-	ClientSecret string            `json:"clientSecret"`           // supports $ENV_VAR
-	AuthURL      string            `json:"authUrl"`
-	TokenURL     string            `json:"tokenUrl"`
-	Scopes       []string          `json:"scopes"`
-	RedirectURL  string            `json:"redirectUrl,omitempty"`  // default: {redirectBase}/api/oauth/{name}/callback
-	ExtraParams  map[string]string `json:"extraParams,omitempty"`
-}
 
 // OAuthToken represents a stored token.
 type OAuthToken struct {

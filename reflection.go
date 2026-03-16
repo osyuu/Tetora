@@ -11,14 +11,6 @@ import (
 
 // --- Reflection Config ---
 
-// ReflectionConfig controls post-execution reflection behavior.
-type ReflectionConfig struct {
-	Enabled       bool    `json:"enabled"`
-	TriggerOnFail bool    `json:"triggerOnFail,omitempty"` // reflect on failed tasks too (default false)
-	MinCost       float64 `json:"minCost,omitempty"`       // minimum task cost to trigger reflection
-	Budget        float64 `json:"budget,omitempty"`        // budget for reflection LLM call (default 0.05)
-}
-
 // --- Reflection Result ---
 
 // ReflectionResult holds the reflection output.
@@ -63,14 +55,6 @@ func initReflectionDB(dbPath string) error {
 
 // --- MinCost Default ---
 
-// minCostOrDefault returns the configured MinCost, defaulting to $0.03.
-func (c ReflectionConfig) minCostOrDefault() float64 {
-	if c.MinCost > 0 {
-		return c.MinCost
-	}
-	return 0.03
-}
-
 // --- Should Reflect ---
 
 // shouldReflect determines if a reflection should be performed after task execution.
@@ -90,7 +74,7 @@ func shouldReflect(cfg *Config, task Task, result TaskResult) bool {
 	// Skip if cost is below MinCost threshold (default $0.03).
 	// Bypass cost check for failed tasks when TriggerOnFail is enabled —
 	// failed tasks often have zero cost but still benefit from reflection.
-	if !isFailed && result.CostUSD < cfg.Reflection.minCostOrDefault() {
+	if !isFailed && result.CostUSD < cfg.Reflection.MinCostOrDefault() {
 		return false
 	}
 	return true

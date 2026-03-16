@@ -822,18 +822,18 @@ func TestToolFamilyNotEnabled(t *testing.T) {
 
 func TestFamilyConfigDefaults(t *testing.T) {
 	c := FamilyConfig{}
-	if c.maxUsersOrDefault() != 10 {
-		t.Errorf("expected default maxUsers 10, got %d", c.maxUsersOrDefault())
+	if c.MaxUsersOrDefault() != 10 {
+		t.Errorf("expected default maxUsers 10, got %d", c.MaxUsersOrDefault())
 	}
-	if c.defaultRateLimitOrDefault() != 100 {
-		t.Errorf("expected default rateLimit 100, got %d", c.defaultRateLimitOrDefault())
+	if c.DefaultRateLimitOrDefault() != 100 {
+		t.Errorf("expected default rateLimit 100, got %d", c.DefaultRateLimitOrDefault())
 	}
 
 	c2 := FamilyConfig{MaxUsers: 5, DefaultRateLimit: 50}
-	if c2.maxUsersOrDefault() != 5 {
-		t.Errorf("expected maxUsers 5, got %d", c2.maxUsersOrDefault())
+	if c2.MaxUsersOrDefault() != 5 {
+		t.Errorf("expected maxUsers 5, got %d", c2.MaxUsersOrDefault())
 	}
-	if c2.defaultRateLimitOrDefault() != 50 {
-		t.Errorf("expected rateLimit 50, got %d", c2.defaultRateLimitOrDefault())
+	if c2.DefaultRateLimitOrDefault() != 50 {
+		t.Errorf("expected rateLimit 50, got %d", c2.DefaultRateLimitOrDefault())
 	}
 }

@@ -523,7 +523,7 @@ func TestRunRetention(t *testing.T) {
 
 	cfg := &Config{
 		HistoryDB: dbPath,
-		baseDir:   dir,
+		BaseDir:   dir,
 		Retention: RetentionConfig{
 			History:     30,
 			Sessions:    15,
@@ -574,7 +574,7 @@ func TestRunRetentionDefaults(t *testing.T) {
 	// Empty retention config → all defaults.
 	cfg := &Config{
 		HistoryDB: dbPath,
-		baseDir:   dir,
+		BaseDir:   dir,
 	}
 	os.MkdirAll(filepath.Join(dir, "outputs"), 0o755)
 	os.MkdirAll(filepath.Join(dir, "uploads"), 0o755)

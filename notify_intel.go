@@ -89,11 +89,6 @@ type notifyChannel struct {
 	minPriority int // minimum priority rank to accept
 }
 
-// NotifyIntelConfig holds notification intelligence configuration.
-type NotifyIntelConfig struct {
-	BatchInterval string `json:"notifyBatch,omitempty"` // e.g. "5m", default "5m"
-}
-
 // NewNotificationEngine creates a new notification engine.
 func NewNotificationEngine(cfg *Config, notifiers []Notifier, fallbackFn func(string)) *NotificationEngine {
 	ne := &NotificationEngine{

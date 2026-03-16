@@ -517,25 +517,25 @@ func TestArchiveChannelSession(t *testing.T) {
 
 func TestSessionConfigDefaults(t *testing.T) {
 	c := SessionConfig{}
-	if c.contextMessagesOrDefault() != 20 {
-		t.Errorf("contextMessages default = %d, want 20", c.contextMessagesOrDefault())
+	if c.ContextMessagesOrDefault() != 20 {
+		t.Errorf("contextMessages default = %d, want 20", c.ContextMessagesOrDefault())
 	}
-	if c.compactAfterOrDefault() != 30 {
-		t.Errorf("compactAfter default = %d, want 30", c.compactAfterOrDefault())
+	if c.CompactAfterOrDefault() != 30 {
+		t.Errorf("compactAfter default = %d, want 30", c.CompactAfterOrDefault())
 	}
-	if c.compactKeepOrDefault() != 10 {
-		t.Errorf("compactKeep default = %d, want 10", c.compactKeepOrDefault())
+	if c.CompactKeepOrDefault() != 10 {
+		t.Errorf("compactKeep default = %d, want 10", c.CompactKeepOrDefault())
 	}
 
 	c2 := SessionConfig{ContextMessages: 5, CompactAfter: 15, CompactKeep: 3}
-	if c2.contextMessagesOrDefault() != 5 {
-		t.Errorf("contextMessages = %d, want 5", c2.contextMessagesOrDefault())
+	if c2.ContextMessagesOrDefault() != 5 {
+		t.Errorf("contextMessages = %d, want 5", c2.ContextMessagesOrDefault())
 	}
-	if c2.compactAfterOrDefault() != 15 {
-		t.Errorf("compactAfter = %d, want 15", c2.compactAfterOrDefault())
+	if c2.CompactAfterOrDefault() != 15 {
+		t.Errorf("compactAfter = %d, want 15", c2.CompactAfterOrDefault())
 	}
-	if c2.compactKeepOrDefault() != 3 {
-		t.Errorf("compactKeep = %d, want 3", c2.compactKeepOrDefault())
+	if c2.CompactKeepOrDefault() != 3 {
+		t.Errorf("compactKeep = %d, want 3", c2.CompactKeepOrDefault())
 	}
 }
 

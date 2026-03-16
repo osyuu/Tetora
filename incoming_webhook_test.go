@@ -291,21 +291,21 @@ func TestIsTruthy(t *testing.T) {
 func TestIncomingWebhookConfig_IsEnabled(t *testing.T) {
 	// Default (nil) → enabled.
 	c := IncomingWebhookConfig{}
-	if !c.isEnabled() {
+	if !c.IsEnabled() {
 		t.Error("expected enabled by default")
 	}
 
 	// Explicitly enabled.
 	tr := true
 	c.Enabled = &tr
-	if !c.isEnabled() {
+	if !c.IsEnabled() {
 		t.Error("expected enabled when set to true")
 	}
 
 	// Explicitly disabled.
 	f := false
 	c.Enabled = &f
-	if c.isEnabled() {
+	if c.IsEnabled() {
 		t.Error("expected disabled when set to false")
 	}
 }
@@ -316,8 +316,7 @@ func TestIncomingWebhookConfig_IsEnabled(t *testing.T) {
 func testWebhookConfig(webhooks map[string]IncomingWebhookConfig) *Config {
 	cfg := &Config{
 		IncomingWebhooks: webhooks,
-		registry:         newProviderRegistry(),
-		baseDir:          "/tmp/tetora-test",
+		BaseDir:          "/tmp/tetora-test",
 	}
 	return cfg
 }
@@ -517,7 +516,7 @@ func TestWebhookListEndpoint(t *testing.T) {
 			list = append(list, webhookInfo{
 				Name:      name,
 				Agent:      wh.Agent,
-				Enabled:   wh.isEnabled(),
+				Enabled:   wh.IsEnabled(),
 				HasSecret: wh.Secret != "",
 			})
 		}
@@ -543,7 +542,7 @@ func TestWebhookListEndpoint(t *testing.T) {
 
 func TestTriggerWebhookWorkflow_NotFound(t *testing.T) {
 	cfg := &Config{
-		baseDir: t.TempDir(),
+		BaseDir: t.TempDir(),
 	}
 	whCfg := IncomingWebhookConfig{
 		Agent:     "黒曜",

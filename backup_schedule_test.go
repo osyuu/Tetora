@@ -22,7 +22,7 @@ func TestBackupScheduler_RunBackup(t *testing.T) {
 
 	cfg := &Config{
 		HistoryDB: dbPath,
-		baseDir:   dir,
+		BaseDir:   dir,
 		Ops: OpsConfig{
 			BackupDir:    backupDir,
 			BackupRetain: 7,
@@ -109,7 +109,7 @@ func TestBackupScheduler_CleanOldBackups(t *testing.T) {
 	os.Chtimes(otherFile, oldTime, oldTime)
 
 	cfg := &Config{
-		baseDir: dir,
+		BaseDir: dir,
 		Ops: OpsConfig{
 			BackupDir:    backupDir,
 			BackupRetain: 7,
@@ -151,7 +151,7 @@ func TestBackupScheduler_ListBackups(t *testing.T) {
 	os.WriteFile(filepath.Join(backupDir, "random.txt"), []byte("not a backup"), 0o644)
 
 	cfg := &Config{
-		baseDir: dir,
+		BaseDir: dir,
 		Ops: OpsConfig{
 			BackupDir: backupDir,
 		},
@@ -177,7 +177,7 @@ func TestBackupScheduler_ListBackupsEmptyDir(t *testing.T) {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		baseDir: dir,
+		BaseDir: dir,
 		Ops: OpsConfig{
 			BackupDir: filepath.Join(dir, "nonexistent"),
 		},
@@ -204,7 +204,7 @@ func TestBackupScheduler_DefaultBackupDir(t *testing.T) {
 
 	cfg := &Config{
 		HistoryDB: dbPath,
-		baseDir:   dir,
+		BaseDir:   dir,
 		Ops:       OpsConfig{}, // No backupDir set — should use default.
 	}
 

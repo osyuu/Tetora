@@ -163,7 +163,7 @@ func (r *messagingRuntime) WorkspaceDir() string {
 }
 
 func (r *messagingRuntime) SaveUpload(filename string, data []byte) (string, error) {
-	uploadDir := upload.InitDir(r.cfg.baseDir)
+	uploadDir := upload.InitDir(r.cfg.BaseDir)
 	f, err := upload.Save(uploadDir, filename, bytes.NewReader(data), int64(len(data)), "messaging")
 	if err != nil {
 		return "", err
@@ -239,7 +239,7 @@ func (r *messagingRuntime) UpdateSessionTitle(sessionID, title string) {
 }
 
 func (r *messagingRuntime) SessionContextLimit() int {
-	return r.cfg.Session.contextMessagesOrDefault()
+	return r.cfg.Session.ContextMessagesOrDefault()
 }
 
 func (r *messagingRuntime) AgentConfig(agent string) (model, permMode string, found bool) {
@@ -365,7 +365,7 @@ func (r *messagingRuntime) DownloadFile(url, filename, authHeader string) (strin
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("HTTP %d downloading %s", resp.StatusCode, filename)
 	}
-	uploadDir := upload.InitDir(r.cfg.baseDir)
+	uploadDir := upload.InitDir(r.cfg.BaseDir)
 	f, err := upload.Save(uploadDir, filename, resp.Body, resp.ContentLength, "messaging")
 	if err != nil {
 		return "", err

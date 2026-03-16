@@ -10,31 +10,6 @@ import (
 
 // --- Sandbox Config ---
 
-// SandboxConfig configures the sandbox plugin system.
-type SandboxConfig struct {
-	Plugin       string `json:"plugin,omitempty"`       // plugin name (default: first "sandbox" type plugin)
-	DefaultImage string `json:"defaultImage,omitempty"` // default Docker image (default "ubuntu:22.04")
-	MemLimit     string `json:"memLimit,omitempty"`     // default mem limit (e.g. "512m")
-	CPULimit     string `json:"cpuLimit,omitempty"`     // default CPU limit (e.g. "1.0")
-	Network      string `json:"network,omitempty"`      // "none", "bridge" (default "none")
-}
-
-// defaultImageOrDefault returns the configured default image or "ubuntu:22.04".
-func (c SandboxConfig) defaultImageOrDefault() string {
-	if c.DefaultImage != "" {
-		return c.DefaultImage
-	}
-	return "ubuntu:22.04"
-}
-
-// networkOrDefault returns the configured network or "none".
-func (c SandboxConfig) networkOrDefault() string {
-	if c.Network != "" {
-		return c.Network
-	}
-	return "none"
-}
-
 // --- Sandbox Manager ---
 
 // SandboxManager bridges the core dispatch system with the sandbox plugin.
@@ -115,8 +90,8 @@ func (sm *SandboxManager) EnsureSandbox(sessionID, workspace string) (string, er
 	params := map[string]any{
 		"sessionId": sessionID,
 		"workspace": workspace,
-		"image":     sm.cfg.Sandbox.defaultImageOrDefault(),
-		"network":   sm.cfg.Sandbox.networkOrDefault(),
+		"image":     sm.cfg.Sandbox.DefaultImageOrDefault(),
+		"network":   sm.cfg.Sandbox.NetworkOrDefault(),
 	}
 	if sm.cfg.Sandbox.MemLimit != "" {
 		params["memLimit"] = sm.cfg.Sandbox.MemLimit
@@ -172,14 +147,14 @@ func (sm *SandboxManager) EnsureSandboxWithImage(sessionID, workspace, image str
 	sm.mu.RUnlock()
 
 	if image == "" {
-		image = sm.cfg.Sandbox.defaultImageOrDefault()
+		image = sm.cfg.Sandbox.DefaultImageOrDefault()
 	}
 
 	params := map[string]any{
 		"sessionId": sessionID,
 		"workspace": workspace,
 		"image":     image,
-		"network":   sm.cfg.Sandbox.networkOrDefault(),
+		"network":   sm.cfg.Sandbox.NetworkOrDefault(),
 	}
 	if sm.cfg.Sandbox.MemLimit != "" {
 		params["memLimit"] = sm.cfg.Sandbox.MemLimit
@@ -360,7 +335,7 @@ func sandboxImageForAgent(cfg *Config, agentName string) string {
 			}
 		}
 	}
-	return cfg.Sandbox.defaultImageOrDefault()
+	return cfg.Sandbox.DefaultImageOrDefault()
 }
 
 // shouldUseSandbox determines whether a task should use a sandbox,

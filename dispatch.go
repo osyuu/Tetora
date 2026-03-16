@@ -398,8 +398,8 @@ func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchSta
 		go func(t Task) {
 			defer wg.Done()
 			s := selectSem(sem, childSem, t.Depth)
-			if t.Depth == 0 && cfg.slotPressureGuard != nil {
-				ar, err := cfg.slotPressureGuard.AcquireSlot(ctx, s, t.Source)
+			if t.Depth == 0 && cfg.Runtime.SlotPressureGuard != nil {
+				ar, err := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).AcquireSlot(ctx, s, t.Source)
 				if err != nil {
 					results <- TaskResult{
 						ID: t.ID, Name: t.Name, Status: "cancelled",
@@ -407,7 +407,7 @@ func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchSta
 					}
 					return
 				}
-				defer cfg.slotPressureGuard.ReleaseSlot()
+				defer cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).ReleaseSlot()
 				defer func() { <-s }()
 				var r TaskResult
 				if t.ReviewLoop {
@@ -450,8 +450,8 @@ func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchSta
 // runSingleTask runs one task using the shared semaphore. Used by cron engine.
 func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem chan struct{}, agentName string) TaskResult {
 	// Register worker origin (if not already registered by cron layer).
-	if cfg.hookRecv != nil && task.SessionID != "" {
-		cfg.hookRecv.RegisterOriginIfAbsent(task.SessionID, &workerOrigin{
+	if cfg.Runtime.HookRecv != nil && task.SessionID != "" {
+		cfg.Runtime.HookRecv.(*hookReceiver).RegisterOriginIfAbsent(task.SessionID, &workerOrigin{
 			TaskID:   task.ID,
 			TaskName: task.Name,
 			Source:   task.Source,
@@ -481,7 +481,7 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 			if ws.Dir != "" {
 				task.Workdir = ws.Dir
 			}
-			task.AddDirs = append(task.AddDirs, cfg.baseDir)
+			task.AddDirs = append(task.AddDirs, cfg.BaseDir)
 		}
 	}
 
@@ -495,15 +495,15 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 
 	s := selectSem(sem, childSem, task.Depth)
 	var slotWarning string
-	if task.Depth == 0 && cfg.slotPressureGuard != nil {
-		ar, err := cfg.slotPressureGuard.AcquireSlot(ctx, s, task.Source)
+	if task.Depth == 0 && cfg.Runtime.SlotPressureGuard != nil {
+		ar, err := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).AcquireSlot(ctx, s, task.Source)
 		if err != nil {
 			return TaskResult{
 				ID: task.ID, Name: task.Name, Status: "cancelled",
 				Error: "slot acquisition cancelled: " + err.Error(), Model: task.Model, SessionID: task.SessionID,
 			}
 		}
-		defer cfg.slotPressureGuard.ReleaseSlot()
+		defer cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).ReleaseSlot()
 		defer func() { <-s }()
 		slotWarning = ar.Warning
 	} else {
@@ -577,7 +577,7 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 	}
 
 	start := time.Now()
-	pr := executeWithProvider(taskCtx, cfg, task, agentName, cfg.registry, eventCh)
+	pr := executeWithProvider(taskCtx, cfg, task, agentName, cfg.Runtime.ProviderRegistry.(*providerRegistry), eventCh)
 	if eventCh != nil {
 		close(eventCh)
 	}
@@ -624,7 +624,7 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 
 	// Offline queue: if all providers are unavailable, enqueue for later retry.
 	if result.Status == "error" && isAllProvidersUnavailable(result.Error) && cfg.OfflineQueue.Enabled {
-		if !isQueueFull(cfg.HistoryDB, cfg.OfflineQueue.maxItemsOrDefault()) {
+		if !isQueueFull(cfg.HistoryDB, cfg.OfflineQueue.MaxItemsOrDefault()) {
 			if err := enqueueTask(cfg.HistoryDB, task, agentName, 0); err == nil {
 				result.Status = "queued"
 				logInfoCtx(ctx, "task queued for offline retry",
@@ -661,7 +661,7 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 
 	// Save output to file.
 	if pr.Output != "" {
-		result.OutputFile = saveTaskOutput(cfg.baseDir, task.ID, []byte(pr.Output))
+		result.OutputFile = saveTaskOutput(cfg.BaseDir, task.ID, []byte(pr.Output))
 	}
 
 	// SSE streaming: publish completed/error event.
@@ -839,9 +839,9 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 	var pr *ProviderResult
 	if complexity == ComplexitySimple {
 		// Simple requests skip the tool engine entirely.
-		pr = executeWithProvider(taskCtx, cfg, task, agentName, cfg.registry, eventCh)
+		pr = executeWithProvider(taskCtx, cfg, task, agentName, cfg.Runtime.ProviderRegistry.(*providerRegistry), eventCh)
 	} else {
-		pr = executeWithProviderAndTools(taskCtx, cfg, task, agentName, cfg.registry, eventCh, state.broker)
+		pr = executeWithProviderAndTools(taskCtx, cfg, task, agentName, cfg.Runtime.ProviderRegistry.(*providerRegistry), eventCh, state.broker)
 	}
 	if eventCh != nil {
 		close(eventCh)
@@ -881,7 +881,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 
 	// Offline queue: if all providers are unavailable, enqueue for later retry.
 	if result.Status == "error" && isAllProvidersUnavailable(result.Error) && cfg.OfflineQueue.Enabled {
-		if !isQueueFull(cfg.HistoryDB, cfg.OfflineQueue.maxItemsOrDefault()) {
+		if !isQueueFull(cfg.HistoryDB, cfg.OfflineQueue.MaxItemsOrDefault()) {
 			if err := enqueueTask(cfg.HistoryDB, task, agentName, 0); err == nil {
 				result.Status = "queued"
 				logInfoCtx(ctx, "task queued for offline retry",
@@ -947,7 +947,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 
 	// Save output to file.
 	if pr.Output != "" {
-		result.OutputFile = saveTaskOutput(cfg.baseDir, task.ID, []byte(pr.Output))
+		result.OutputFile = saveTaskOutput(cfg.BaseDir, task.ID, []byte(pr.Output))
 	}
 
 	// Record to history DB.
@@ -1069,7 +1069,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 // Uses SmartDispatch config for reviewer agent and max retries.
 // Skill failure injection is integrated: QA rejections are recorded and loaded on retry.
 func dispatchDevQALoop(ctx context.Context, cfg *Config, task Task, state *dispatchState, sem, childSem chan struct{}) TaskResult {
-	maxRetries := cfg.SmartDispatch.maxRetriesOrDefault() // default 3
+	maxRetries := cfg.SmartDispatch.MaxRetriesOrDefault() // default 3
 	originalPrompt := task.Prompt
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {

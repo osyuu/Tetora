@@ -738,7 +738,7 @@ afterRole:
 		if err := installHooks(listenAddr); err != nil {
 			fmt.Printf("  Warning: %v\n", err)
 		}
-		initCfg := &Config{ListenAddr: listenAddr, baseDir: configDir}
+		initCfg := &Config{ListenAddr: listenAddr, BaseDir: configDir}
 		if err := generateMCPBridgeConfig(initCfg); err != nil {
 			fmt.Printf("  Warning: MCP bridge config: %v\n", err)
 		} else {

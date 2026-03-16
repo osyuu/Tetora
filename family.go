@@ -10,28 +10,6 @@ import (
 // Service struct, types, and method implementations are in internal/life/family/.
 // This file keeps config type, tool handlers, and the global singleton.
 
-// FamilyConfig holds settings for multi-user / family mode.
-type FamilyConfig struct {
-	Enabled          bool    `json:"enabled"`
-	MaxUsers         int     `json:"maxUsers,omitempty"`         // default 10
-	DefaultBudget    float64 `json:"defaultBudget,omitempty"`    // monthly USD, 0=unlimited
-	DefaultRateLimit int     `json:"defaultRateLimit,omitempty"` // daily requests, default 100
-}
-
-func (c FamilyConfig) maxUsersOrDefault() int {
-	if c.MaxUsers > 0 {
-		return c.MaxUsers
-	}
-	return 10
-}
-
-func (c FamilyConfig) defaultRateLimitOrDefault() int {
-	if c.DefaultRateLimit > 0 {
-		return c.DefaultRateLimit
-	}
-	return 100
-}
-
 // globalFamilyService is the singleton family service.
 var globalFamilyService *FamilyService
 

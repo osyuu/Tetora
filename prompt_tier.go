@@ -47,7 +47,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 			case ComplexitySimple:
 				task.SystemPrompt = truncateToChars(soulPrompt, 4000)
 			default:
-				task.SystemPrompt = truncateToChars(soulPrompt, cfg.PromptBudget.soulMaxOrDefault())
+				task.SystemPrompt = truncateToChars(soulPrompt, cfg.PromptBudget.SoulMaxOrDefault())
 			}
 		}
 	}
@@ -59,7 +59,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 		if task.Workdir == "" && ws.Dir != "" {
 			task.Workdir = ws.Dir
 		}
-		task.AddDirs = append(task.AddDirs, cfg.baseDir)
+		task.AddDirs = append(task.AddDirs, cfg.BaseDir)
 	}
 
 	// --- 3. Agent config overrides (always) ---
@@ -88,7 +88,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 
 	// --- Lessons injection (always, provider-aware) ---
 	if agentName != "" {
-		lessonsPath := filepath.Join(cfg.baseDir, "agents", agentName, "lessons.md")
+		lessonsPath := filepath.Join(cfg.BaseDir, "agents", agentName, "lessons.md")
 		if providerType == "claude-code" || providerType == "codex-cli" {
 			// These providers can read files — just remind them to check.
 			if _, err := os.Stat(lessonsPath); err == nil {
@@ -180,12 +180,12 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 	// Standard: keep workspace dir only (+ baseDir).
 	// Complex: keep all.
 	if complexity == ComplexitySimple {
-		task.AddDirs = []string{cfg.baseDir}
+		task.AddDirs = []string{cfg.BaseDir}
 	} else if complexity == ComplexityStandard {
 		var kept []string
 		ws := resolveWorkspace(cfg, agentName)
 		for _, d := range task.AddDirs {
-			if d == cfg.baseDir || d == ws.Dir {
+			if d == cfg.BaseDir || d == ws.Dir {
 				kept = append(kept, d)
 			}
 		}
@@ -194,7 +194,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 	// Complex: keep all (no filtering).
 
 	// --- 12. Enforce total budget ---
-	totalMax := cfg.PromptBudget.totalMaxOrDefault()
+	totalMax := cfg.PromptBudget.TotalMaxOrDefault()
 	if len(task.SystemPrompt) > totalMax {
 		task.SystemPrompt = truncateToChars(task.SystemPrompt, totalMax)
 	}

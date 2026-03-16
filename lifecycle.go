@@ -12,14 +12,6 @@ import (
 
 // --- P29.0: Closed-Loop Automation (Lifecycle Engine) ---
 
-// LifecycleConfig holds configuration for cross-module automation.
-type LifecycleConfig struct {
-	Enabled            bool `json:"enabled"`
-	AutoHabitSuggest   bool `json:"autoHabitSuggest,omitempty"`
-	AutoInsightAction  bool `json:"autoInsightAction,omitempty"`
-	AutoBirthdayRemind bool `json:"autoBirthdayRemind,omitempty"`
-}
-
 // LifecycleEngine connects modules into closed-loop automation.
 type LifecycleEngine struct {
 	cfg *Config
@@ -192,7 +184,7 @@ func (le *LifecycleEngine) OnGoalCompleted(goalID string) error {
 
 	// Write celebration note to vault.
 	if le.cfg.Notes.Enabled {
-		vaultPath := le.cfg.Notes.VaultPathResolved(le.cfg.baseDir)
+		vaultPath := le.cfg.Notes.VaultPathResolved(le.cfg.BaseDir)
 		os.MkdirAll(vaultPath, 0o755)
 		filename := fmt.Sprintf("goal-completed-%s.md", time.Now().Format("20060102-150405"))
 		content := fmt.Sprintf("# 🎉 Goal Completed: %s\n\n"+

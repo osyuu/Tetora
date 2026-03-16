@@ -26,13 +26,6 @@ type PairingRequest struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-type AccessControlConfig struct {
-	DMPairing      bool                `json:"dmPairing,omitempty"`
-	PairingMessage string              `json:"pairingMessage,omitempty"` // template with {{.Code}}
-	PairingExpiry  string              `json:"pairingExpiry,omitempty"`  // duration string, default "15m"
-	Allowlists     map[string][]string `json:"allowlists,omitempty"`     // channel → list of user IDs
-}
-
 // --- Core Functions ---
 
 func newPairingManager(cfg *Config) *PairingManager {

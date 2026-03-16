@@ -80,35 +80,34 @@ func TestTriggerCooldown(t *testing.T) {
 func TestTriggerEnabled(t *testing.T) {
 	// nil Enabled -> should be enabled (default).
 	t1 := WorkflowTriggerConfig{Name: "t1"}
-	if !t1.isEnabled() {
+	if !t1.IsEnabled() {
 		t.Error("expected nil Enabled to default to true")
 	}
 
 	// Explicit true.
 	boolTrue := true
 	t2 := WorkflowTriggerConfig{Name: "t2", Enabled: &boolTrue}
-	if !t2.isEnabled() {
+	if !t2.IsEnabled() {
 		t.Error("expected Enabled=true to be enabled")
 	}
 
 	// Explicit false.
 	boolFalse := false
 	t3 := WorkflowTriggerConfig{Name: "t3", Enabled: &boolFalse}
-	if t3.isEnabled() {
+	if t3.IsEnabled() {
 		t.Error("expected Enabled=false to be disabled")
 	}
 }
 
 func TestToolCallStep(t *testing.T) {
 	// Create a minimal config with a tool registry and a mock tool.
-	cfg := &Config{
-		toolRegistry: &ToolRegistry{
-			tools: make(map[string]*ToolDef),
-		},
+	cfg := &Config{}
+	cfg.Runtime.ToolRegistry = &ToolRegistry{
+		tools: make(map[string]*ToolDef),
 	}
 
 	// Register a mock tool.
-	cfg.toolRegistry.Register(&ToolDef{
+	cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name:        "mock_tool",
 		Description: "A mock tool for testing",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`),
@@ -146,13 +145,12 @@ func TestToolCallStep(t *testing.T) {
 }
 
 func TestToolCallStepWithVarExpansion(t *testing.T) {
-	cfg := &Config{
-		toolRegistry: &ToolRegistry{
-			tools: make(map[string]*ToolDef),
-		},
+	cfg := &Config{}
+	cfg.Runtime.ToolRegistry = &ToolRegistry{
+		tools: make(map[string]*ToolDef),
 	}
 
-	cfg.toolRegistry.Register(&ToolDef{
+	cfg.Runtime.ToolRegistry.(*ToolRegistry).Register(&ToolDef{
 		Name: "echo_tool",
 		Handler: func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
 			var args struct {
@@ -472,7 +470,7 @@ func TestFireTrigger(t *testing.T) {
 	os.WriteFile(filepath.Join(wfDir, "test-fire-wf.json"), wfData, 0o644)
 
 	cfg := &Config{
-		baseDir: tmpDir,
+		BaseDir: tmpDir,
 		WorkflowTriggers: []WorkflowTriggerConfig{
 			{
 				Name:         "fire-test",

@@ -14,12 +14,6 @@ import (
 
 // --- Tool Profiles ---
 
-// ToolProfile defines a preset collection of allowed tools.
-type ToolProfile struct {
-	Name  string   `json:"name"`
-	Allow []string `json:"allow"`          // tool names, "*" = all
-	Deny  []string `json:"deny,omitempty"` // denied tools
-}
 
 // Built-in profiles for common use cases.
 var builtinProfiles = map[string]ToolProfile{
@@ -53,14 +47,6 @@ var builtinProfiles = map[string]ToolProfile{
 
 // --- Per-Agent Tool Policy ---
 
-// AgentToolPolicy configures tool access for a specific agent.
-type AgentToolPolicy struct {
-	Profile      string   `json:"profile,omitempty"`      // profile name (minimal, standard, full, or custom)
-	Allow        []string `json:"allow,omitempty"`        // additional allowed tools
-	Deny         []string `json:"deny,omitempty"`         // explicitly denied tools
-	Sandbox      string   `json:"sandbox,omitempty"`      // "required" | "optional" | "never" (default: "never") --- P13.2: Sandbox Plugin ---
-	SandboxImage string   `json:"sandboxImage,omitempty"` // custom Docker image per agent --- P13.2: Sandbox Plugin ---
-}
 
 // --- Tool Trust Override ---
 
@@ -119,7 +105,7 @@ func resolveAllowedTools(cfg *Config, agentName string) map[string]bool {
 	for _, toolName := range profile.Allow {
 		if toolName == "*" {
 			// All registered tools.
-			for _, td := range cfg.toolRegistry.List() {
+			for _, td := range cfg.Runtime.ToolRegistry.(*ToolRegistry).List() {
 				allowed[td.Name] = true
 			}
 			break
@@ -171,8 +157,8 @@ func getToolTrustLevel(cfg *Config, agentName, toolName string) string {
 	}
 
 	// If tool has RequireAuth flag and no explicit trust config, default to "suggest" instead of "auto".
-	if cfg.toolRegistry != nil {
-		if td, ok := cfg.toolRegistry.Get(toolName); ok && td.RequireAuth {
+	if cfg.Runtime.ToolRegistry != nil {
+		if td, ok := cfg.Runtime.ToolRegistry.(*ToolRegistry).Get(toolName); ok && td.RequireAuth {
 			return TrustSuggest
 		}
 	}
@@ -367,7 +353,7 @@ func validateToolPolicy(cfg *Config, policy AgentToolPolicy) error {
 
 	// Check if tools in allow/deny lists exist.
 	allTools := make(map[string]bool)
-	for _, td := range cfg.toolRegistry.List() {
+	for _, td := range cfg.Runtime.ToolRegistry.(*ToolRegistry).List() {
 		allTools[td.Name] = true
 	}
 

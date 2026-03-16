@@ -22,7 +22,7 @@ func toolExpenseAdd(ctx context.Context, cfg *Config, input json.RawMessage) (st
 	if app == nil || app.Finance == nil {
 		return "", fmt.Errorf("finance service not initialized (enable finance in config)")
 	}
-	return tool.ExpenseAdd(app.Finance, parseExpenseNL, cfg.Finance.defaultCurrencyOrTWD(), input)
+	return tool.ExpenseAdd(app.Finance, parseExpenseNL, cfg.Finance.DefaultCurrencyOrTWD(), input)
 }
 
 func toolExpenseReport(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
@@ -38,5 +38,5 @@ func toolExpenseBudget(ctx context.Context, cfg *Config, input json.RawMessage) 
 	if app == nil || app.Finance == nil {
 		return "", fmt.Errorf("finance service not initialized (enable finance in config)")
 	}
-	return tool.ExpenseBudget(app.Finance, cfg.Finance.defaultCurrencyOrTWD(), input)
+	return tool.ExpenseBudget(app.Finance, cfg.Finance.DefaultCurrencyOrTWD(), input)
 }

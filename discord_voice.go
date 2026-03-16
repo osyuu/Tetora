@@ -21,25 +21,6 @@ const (
 	intentGuildVoiceStates = 1 << 7 // required for VOICE_STATE_UPDATE events
 )
 
-// DiscordVoiceConfig holds configuration for Discord voice channel integration.
-type DiscordVoiceConfig struct {
-	Enabled  bool                    `json:"enabled"`
-	AutoJoin []DiscordVoiceAutoJoin  `json:"autoJoin,omitempty"` // channels to auto-join on connect
-	TTS      DiscordVoiceTTSConfig   `json:"tts,omitempty"`      // TTS settings for voice playback
-}
-
-// DiscordVoiceAutoJoin specifies a voice channel to auto-join.
-type DiscordVoiceAutoJoin struct {
-	GuildID   string `json:"guildId"`
-	ChannelID string `json:"channelId"`
-}
-
-// DiscordVoiceTTSConfig holds TTS settings for voice playback.
-type DiscordVoiceTTSConfig struct {
-	Provider string `json:"provider,omitempty"` // "elevenlabs", "openai", etc.
-	Voice    string `json:"voice,omitempty"`    // voice ID/name
-}
-
 // voiceStateUpdatePayload is sent to the gateway to join/leave voice channels.
 type voiceStateUpdatePayload struct {
 	GuildID   string  `json:"guild_id"`

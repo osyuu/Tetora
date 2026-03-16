@@ -8,7 +8,7 @@ import (
 
 func TestWriteAndReadPrompt(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	if err := writePrompt(cfg, "test-prompt", "# Hello\nThis is a test."); err != nil {
 		t.Fatalf("writePrompt: %v", err)
@@ -25,7 +25,7 @@ func TestWriteAndReadPrompt(t *testing.T) {
 
 func TestReadPromptNotFound(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	_, err := readPrompt(cfg, "nonexistent")
 	if err == nil {
@@ -35,7 +35,7 @@ func TestReadPromptNotFound(t *testing.T) {
 
 func TestListPrompts(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	// Empty dir.
 	prompts, err := listPrompts(cfg)
@@ -68,7 +68,7 @@ func TestListPrompts(t *testing.T) {
 
 func TestDeletePrompt(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	writePrompt(cfg, "to-delete", "content")
 
@@ -85,7 +85,7 @@ func TestDeletePrompt(t *testing.T) {
 
 func TestDeletePromptNotFound(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	err := deletePrompt(cfg, "nonexistent")
 	if err == nil {
@@ -95,7 +95,7 @@ func TestDeletePromptNotFound(t *testing.T) {
 
 func TestWritePromptInvalidName(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	err := writePrompt(cfg, "bad/name", "content")
 	if err == nil {
@@ -115,7 +115,7 @@ func TestWritePromptInvalidName(t *testing.T) {
 
 func TestResolvePromptFile(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 
 	writePrompt(cfg, "my-prompt", "resolved content here")
 
@@ -149,7 +149,7 @@ func TestResolvePromptFile(t *testing.T) {
 
 func TestListPromptsIgnoresNonMd(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{baseDir: dir}
+	cfg := &Config{BaseDir: dir}
 	promptDir := filepath.Join(dir, "prompts")
 	os.MkdirAll(promptDir, 0o755)
 

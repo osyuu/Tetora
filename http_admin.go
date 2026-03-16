@@ -62,7 +62,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			list = append(list, webhookInfo{
 				Name:      name,
 				Agent:      wh.Agent,
-				Enabled:   wh.isEnabled(),
+				Enabled:   wh.IsEnabled(),
 				Template:  wh.Template,
 				Filter:    wh.Filter,
 				Workflow:  wh.Workflow,
@@ -216,7 +216,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		tmpFile.Close()
 		defer os.Remove(tmpPath)
 
-		if err := createBackup(cfg.baseDir, tmpPath); err != nil {
+		if err := createBackup(cfg.BaseDir, tmpPath); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"create backup: %v"}`, err), http.StatusInternalServerError)
 			return
 		}
@@ -295,7 +295,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				HttpOnly: true,
 				SameSite: http.SameSiteStrictMode,
 			}
-			if cfg.tlsEnabled {
+			if cfg.TLSEnabled {
 				cookie.Secure = true
 			}
 			http.SetCookie(w, cookie)
@@ -337,7 +337,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				Reason string `json:"reason"`
 			}
 			json.NewDecoder(r.Body).Decode(&req)
-			configPath := filepath.Join(cfg.baseDir, "config.json")
+			configPath := filepath.Join(cfg.BaseDir, "config.json")
 			if err := snapshotConfig(cfg.HistoryDB, configPath, "api", req.Reason); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
@@ -371,7 +371,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		// POST /config/versions/{id}/restore
 		if r.Method == http.MethodPost && strings.HasSuffix(path, "/restore") {
 			versionID := strings.TrimSuffix(path, "/restore")
-			configPath := filepath.Join(cfg.baseDir, "config.json")
+			configPath := filepath.Join(cfg.BaseDir, "config.json")
 			if _, err := restoreConfigVersion(cfg.HistoryDB, configPath, versionID); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 				return
@@ -708,7 +708,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		triggers := cfg.WorkflowTriggers
 		activeCount := 0
 		for _, t := range triggers {
-			if t.isEnabled() {
+			if t.IsEnabled() {
 				activeCount++
 			}
 		}
@@ -767,8 +767,8 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		}
 
 		toolCount := 0
-		if cfg.toolRegistry != nil {
-			toolCount = len(cfg.toolRegistry.List())
+		if cfg.Runtime.ToolRegistry != nil {
+			toolCount = len(cfg.Runtime.ToolRegistry.(*ToolRegistry).List())
 		}
 
 		summary := map[string]any{
@@ -778,7 +778,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				"defaultModel":   cfg.DefaultModel,
 				"defaultTimeout": cfg.DefaultTimeout,
 				"apiToken":       maskSecret(cfg.APIToken),
-				"tlsEnabled":     cfg.tlsEnabled,
+				"tlsEnabled":     cfg.TLSEnabled,
 			},
 			"channels": map[string]any{
 				"telegram":  cfg.Telegram.Enabled,
@@ -813,7 +813,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				"action":      cfg.CostAlert.Action,
 			},
 			"security": map[string]any{
-				"tlsEnabled":    cfg.tlsEnabled,
+				"tlsEnabled":    cfg.TLSEnabled,
 				"rateLimit":     cfg.RateLimit.Enabled,
 				"rateLimitMax":  cfg.RateLimit.MaxPerMin,
 				"ipAllowlist":   len(cfg.AllowedIPs),
@@ -827,11 +827,11 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			},
 			"heartbeat": map[string]any{
 				"enabled":          cfg.Heartbeat.Enabled,
-				"interval":         cfg.Heartbeat.intervalOrDefault().String(),
-				"stallThreshold":   cfg.Heartbeat.stallThresholdOrDefault().String(),
-				"timeoutWarnRatio": cfg.Heartbeat.timeoutWarnRatioOrDefault(),
+				"interval":         cfg.Heartbeat.IntervalOrDefault().String(),
+				"stallThreshold":   cfg.Heartbeat.StallThresholdOrDefault().String(),
+				"timeoutWarnRatio": cfg.Heartbeat.TimeoutWarnRatioOrDefault(),
 				"autoCancel":       cfg.Heartbeat.AutoCancel,
-				"notifyOnStall":    cfg.Heartbeat.notifyOnStallOrDefault(),
+				"notifyOnStall":    cfg.Heartbeat.NotifyOnStallOrDefault(),
 			},
 		}
 

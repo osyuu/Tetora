@@ -21,8 +21,8 @@ type BackupInfo = scheduling.BackupInfo
 func newBackupScheduler(cfg *Config) *BackupScheduler {
 	bcfg := scheduling.BackupConfig{
 		DBPath:     cfg.HistoryDB,
-		BackupDir:  cfg.Ops.backupDirResolved(cfg.baseDir),
-		RetainDays: cfg.Ops.backupRetainOrDefault(),
+		BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+		RetainDays: cfg.Ops.BackupRetainOrDefault(),
 		EscapeSQL:  escapeSQLite,
 		LogInfo:    logInfo,
 		LogWarn:    logWarn,

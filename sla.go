@@ -11,8 +11,8 @@ import (
 )
 
 // --- Type aliases ---
+// SLAConfig is aliased in config.go via internal/config.
 
-type SLAConfig = sla.SLAConfig
 type AgentSLACfg = sla.AgentSLACfg
 type SLAMetrics = sla.SLAMetrics
 type SLAStatus = sla.SLAStatus
