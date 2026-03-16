@@ -4,423 +4,61 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
-	"sync"
-	"time"
+
+	"tetora/internal/cost"
 )
 
-// --- Budget Config Types ---
+// Type aliases — root code continues to use bare names.
+type BudgetConfig = cost.BudgetConfig
+type GlobalBudget = cost.GlobalBudget
+type AgentBudget = cost.AgentBudget
+type WorkflowBudget = cost.WorkflowBudget
+type AutoDowngradeConfig = cost.AutoDowngradeConfig
+type DowngradeThreshold = cost.DowngradeThreshold
+type BudgetCheckResult = cost.BudgetCheckResult
+type BudgetStatus = cost.BudgetStatus
+type BudgetMeter = cost.BudgetMeter
+type AgentBudgetMeter = cost.AgentBudgetMeter
+type budgetAlertTracker = cost.BudgetAlertTracker
 
-// BudgetConfig configures cost governance budgets and auto-downgrade.
-type BudgetConfig struct {
-	Global        GlobalBudget              `json:"global,omitempty"`
-	Agents         map[string]AgentBudget     `json:"agents,omitempty"`
-	Workflows     map[string]WorkflowBudget `json:"workflows,omitempty"`
-	AutoDowngrade AutoDowngradeConfig       `json:"autoDowngrade,omitempty"`
-	Paused        bool                      `json:"paused,omitempty"` // kill switch: pause all paid execution
-}
+func newBudgetAlertTracker() *budgetAlertTracker { return cost.NewBudgetAlertTracker() }
 
-// GlobalBudget defines daily/weekly/monthly budget caps.
-type GlobalBudget struct {
-	Daily   float64 `json:"daily,omitempty"`
-	Weekly  float64 `json:"weekly,omitempty"`
-	Monthly float64 `json:"monthly,omitempty"`
-}
-
-// AgentBudget defines per-agent daily budget cap.
-type AgentBudget struct {
-	Daily float64 `json:"daily,omitempty"`
-}
-
-// WorkflowBudget defines per-workflow per-run budget cap.
-type WorkflowBudget struct {
-	PerRun float64 `json:"perRun,omitempty"`
-}
-
-// AutoDowngradeConfig configures automatic model downgrade near budget limits.
-type AutoDowngradeConfig struct {
-	Enabled    bool                 `json:"enabled,omitempty"`
-	Thresholds []DowngradeThreshold `json:"thresholds,omitempty"` // sorted ascending by At
-}
-
-// DowngradeThreshold defines a budget utilization threshold that triggers model downgrade.
-type DowngradeThreshold struct {
-	At    float64 `json:"at"`    // utilization ratio (0.0-1.0), e.g. 0.7
-	Model string  `json:"model"` // model to downgrade to, e.g. "sonnet", "local/llama3"
-}
-
-// --- Budget Check Result ---
-
-// BudgetCheckResult is the result of a pre-execution budget check.
-type BudgetCheckResult struct {
-	Allowed        bool    `json:"allowed"`
-	Paused         bool    `json:"paused,omitempty"`         // kill switch active
-	Exceeded       bool    `json:"exceeded,omitempty"`       // hard cap hit
-	Message        string  `json:"message,omitempty"`        // human-readable reason
-	DowngradeModel string  `json:"downgradeModel,omitempty"` // auto-downgrade model (empty = no change)
-	Utilization    float64 `json:"utilization,omitempty"`    // highest utilization ratio (0.0-1.0)
-	AlertLevel     string  `json:"alertLevel"`               // "ok", "warning", "critical", "exceeded", "paused"
-}
-
-// --- Budget Status (for API/CLI) ---
-
-// BudgetStatus shows current spend vs. limits.
-type BudgetStatus struct {
-	Paused bool             `json:"paused"`
-	Global *BudgetMeter     `json:"global,omitempty"`
-	Agents  []AgentBudgetMeter `json:"agents,omitempty"`
-}
-
-// BudgetMeter shows spend vs. limit for a time period.
-type BudgetMeter struct {
-	DailySpend   float64 `json:"dailySpend"`
-	DailyLimit   float64 `json:"dailyLimit,omitempty"`
-	DailyPct     float64 `json:"dailyPct"`
-	WeeklySpend  float64 `json:"weeklySpend"`
-	WeeklyLimit  float64 `json:"weeklyLimit,omitempty"`
-	WeeklyPct    float64 `json:"weeklyPct"`
-	MonthlySpend float64 `json:"monthlySpend"`
-	MonthlyLimit float64 `json:"monthlyLimit,omitempty"`
-	MonthlyPct   float64 `json:"monthlyPct"`
-}
-
-// AgentBudgetMeter shows per-agent spend vs. limit.
-type AgentBudgetMeter struct {
-	Agent       string  `json:"agent"`
-	DailySpend float64 `json:"dailySpend"`
-	DailyLimit float64 `json:"dailyLimit,omitempty"`
-	DailyPct   float64 `json:"dailyPct"`
-}
-
-// --- Spend Queries ---
-
-// querySpend returns cost sums for today, this week, and this month.
-// If role is non-empty, filters by agent.
 func querySpend(dbPath, role string) (daily, weekly, monthly float64) {
-	if dbPath == "" {
-		return
-	}
-
-	roleFilter := ""
-	if role != "" {
-		roleFilter = fmt.Sprintf(" AND agent = '%s'", escapeSQLite(role))
-	}
-
-	sql := fmt.Sprintf(
-		`SELECT
-			COALESCE(SUM(CASE WHEN date(started_at,'localtime') = date('now','localtime') THEN cost_usd ELSE 0 END), 0) as today,
-			COALESCE(SUM(CASE WHEN date(started_at,'localtime') >= date('now','localtime','-7 days') THEN cost_usd ELSE 0 END), 0) as week,
-			COALESCE(SUM(CASE WHEN date(started_at,'localtime') >= date('now','localtime','-30 days') THEN cost_usd ELSE 0 END), 0) as month
-		 FROM job_runs WHERE 1=1%s`, roleFilter)
-
-	rows, err := queryDB(dbPath, sql)
-	if err != nil || len(rows) == 0 {
-		return
-	}
-	daily = jsonFloat(rows[0]["today"])
-	weekly = jsonFloat(rows[0]["week"])
-	monthly = jsonFloat(rows[0]["month"])
-	return
+	return cost.QuerySpend(dbPath, role)
 }
 
-// queryWorkflowRunSpend returns the total cost of an active workflow run.
 func queryWorkflowRunSpend(dbPath string, runID int) float64 {
-	if dbPath == "" || runID <= 0 {
-		return 0
-	}
-	sql := fmt.Sprintf(
-		`SELECT COALESCE(cost_usd, 0) as cost FROM workflow_runs WHERE id = %d`, runID)
-	rows, err := queryDB(dbPath, sql)
-	if err != nil || len(rows) == 0 {
-		return 0
-	}
-	return jsonFloat(rows[0]["cost"])
+	return cost.QueryWorkflowRunSpend(dbPath, runID)
 }
 
-// --- Budget Checking ---
-
-// checkBudget performs a pre-execution budget check.
-// Returns a BudgetCheckResult indicating whether execution is allowed.
 func checkBudget(cfg *Config, agentName, workflowName string, workflowRunID int) *BudgetCheckResult {
-	budgets := cfg.Budgets
-
-	// Kill switch check.
-	if budgets.Paused {
-		return &BudgetCheckResult{
-			Allowed:    false,
-			Paused:     true,
-			AlertLevel: "paused",
-			Message:    "budget paused: all paid execution suspended",
-		}
-	}
-
-	// No budgets configured = always allowed.
-	if budgets.Global.Daily == 0 && budgets.Global.Weekly == 0 && budgets.Global.Monthly == 0 &&
-		len(budgets.Agents) == 0 && len(budgets.Workflows) == 0 {
-		return &BudgetCheckResult{Allowed: true, AlertLevel: "ok"}
-	}
-
-	dbPath := cfg.HistoryDB
-	result := &BudgetCheckResult{Allowed: true, AlertLevel: "ok"}
-	var maxUtilization float64
-
-	// Global budget check.
-	if budgets.Global.Daily > 0 || budgets.Global.Weekly > 0 || budgets.Global.Monthly > 0 {
-		daily, weekly, monthly := querySpend(dbPath, "")
-
-		if budgets.Global.Daily > 0 {
-			u := daily / budgets.Global.Daily
-			if u > maxUtilization {
-				maxUtilization = u
-			}
-			if u >= 1.0 {
-				return &BudgetCheckResult{
-					Allowed:     false,
-					Exceeded:    true,
-					Utilization: u,
-					AlertLevel:  "exceeded",
-					Message:     fmt.Sprintf("daily budget exceeded: $%.2f / $%.2f", daily, budgets.Global.Daily),
-				}
-			}
-		}
-		if budgets.Global.Weekly > 0 {
-			u := weekly / budgets.Global.Weekly
-			if u > maxUtilization {
-				maxUtilization = u
-			}
-			if u >= 1.0 {
-				return &BudgetCheckResult{
-					Allowed:     false,
-					Exceeded:    true,
-					Utilization: u,
-					AlertLevel:  "exceeded",
-					Message:     fmt.Sprintf("weekly budget exceeded: $%.2f / $%.2f", weekly, budgets.Global.Weekly),
-				}
-			}
-		}
-		if budgets.Global.Monthly > 0 {
-			u := monthly / budgets.Global.Monthly
-			if u > maxUtilization {
-				maxUtilization = u
-			}
-			if u >= 1.0 {
-				return &BudgetCheckResult{
-					Allowed:     false,
-					Exceeded:    true,
-					Utilization: u,
-					AlertLevel:  "exceeded",
-					Message:     fmt.Sprintf("monthly budget exceeded: $%.2f / $%.2f", monthly, budgets.Global.Monthly),
-				}
-			}
-		}
-	}
-
-	// Per-agent budget check.
-	if agentName != "" {
-		if rb, ok := budgets.Agents[agentName]; ok && rb.Daily > 0 {
-			daily, _, _ := querySpend(dbPath, agentName)
-			u := daily / rb.Daily
-			if u > maxUtilization {
-				maxUtilization = u
-			}
-			if u >= 1.0 {
-				return &BudgetCheckResult{
-					Allowed:     false,
-					Exceeded:    true,
-					Utilization: u,
-					AlertLevel:  "exceeded",
-					Message:     fmt.Sprintf("agent %q daily budget exceeded: $%.2f / $%.2f", agentName, daily, rb.Daily),
-				}
-			}
-		}
-	}
-
-	// Per-workflow budget check.
-	if workflowName != "" && workflowRunID > 0 {
-		if wb, ok := budgets.Workflows[workflowName]; ok && wb.PerRun > 0 {
-			runCost := queryWorkflowRunSpend(dbPath, workflowRunID)
-			u := runCost / wb.PerRun
-			if u > maxUtilization {
-				maxUtilization = u
-			}
-			if u >= 1.0 {
-				return &BudgetCheckResult{
-					Allowed:     false,
-					Exceeded:    true,
-					Utilization: u,
-					AlertLevel:  "exceeded",
-					Message:     fmt.Sprintf("workflow %q per-run budget exceeded: $%.2f / $%.2f", workflowName, runCost, wb.PerRun),
-				}
-			}
-		}
-	}
-
-	result.Utilization = maxUtilization
-
-	// Determine alert level.
-	if maxUtilization >= 0.9 {
-		result.AlertLevel = "critical"
-	} else if maxUtilization >= 0.7 {
-		result.AlertLevel = "warning"
-	}
-
-	// Auto-downgrade resolution.
-	if budgets.AutoDowngrade.Enabled && len(budgets.AutoDowngrade.Thresholds) > 0 {
-		result.DowngradeModel = resolveDowngradeModel(budgets.AutoDowngrade, maxUtilization)
-	}
-
-	return result
+	return cost.CheckBudget(cfg.Budgets, cfg.HistoryDB, agentName, workflowName, workflowRunID)
 }
 
-// resolveDowngradeModel finds the appropriate downgrade model for the current utilization.
-// Thresholds are checked in reverse order (highest first) to find the most restrictive match.
 func resolveDowngradeModel(ad AutoDowngradeConfig, utilization float64) string {
-	var bestModel string
-	var bestAt float64
-	for _, t := range ad.Thresholds {
-		if utilization >= t.At && t.At >= bestAt {
-			bestModel = t.Model
-			bestAt = t.At
-		}
-	}
-	return bestModel
+	return cost.ResolveDowngradeModel(ad, utilization)
 }
 
-// --- Budget Status ---
-
-// queryBudgetStatus returns the current budget status for display.
 func queryBudgetStatus(cfg *Config) *BudgetStatus {
-	status := &BudgetStatus{
-		Paused: cfg.Budgets.Paused,
-	}
-
-	dbPath := cfg.HistoryDB
-
-	// Global meter.
-	if cfg.Budgets.Global.Daily > 0 || cfg.Budgets.Global.Weekly > 0 || cfg.Budgets.Global.Monthly > 0 {
-		daily, weekly, monthly := querySpend(dbPath, "")
-		meter := &BudgetMeter{
-			DailySpend:   daily,
-			DailyLimit:   cfg.Budgets.Global.Daily,
-			WeeklySpend:  weekly,
-			WeeklyLimit:  cfg.Budgets.Global.Weekly,
-			MonthlySpend: monthly,
-			MonthlyLimit: cfg.Budgets.Global.Monthly,
-		}
-		if meter.DailyLimit > 0 {
-			meter.DailyPct = daily / meter.DailyLimit * 100
-		}
-		if meter.WeeklyLimit > 0 {
-			meter.WeeklyPct = weekly / meter.WeeklyLimit * 100
-		}
-		if meter.MonthlyLimit > 0 {
-			meter.MonthlyPct = monthly / meter.MonthlyLimit * 100
-		}
-		status.Global = meter
-	} else {
-		// No budget configured, still show spend.
-		daily, weekly, monthly := querySpend(dbPath, "")
-		status.Global = &BudgetMeter{
-			DailySpend:  daily,
-			WeeklySpend: weekly,
-			MonthlySpend: monthly,
-		}
-	}
-
-	// Per-role meters.
-	for agentName, rb := range cfg.Budgets.Agents {
-		daily, _, _ := querySpend(dbPath, agentName)
-		meter := AgentBudgetMeter{
-			Agent:       agentName,
-			DailySpend: daily,
-			DailyLimit: rb.Daily,
-		}
-		if rb.Daily > 0 {
-			meter.DailyPct = daily / rb.Daily * 100
-		}
-		status.Agents = append(status.Agents, meter)
-	}
-
-	return status
+	return cost.QueryBudgetStatus(cfg.Budgets, cfg.HistoryDB)
 }
 
-// --- Budget Alert Notifications ---
-
-// budgetAlertTracker tracks which alerts have been sent to avoid spam.
-type budgetAlertTracker struct {
-	mu       sync.Mutex
-	sent     map[string]time.Time // key: "scope:period:level" → last sent
-	cooldown time.Duration
-}
-
-func newBudgetAlertTracker() *budgetAlertTracker {
-	return &budgetAlertTracker{
-		sent:     make(map[string]time.Time),
-		cooldown: 1 * time.Hour, // don't re-alert within 1h for same scope+level
-	}
-}
-
-// shouldAlert returns true if this alert hasn't been sent recently.
-func (t *budgetAlertTracker) shouldAlert(key string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if last, ok := t.sent[key]; ok {
-		if time.Since(last) < t.cooldown {
-			return false
-		}
-	}
-	t.sent[key] = time.Now()
-	return true
-}
-
-// checkAndNotifyBudgetAlerts checks budget utilization and sends notifications.
 func checkAndNotifyBudgetAlerts(cfg *Config, notifyFn func(string), tracker *budgetAlertTracker) {
-	if notifyFn == nil || cfg.HistoryDB == "" {
-		return
-	}
-	budgets := cfg.Budgets
-
-	// Global alerts.
-	if budgets.Global.Daily > 0 || budgets.Global.Weekly > 0 || budgets.Global.Monthly > 0 {
-		daily, weekly, monthly := querySpend(cfg.HistoryDB, "")
-		checkPeriodAlert(notifyFn, tracker, "global", "daily", daily, budgets.Global.Daily)
-		checkPeriodAlert(notifyFn, tracker, "global", "weekly", weekly, budgets.Global.Weekly)
-		checkPeriodAlert(notifyFn, tracker, "global", "monthly", monthly, budgets.Global.Monthly)
-	}
-
-	// Per-role alerts.
-	for agentName, rb := range budgets.Agents {
-		if rb.Daily > 0 {
-			daily, _, _ := querySpend(cfg.HistoryDB, agentName)
-			checkPeriodAlert(notifyFn, tracker, "role:"+agentName, "daily", daily, rb.Daily)
-		}
-	}
+	cost.CheckAndNotifyBudgetAlerts(cfg.Budgets, cfg.HistoryDB, notifyFn, tracker)
 }
 
-// checkPeriodAlert sends a notification if spend crosses 70% or 90% thresholds.
 func checkPeriodAlert(notifyFn func(string), tracker *budgetAlertTracker, scope, period string, spend, limit float64) {
-	if limit <= 0 {
-		return
-	}
-	pct := spend / limit
-	if pct >= 0.9 {
-		key := fmt.Sprintf("%s:%s:critical", scope, period)
-		if tracker.shouldAlert(key) {
-			notifyFn(fmt.Sprintf("Budget CRITICAL [%s] %s: $%.2f / $%.2f (%.0f%%)",
-				scope, period, spend, limit, pct*100))
-		}
-	} else if pct >= 0.7 {
-		key := fmt.Sprintf("%s:%s:warning", scope, period)
-		if tracker.shouldAlert(key) {
-			notifyFn(fmt.Sprintf("Budget Warning [%s] %s: $%.2f / $%.2f (%.0f%%)",
-				scope, period, spend, limit, pct*100))
-		}
-	}
+	cost.CheckPeriodAlert(notifyFn, tracker, scope, period, spend, limit)
+}
+
+func formatBudgetSummary(cfg *Config) string {
+	return cost.FormatBudgetSummary(queryBudgetStatus(cfg))
 }
 
 // --- Kill Switch ---
 
 // setBudgetPaused updates the budgets.paused field in config.json.
+// Stays in root: performs raw config file I/O against the project config schema.
 func setBudgetPaused(configPath string, paused bool) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -455,46 +93,4 @@ func setBudgetPaused(configPath string, paused bool) error {
 		return err
 	}
 	return os.WriteFile(configPath, append(out, '\n'), 0o644)
-}
-
-// --- Budget Summary (for daily digest / Telegram) ---
-
-// formatBudgetSummary formats a short budget summary.
-func formatBudgetSummary(cfg *Config) string {
-	status := queryBudgetStatus(cfg)
-	var lines []string
-
-	if status.Paused {
-		lines = append(lines, "Budget: PAUSED (all paid execution suspended)")
-	}
-
-	if status.Global != nil {
-		g := status.Global
-		parts := []string{fmt.Sprintf("Today: $%.2f", g.DailySpend)}
-		if g.DailyLimit > 0 {
-			parts[0] = fmt.Sprintf("Today: $%.2f/$%.2f (%.0f%%)", g.DailySpend, g.DailyLimit, g.DailyPct)
-		}
-		parts = append(parts, fmt.Sprintf("Week: $%.2f", g.WeeklySpend))
-		if g.WeeklyLimit > 0 {
-			parts[len(parts)-1] = fmt.Sprintf("Week: $%.2f/$%.2f (%.0f%%)", g.WeeklySpend, g.WeeklyLimit, g.WeeklyPct)
-		}
-		parts = append(parts, fmt.Sprintf("Month: $%.2f", g.MonthlySpend))
-		if g.MonthlyLimit > 0 {
-			parts[len(parts)-1] = fmt.Sprintf("Month: $%.2f/$%.2f (%.0f%%)", g.MonthlySpend, g.MonthlyLimit, g.MonthlyPct)
-		}
-		lines = append(lines, strings.Join(parts, " | "))
-	}
-
-	for _, r := range status.Agents {
-		line := fmt.Sprintf("  %s: $%.2f", r.Agent, r.DailySpend)
-		if r.DailyLimit > 0 {
-			line = fmt.Sprintf("  %s: $%.2f/$%.2f (%.0f%%)", r.Agent, r.DailySpend, r.DailyLimit, r.DailyPct)
-		}
-		lines = append(lines, line)
-	}
-
-	if len(lines) == 0 {
-		return "No budget configured"
-	}
-	return strings.Join(lines, "\n")
 }

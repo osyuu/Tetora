@@ -254,26 +254,26 @@ func TestQuerySpend(t *testing.T) {
 
 func TestBudgetAlertTracker(t *testing.T) {
 	tracker := newBudgetAlertTracker()
-	tracker.cooldown = 100 * time.Millisecond
+	tracker.Cooldown = 100 * time.Millisecond
 
 	// First alert should fire.
-	if !tracker.shouldAlert("test:daily:warning") {
+	if !tracker.ShouldAlert("test:daily:warning") {
 		t.Error("expected first alert to fire")
 	}
 
 	// Immediate second alert should be suppressed.
-	if tracker.shouldAlert("test:daily:warning") {
+	if tracker.ShouldAlert("test:daily:warning") {
 		t.Error("expected second alert to be suppressed")
 	}
 
 	// Different key should fire.
-	if !tracker.shouldAlert("test:daily:critical") {
+	if !tracker.ShouldAlert("test:daily:critical") {
 		t.Error("expected different key to fire")
 	}
 
 	// After cooldown, same key should fire again.
 	time.Sleep(150 * time.Millisecond)
-	if !tracker.shouldAlert("test:daily:warning") {
+	if !tracker.ShouldAlert("test:daily:warning") {
 		t.Error("expected alert to fire after cooldown")
 	}
 }
