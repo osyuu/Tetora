@@ -1,5 +1,24 @@
 package main
 
+import "context"
+
+// appCtxKey is the context key for the App container.
+type appCtxKey struct{}
+
+// withApp stores the App container in the context.
+func withApp(ctx context.Context, a *App) context.Context {
+	return context.WithValue(ctx, appCtxKey{}, a)
+}
+
+// appFromCtx retrieves the App container from the context.
+// Returns nil if no App is stored.
+func appFromCtx(ctx context.Context) *App {
+	if a, ok := ctx.Value(appCtxKey{}).(*App); ok {
+		return a
+	}
+	return nil
+}
+
 // App is the top-level application container and single source of truth for all services.
 // Services are initialized into App fields in main.go, then SyncToGlobals() backfills
 // global vars for callers that haven't migrated yet. As callers migrate to appFromCtx(),

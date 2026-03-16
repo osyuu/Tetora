@@ -523,6 +523,7 @@ func main() {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
+		ctx = withApp(ctx, app)
 		defer cancel()
 
 		// --- P23.7: Reliability & Operations --- Start background services.
