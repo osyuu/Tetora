@@ -240,41 +240,5 @@ func (db *DiscordBot) SetTyping(ctx context.Context, channelRef string) error {
 
 func (db *DiscordBot) PresenceName() string { return "discord" }
 
-// LINE Bot — no native typing API, no-op.
-func (lb *LINEBot) SetTyping(ctx context.Context, channelRef string) error {
-	return nil // LINE Messaging API does not support typing indicators
-}
-
-func (lb *LINEBot) PresenceName() string { return "line" }
-
-// Teams Bot — send typing activity via Bot Framework.
-func (tb *TeamsBot) SetTyping(ctx context.Context, channelRef string) error {
-	if channelRef == "" {
-		return nil
-	}
-
-	// channelRef format for Teams: "serviceURL|conversationID"
-	parts := strings.SplitN(channelRef, "|", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil // invalid ref format, skip silently
-	}
-	serviceURL := parts[0]
-	conversationID := parts[1]
-
-	url := fmt.Sprintf("%sv3/conversations/%s/activities",
-		ensureTrailingSlash(serviceURL), conversationID)
-
-	payload := map[string]string{
-		"type": "typing",
-	}
-	return tb.sendBotFrameworkRequest(url, payload)
-}
-
-func (tb *TeamsBot) PresenceName() string { return "teams" }
-
-// iMessage Bot — no typing API via BlueBubbles, no-op.
-func (ib *IMessageBot) SetTyping(ctx context.Context, channelRef string) error {
-	return nil // BlueBubbles API does not support typing indicators
-}
-
-func (ib *IMessageBot) PresenceName() string { return "imessage" }
+// LINE, Teams, iMessage PresenceSetter implementations are in their
+// respective internal/messaging/ packages.

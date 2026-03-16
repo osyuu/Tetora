@@ -8,8 +8,11 @@ import (
 	"strings"
 	"time"
 
+	imessagebot "tetora/internal/messaging/imessage"
+	"tetora/internal/messaging/line"
 	"tetora/internal/messaging/matrix"
 	signalbot "tetora/internal/messaging/signal"
+	"tetora/internal/messaging/teams"
 	"tetora/internal/messaging/whatsapp"
 )
 
@@ -127,7 +130,7 @@ func buildNotifiers(cfg *Config) []Notifier {
 		case "line": // --- P15.1: LINE Channel ---
 			// For LINE, WebhookURL should contain the target user/group ID
 			if ch.WebhookURL != "" && cfg.LINE.Enabled {
-				notifiers = append(notifiers, &LINENotifier{
+				notifiers = append(notifiers, &line.Notifier{
 					Config: cfg.LINE,
 					ChatID: ch.WebhookURL, // use webhookUrl field for LINE user/group ID
 				})
@@ -145,8 +148,8 @@ func buildNotifiers(cfg *Config) []Notifier {
 			if ch.WebhookURL != "" && cfg.Teams.Enabled {
 				parts := strings.SplitN(ch.WebhookURL, "|", 2)
 				if len(parts) == 2 {
-					teamsBot := newTeamsBot(cfg, nil, nil, nil)
-					notifiers = append(notifiers, &TeamsNotifier{
+					teamsBot := teams.NewBot(cfg.Teams, nil) // nil runtime OK — only used for proactive send
+					notifiers = append(notifiers, &teams.Notifier{
 						Bot:            teamsBot,
 						ServiceURL:     parts[0],
 						ConversationID: parts[1],
@@ -177,7 +180,7 @@ func buildNotifiers(cfg *Config) []Notifier {
 		case "imessage": // --- P20.2: iMessage via BlueBubbles ---
 			// For iMessage, WebhookURL field holds the target chat GUID.
 			if ch.WebhookURL != "" && cfg.IMessage.Enabled {
-				notifiers = append(notifiers, &IMessageNotifier{
+				notifiers = append(notifiers, &imessagebot.Notifier{
 					Config:   cfg.IMessage,
 					ChatGUID: ch.WebhookURL,
 				})

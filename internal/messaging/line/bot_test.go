@@ -1,8 +1,7 @@
-package main
-
-// --- P15.1: LINE Channel ---
+package line
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -12,7 +11,62 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"tetora/internal/messaging"
 )
+
+// --- Mock BotRuntime ---
+
+type mockRuntime struct{}
+
+func (m *mockRuntime) Submit(_ context.Context, _ messaging.TaskRequest) (messaging.TaskResult, error) {
+	return messaging.TaskResult{Status: "success"}, nil
+}
+func (m *mockRuntime) Route(_ context.Context, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) GetOrCreateSession(_, _, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) BuildSessionContext(_ string, _ int) string                     { return "" }
+func (m *mockRuntime) AddSessionMessage(_, _, _ string)                               {}
+func (m *mockRuntime) UpdateSessionStats(_ string, _, _, _, _ float64)                {}
+func (m *mockRuntime) RecordHistory(_, _, _, _, _ string, _, _ interface{})           {}
+func (m *mockRuntime) PublishEvent(_ string, _ map[string]interface{})                {}
+func (m *mockRuntime) IsActive() bool                                                 { return false }
+func (m *mockRuntime) ExpandPrompt(prompt, _ string) string                           { return prompt }
+func (m *mockRuntime) LoadAgentPrompt(_ string) (string, error)                       { return "", nil }
+func (m *mockRuntime) FillTaskDefaults(_ *string, _ *string, _ string) string         { return "task-id" }
+func (m *mockRuntime) HistoryDB() string                                              { return ":memory:" }
+func (m *mockRuntime) WorkspaceDir() string                                           { return "/tmp" }
+func (m *mockRuntime) SaveUpload(_ string, _ []byte) (string, error)                  { return "", nil }
+func (m *mockRuntime) Truncate(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
+}
+func (m *mockRuntime) NewTraceID(_ string) string                                                  { return "trace-id" }
+func (m *mockRuntime) WithTraceID(ctx context.Context, _ string) context.Context                  { return ctx }
+func (m *mockRuntime) LogInfo(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogWarn(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogError(_ string, _ error, _ ...interface{})                               {}
+func (m *mockRuntime) LogInfoCtx(_ context.Context, _ string, _ ...interface{})                   {}
+func (m *mockRuntime) LogErrorCtx(_ context.Context, _ string, _ error, _ ...interface{})         {}
+func (m *mockRuntime) LogDebugCtx(_ context.Context, _ string, _ ...interface{})                  {}
+func (m *mockRuntime) ClientIP(_ *http.Request) string                                             { return "" }
+func (m *mockRuntime) AuditLog(_, _, _, _ string)                                                  {}
+func (m *mockRuntime) QueryCostStats() (float64, float64, float64)                                 { return 0, 0, 0 }
+func (m *mockRuntime) UpdateAgentModel(_, _ string) error                                          { return nil }
+func (m *mockRuntime) MaybeCompactSession(_ string, _ int, _ float64)                              {}
+func (m *mockRuntime) UpdateSessionTitle(_, _ string)                                              {}
+func (m *mockRuntime) SessionContextLimit() int                                                     { return 10 }
+func (m *mockRuntime) AgentConfig(_ string) (string, string, bool)                                 { return "", "", false }
+
+var testRT = &mockRuntime{}
+
+// newBot is a test helper that creates a Bot with the mock runtime.
+func newBot(cfg Config) *Bot {
+	return NewBot(cfg, testRT)
+}
+
+// --- Tests ---
 
 func TestLINESignatureVerification(t *testing.T) {
 	channelSecret := "test_channel_secret"
@@ -69,9 +123,9 @@ func TestLINESignatureVerification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := verifyLINESignature(tt.channelSecret, tt.body, tt.signature)
+			got := VerifySignature(tt.channelSecret, tt.body, tt.signature)
 			if got != tt.want {
-				t.Errorf("verifyLINESignature() = %v, want %v", got, tt.want)
+				t.Errorf("VerifySignature() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -126,7 +180,7 @@ func TestLINEWebhookMessageEventParsing(t *testing.T) {
 		]
 	}`
 
-	var hook lineWebhookBody
+	var hook WebhookBody
 	if err := json.Unmarshal([]byte(payload), &hook); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -177,14 +231,14 @@ func TestLINEWebhookMessageEventParsing(t *testing.T) {
 }
 
 func TestLINEReplyMessageConstruction(t *testing.T) {
-	msg := lineMessage{
+	msg := Message{
 		Type: "text",
 		Text: "Hello from Tetora!",
 	}
 
 	payload := map[string]interface{}{
 		"replyToken": "token_xyz",
-		"messages":   []lineMessage{msg},
+		"messages":   []Message{msg},
 	}
 
 	data, err := json.Marshal(payload)
@@ -216,14 +270,14 @@ func TestLINEReplyMessageConstruction(t *testing.T) {
 }
 
 func TestLINEPushMessageConstruction(t *testing.T) {
-	msg := lineMessage{
+	msg := Message{
 		Type: "text",
 		Text: "Push notification from Tetora",
 	}
 
 	payload := map[string]interface{}{
 		"to":       "U9876543210",
-		"messages": []lineMessage{msg},
+		"messages": []Message{msg},
 	}
 
 	data, err := json.Marshal(payload)
@@ -263,7 +317,7 @@ func TestLINEGroupMessageHandling(t *testing.T) {
 		]
 	}`
 
-	var hook lineWebhookBody
+	var hook WebhookBody
 	if err := json.Unmarshal([]byte(payload), &hook); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -283,21 +337,21 @@ func TestLINEGroupMessageHandling(t *testing.T) {
 		t.Errorf("source.userId = %q, want %q", ev.Source.UserID, "U9876543210")
 	}
 
-	// Test resolveTargetID via a LINEBot.
-	bot := &LINEBot{}
+	// Test resolveTargetID via a Bot.
+	bot := newBot(Config{})
 	targetID := bot.resolveTargetID(ev.Source)
 	if targetID != "C1234567890" {
 		t.Errorf("resolveTargetID() = %q, want %q (groupId)", targetID, "C1234567890")
 	}
 
 	// Test room source.
-	roomSource := lineSource{Type: "room", UserID: "Uabc", RoomID: "Rdef"}
+	roomSource := Source{Type: "room", UserID: "Uabc", RoomID: "Rdef"}
 	if got := bot.resolveTargetID(roomSource); got != "Rdef" {
 		t.Errorf("resolveTargetID(room) = %q, want %q", got, "Rdef")
 	}
 
 	// Test user source.
-	userSource := lineSource{Type: "user", UserID: "Uxyz"}
+	userSource := Source{Type: "user", UserID: "Uxyz"}
 	if got := bot.resolveTargetID(userSource); got != "Uxyz" {
 		t.Errorf("resolveTargetID(user) = %q, want %q", got, "Uxyz")
 	}
@@ -317,7 +371,7 @@ func TestLINEUserProfileFetch(t *testing.T) {
 		// Check path.
 		if strings.HasSuffix(r.URL.Path, "/profile/U9876543210") {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(lineProfile{
+			json.NewEncoder(w).Encode(Profile{
 				DisplayName:   "Test User",
 				UserID:        "U9876543210",
 				PictureURL:    "https://example.com/pic.jpg",
@@ -332,20 +386,18 @@ func TestLINEUserProfileFetch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		LINE: LINEConfig{
-			Enabled:            true,
-			ChannelAccessToken: "test_access_token",
-		},
+	cfg := Config{
+		Enabled:            true,
+		ChannelAccessToken: "test_access_token",
 	}
 
-	bot := newLINEBot(cfg, nil, nil, nil)
+	bot := NewBot(cfg, testRT)
 	bot.apiBase = srv.URL // Use mock server.
 
 	// Test successful profile fetch.
-	profile, err := bot.getProfile("U9876543210")
+	profile, err := bot.GetProfile("U9876543210")
 	if err != nil {
-		t.Fatalf("getProfile() error: %v", err)
+		t.Fatalf("GetProfile() error: %v", err)
 	}
 	if profile.DisplayName != "Test User" {
 		t.Errorf("DisplayName = %q, want %q", profile.DisplayName, "Test User")
@@ -358,15 +410,15 @@ func TestLINEUserProfileFetch(t *testing.T) {
 	}
 
 	// Test empty user ID.
-	_, err = bot.getProfile("")
+	_, err = bot.GetProfile("")
 	if err == nil {
-		t.Error("getProfile('') should return error")
+		t.Error("GetProfile('') should return error")
 	}
 
 	// Test not-found user.
-	_, err = bot.getProfile("Unonexistent")
+	_, err = bot.GetProfile("Unonexistent")
 	if err == nil {
-		t.Error("getProfile(nonexistent) should return error")
+		t.Error("GetProfile(nonexistent) should return error")
 	}
 }
 
@@ -389,7 +441,7 @@ func TestLINEPostbackEventParsing(t *testing.T) {
 		]
 	}`
 
-	var hook lineWebhookBody
+	var hook WebhookBody
 	if err := json.Unmarshal([]byte(payload), &hook); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -423,7 +475,7 @@ func TestLINEWebhookMultipleEvents(t *testing.T) {
 		]
 	}`
 
-	var hook lineWebhookBody
+	var hook WebhookBody
 	if err := json.Unmarshal([]byte(payload), &hook); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -443,12 +495,12 @@ func TestLINEWebhookMultipleEvents(t *testing.T) {
 func TestLINEConfigValidation(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     LINEConfig
+		cfg     Config
 		wantErr bool
 	}{
 		{
 			name: "valid config",
-			cfg: LINEConfig{
+			cfg: Config{
 				Enabled:            true,
 				ChannelSecret:      "secret_abc",
 				ChannelAccessToken: "token_xyz",
@@ -457,7 +509,7 @@ func TestLINEConfigValidation(t *testing.T) {
 		},
 		{
 			name: "missing secret",
-			cfg: LINEConfig{
+			cfg: Config{
 				Enabled:            true,
 				ChannelSecret:      "",
 				ChannelAccessToken: "token_xyz",
@@ -466,7 +518,7 @@ func TestLINEConfigValidation(t *testing.T) {
 		},
 		{
 			name: "missing token",
-			cfg: LINEConfig{
+			cfg: Config{
 				Enabled:            true,
 				ChannelSecret:      "secret_abc",
 				ChannelAccessToken: "",
@@ -475,7 +527,7 @@ func TestLINEConfigValidation(t *testing.T) {
 		},
 		{
 			name: "disabled is ok with missing fields",
-			cfg: LINEConfig{
+			cfg: Config{
 				Enabled: false,
 			},
 			wantErr: false,
@@ -498,7 +550,7 @@ func TestLINEConfigValidation(t *testing.T) {
 }
 
 func TestLINEFlexMessageBuilder(t *testing.T) {
-	msg := buildFlexText("Summary", "Hello, this is a flex message!")
+	msg := BuildFlexText("Summary", "Hello, this is a flex message!")
 
 	if msg.Type != "flex" {
 		t.Errorf("type = %q, want %q", msg.Type, "flex")
@@ -526,7 +578,7 @@ func TestLINEFlexMessageBuilder(t *testing.T) {
 }
 
 func TestLINEQuickReplyBuilder(t *testing.T) {
-	msg := buildQuickReplyMessage("Choose an option:", []string{"Yes", "No", "Maybe"})
+	msg := BuildQuickReplyMessage("Choose an option:", []string{"Yes", "No", "Maybe"})
 
 	if msg.Type != "text" {
 		t.Errorf("type = %q, want %q", msg.Type, "text")
@@ -559,14 +611,12 @@ func TestLINEQuickReplyBuilder(t *testing.T) {
 }
 
 func TestLINEWebhookHandlerInvalidMethod(t *testing.T) {
-	cfg := &Config{
-		LINE: LINEConfig{
-			Enabled:       true,
-			ChannelSecret: "test_secret",
-		},
+	cfg := Config{
+		Enabled:       true,
+		ChannelSecret: "test_secret",
 	}
 
-	bot := newLINEBot(cfg, nil, nil, nil)
+	bot := NewBot(cfg, testRT)
 
 	req := httptest.NewRequest("GET", "/api/line/webhook", nil)
 	w := httptest.NewRecorder()
@@ -579,14 +629,12 @@ func TestLINEWebhookHandlerInvalidMethod(t *testing.T) {
 }
 
 func TestLINEWebhookHandlerInvalidSignature(t *testing.T) {
-	cfg := &Config{
-		LINE: LINEConfig{
-			Enabled:       true,
-			ChannelSecret: "test_secret",
-		},
+	cfg := Config{
+		Enabled:       true,
+		ChannelSecret: "test_secret",
 	}
 
-	bot := newLINEBot(cfg, nil, nil, nil)
+	bot := NewBot(cfg, testRT)
 
 	body := `{"events":[]}`
 	req := httptest.NewRequest("POST", "/api/line/webhook", strings.NewReader(body))
@@ -602,17 +650,13 @@ func TestLINEWebhookHandlerInvalidSignature(t *testing.T) {
 
 func TestLINEWebhookHandlerValidSignature(t *testing.T) {
 	secret := "test_secret"
-	cfg := &Config{
-		LINE: LINEConfig{
-			Enabled:            true,
-			ChannelSecret:      secret,
-			ChannelAccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:            true,
+		ChannelSecret:      secret,
+		ChannelAccessToken: "test_token",
 	}
 
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-	bot := newLINEBot(cfg, state, sem, nil)
+	bot := NewBot(cfg, testRT)
 
 	body := `{"events":[]}`
 
@@ -653,17 +697,15 @@ func TestLINESendReplyMock(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		LINE: LINEConfig{
-			Enabled:            true,
-			ChannelAccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:            true,
+		ChannelAccessToken: "test_token",
 	}
 
-	bot := newLINEBot(cfg, nil, nil, nil)
+	bot := NewBot(cfg, testRT)
 	bot.apiBase = srv.URL
 
-	msgs := []lineMessage{{Type: "text", Text: "Hello!"}}
+	msgs := []Message{{Type: "text", Text: "Hello!"}}
 	err := bot.sendReply("reply_token_123", msgs)
 	if err != nil {
 		t.Fatalf("sendReply() error: %v", err)
@@ -689,17 +731,15 @@ func TestLINESendPushMock(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		LINE: LINEConfig{
-			Enabled:            true,
-			ChannelAccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:            true,
+		ChannelAccessToken: "test_token",
 	}
 
-	bot := newLINEBot(cfg, nil, nil, nil)
+	bot := NewBot(cfg, testRT)
 	bot.apiBase = srv.URL
 
-	msgs := []lineMessage{{Type: "text", Text: "Push message!"}}
+	msgs := []Message{{Type: "text", Text: "Push message!"}}
 	err := bot.sendPush("U9876543210", msgs)
 	if err != nil {
 		t.Fatalf("sendPush() error: %v", err)
@@ -713,55 +753,44 @@ func TestLINESendPushMock(t *testing.T) {
 func TestLINEWebhookPathOrDefault(t *testing.T) {
 	tests := []struct {
 		name string
-		cfg  LINEConfig
+		cfg  Config
 		want string
 	}{
 		{
 			name: "default path",
-			cfg:  LINEConfig{},
+			cfg:  Config{},
 			want: "/api/line/webhook",
 		},
 		{
 			name: "custom path",
-			cfg:  LINEConfig{WebhookPath: "/custom/line"},
+			cfg:  Config{WebhookPath: "/custom/line"},
 			want: "/custom/line",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.cfg.webhookPathOrDefault()
+			got := tt.cfg.WebhookPathOrDefault()
 			if got != tt.want {
-				t.Errorf("webhookPathOrDefault() = %q, want %q", got, tt.want)
+				t.Errorf("WebhookPathOrDefault() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestLINEBotCreation(t *testing.T) {
-	cfg := &Config{
-		LINE: LINEConfig{
-			Enabled:            true,
-			ChannelSecret:      "secret",
-			ChannelAccessToken: "token",
-		},
+	cfg := Config{
+		Enabled:            true,
+		ChannelSecret:      "secret",
+		ChannelAccessToken: "token",
 	}
 
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-
-	bot := newLINEBot(cfg, state, sem, nil)
+	bot := NewBot(cfg, testRT)
 	if bot == nil {
-		t.Fatal("newLINEBot returned nil")
+		t.Fatal("NewBot returned nil")
 	}
 	if bot.cfg != cfg {
 		t.Error("bot config not set correctly")
-	}
-	if bot.state != state {
-		t.Error("bot state not set correctly")
-	}
-	if bot.sem != sem {
-		t.Error("bot semaphore not set correctly")
 	}
 	if bot.apiBase != "https://api.line.me/v2/bot" {
 		t.Errorf("apiBase = %q, want %q", bot.apiBase, "https://api.line.me/v2/bot")
@@ -785,9 +814,9 @@ func TestLINENotifier(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// LINENotifier uses the hardcoded API URL, so we test the structure instead.
-	notifier := &LINENotifier{
-		Config: LINEConfig{
+	// Notifier uses the hardcoded API URL, so we test the structure instead.
+	notifier := &Notifier{
+		Config: Config{
 			ChannelAccessToken: "test_token",
 		},
 		ChatID: "U9876543210",

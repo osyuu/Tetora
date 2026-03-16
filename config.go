@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"tetora/internal/messaging/gchat"
+	"tetora/internal/messaging/imessage"
+	"tetora/internal/messaging/line"
 	"tetora/internal/messaging/matrix"
 	"tetora/internal/messaging/signal"
+	"tetora/internal/messaging/teams"
 	"tetora/internal/messaging/whatsapp"
 )
 
@@ -24,6 +27,9 @@ type MatrixConfig = matrix.Config
 type WhatsAppConfig = whatsapp.Config
 type SignalConfig = signal.Config
 type GoogleChatConfig = gchat.Config
+type LINEConfig = line.Config
+type TeamsConfig = teams.Config
+type IMessageConfig = imessage.Config
 
 // --- Config Types ---
 

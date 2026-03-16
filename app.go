@@ -1,6 +1,10 @@
 package main
 
-import "context"
+import (
+	"context"
+
+	imessagebot "tetora/internal/messaging/imessage"
+)
 
 // appCtxKey is the context key for the App container.
 type appCtxKey struct{}
@@ -50,7 +54,7 @@ type App struct {
 	Drive    *DriveService
 	Dropbox  *DropboxService
 	Browser  *BrowserRelay
-	IMessage *IMessageBot
+	IMessage *imessagebot.Bot
 
 	// P29 services
 	Lifecycle    *LifecycleEngine

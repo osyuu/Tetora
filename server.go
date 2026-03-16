@@ -5,8 +5,11 @@ import (
 	"time"
 
 	"tetora/internal/messaging/gchat"
+	"tetora/internal/messaging/imessage"
+	"tetora/internal/messaging/line"
 	"tetora/internal/messaging/matrix"
 	"tetora/internal/messaging/signal"
+	"tetora/internal/messaging/teams"
 	"tetora/internal/messaging/whatsapp"
 )
 
@@ -26,11 +29,11 @@ type Server struct {
 	slackBot        *SlackBot
 	whatsappBot     *whatsapp.Bot
 	pluginHost      *PluginHost
-	lineBot         *LINEBot
-	teamsBot        *TeamsBot
+	lineBot         *line.Bot
+	teamsBot        *teams.Bot
 	signalBot       *signal.Bot
 	gchatBot        *gchat.Bot
-	imessageBot     *IMessageBot
+	imessageBot     *imessage.Bot
 	matrixBot       *matrix.Bot
 	// internal (created at start)
 	taskBoardDispatcher *TaskBoardDispatcher

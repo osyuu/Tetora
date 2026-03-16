@@ -19,8 +19,11 @@ import (
 
 	"tetora/internal/cost"
 	"tetora/internal/messaging/gchat"
+	imessagebot "tetora/internal/messaging/imessage"
+	linebot "tetora/internal/messaging/line"
 	"tetora/internal/messaging/matrix"
 	signalbot "tetora/internal/messaging/signal"
+	teamsbot "tetora/internal/messaging/teams"
 	"tetora/internal/messaging/whatsapp"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
@@ -834,10 +837,11 @@ func main() {
 		}
 
 		// --- P15.1: LINE Channel --- Initialize LINE bot.
-		var lineBot *LINEBot
+		var lineBot *linebot.Bot
 		if cfg.LINE.Enabled && cfg.LINE.ChannelSecret != "" && cfg.LINE.ChannelAccessToken != "" {
-			lineBot = newLINEBot(cfg, state, sem, childSem)
-			logInfo("line bot enabled", "endpoint", cfg.LINE.webhookPathOrDefault())
+			rt := newMessagingRuntime(cfg, state, sem, childSem)
+			lineBot = linebot.NewBot(cfg.LINE, rt)
+			logInfo("line bot enabled", "endpoint", cfg.LINE.WebhookPathOrDefault())
 		}
 
 		// --- P15.2: Matrix Channel --- Initialize Matrix bot.
@@ -849,9 +853,10 @@ func main() {
 		}
 
 		// --- P15.3: Teams Channel --- Initialize Teams bot.
-		var teamsBot *TeamsBot
+		var teamsBot *teamsbot.Bot
 		if cfg.Teams.Enabled && cfg.Teams.AppID != "" && cfg.Teams.AppPassword != "" {
-			teamsBot = newTeamsBot(cfg, state, sem, childSem)
+			rt := newMessagingRuntime(cfg, state, sem, childSem)
+			teamsBot = teamsbot.NewBot(cfg.Teams, rt)
 			logInfo("teams bot enabled", "endpoint", "/api/teams/webhook")
 		}
 
@@ -976,11 +981,12 @@ func main() {
 		}
 
 		// --- P20.2: iMessage via BlueBubbles --- Initialize iMessage bot.
-		var imessageBot *IMessageBot
+		var imessageBot *imessagebot.Bot
 		if cfg.IMessage.Enabled && cfg.IMessage.ServerURL != "" {
-			imessageBot = newIMessageBot(cfg, state, sem, childSem)
+			rt := newMessagingRuntime(cfg, state, sem, childSem)
+			imessageBot = imessagebot.NewBot(cfg.IMessage, rt)
 			app.IMessage = imessageBot
-			logInfo("imessage bot enabled", "endpoint", cfg.IMessage.webhookPathOrDefault())
+			logInfo("imessage bot enabled", "endpoint", cfg.IMessage.WebhookPathOrDefault())
 			if app.Presence != nil {
 				app.Presence.RegisterSetter("imessage", imessageBot)
 			}

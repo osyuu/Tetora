@@ -1,6 +1,5 @@
-package main
-
-// --- P15.3: Teams Channel ---
+// Package teams provides Microsoft Teams Bot Framework integration.
+package teams
 
 import (
 	"bytes"
@@ -14,51 +13,40 @@ import (
 	"sync"
 	"time"
 
-	"tetora/internal/trace"
+	"tetora/internal/messaging"
 )
-
-// --- Teams Config ---
-
-// TeamsConfig holds configuration for Microsoft Teams Bot Framework integration.
-type TeamsConfig struct {
-	Enabled     bool   `json:"enabled,omitempty"`
-	AppID       string `json:"appId,omitempty"`       // Azure AD App ID ($ENV_VAR)
-	AppPassword string `json:"appPassword,omitempty"` // Azure AD App Secret ($ENV_VAR)
-	TenantID    string `json:"tenantId,omitempty"`    // Azure AD Tenant ID ($ENV_VAR)
-	DefaultAgent string `json:"defaultAgent,omitempty"` // agent role for Teams messages
-}
 
 // --- Teams Activity Types ---
 
-// teamsActivity represents an incoming Activity from Bot Framework.
-type teamsActivity struct {
-	Type         string             `json:"type"`                    // "message", "conversationUpdate", "invoke"
-	ID           string             `json:"id"`
-	Timestamp    string             `json:"timestamp"`
-	Text         string             `json:"text"`
-	ChannelID    string             `json:"channelId"`               // "msteams"
-	ServiceURL   string             `json:"serviceUrl"`              // for replies
-	From         teamsAccount       `json:"from"`
-	Conversation teamsConversation  `json:"conversation"`
-	Recipient    teamsAccount       `json:"recipient"`
-	Attachments  []teamsAttachment  `json:"attachments,omitempty"`
-	Value        json.RawMessage    `json:"value,omitempty"`         // for Adaptive Card actions
+// Activity represents an incoming Activity from Bot Framework.
+type Activity struct {
+	Type         string       `json:"type"`                   // "message", "conversationUpdate", "invoke"
+	ID           string       `json:"id"`
+	Timestamp    string       `json:"timestamp"`
+	Text         string       `json:"text"`
+	ChannelID    string       `json:"channelId"`               // "msteams"
+	ServiceURL   string       `json:"serviceUrl"`              // for replies
+	From         Account      `json:"from"`
+	Conversation Conversation `json:"conversation"`
+	Recipient    Account      `json:"recipient"`
+	Attachments  []Attachment `json:"attachments,omitempty"`
+	Value        json.RawMessage `json:"value,omitempty"`      // for Adaptive Card actions
 }
 
-// teamsAccount identifies a user or bot in Teams.
-type teamsAccount struct {
+// Account identifies a user or bot in Teams.
+type Account struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
-// teamsConversation identifies a Teams conversation.
-type teamsConversation struct {
+// Conversation identifies a Teams conversation.
+type Conversation struct {
 	ID      string `json:"id"`
 	IsGroup bool   `json:"isGroup,omitempty"`
 }
 
-// teamsAttachment represents an attachment in a Teams message.
-type teamsAttachment struct {
+// Attachment represents an attachment in a Teams message.
+type Attachment struct {
 	ContentType string          `json:"contentType"`
 	Content     json.RawMessage `json:"content,omitempty"`
 	ContentURL  string          `json:"contentUrl,omitempty"`
@@ -67,8 +55,8 @@ type teamsAttachment struct {
 
 // --- Teams Token Cache ---
 
-// teamsTokenCache caches the OAuth2 bearer token for outbound API calls.
-type teamsTokenCache struct {
+// tokenCache caches the OAuth2 bearer token for outbound API calls.
+type tokenCache struct {
 	mu        sync.RWMutex
 	token     string
 	expiresAt time.Time
@@ -76,13 +64,11 @@ type teamsTokenCache struct {
 
 // --- Teams Bot ---
 
-// TeamsBot handles incoming Microsoft Teams Bot Framework webhook events.
-type TeamsBot struct {
-	cfg        *Config
-	state      *dispatchState
-	sem        chan struct{}
-	childSem   chan struct{}
-	tokenCache teamsTokenCache
+// Bot handles incoming Microsoft Teams Bot Framework webhook events.
+type Bot struct {
+	cfg        Config
+	rt         messaging.BotRuntime
+	tc         tokenCache
 
 	// Dedup: track recently processed activity IDs.
 	processed     map[string]time.Time
@@ -96,25 +82,50 @@ type TeamsBot struct {
 	tokenURL string
 }
 
-func newTeamsBot(cfg *Config, state *dispatchState, sem, childSem chan struct{}) *TeamsBot {
-	tenantID := cfg.Teams.TenantID
+// NewBot creates a new Bot instance.
+func NewBot(cfg Config, rt messaging.BotRuntime) *Bot {
+	tenantID := cfg.TenantID
 	if tenantID == "" {
 		tenantID = "botframework.com"
 	}
-	return &TeamsBot{
+	return &Bot{
 		cfg:        cfg,
-		state:      state,
-		sem:        sem,
-		childSem:   childSem,
+		rt:         rt,
 		processed:  make(map[string]time.Time),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		tokenURL:   fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", tenantID),
 	}
 }
 
+// SetTyping sends a typing activity via Bot Framework.
+func (b *Bot) SetTyping(_ context.Context, channelRef string) error {
+	if channelRef == "" {
+		return nil
+	}
+
+	// channelRef format for Teams: "serviceURL|conversationID"
+	parts := strings.SplitN(channelRef, "|", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil // invalid ref format, skip silently
+	}
+	serviceURL := parts[0]
+	conversationID := parts[1]
+
+	url := fmt.Sprintf("%sv3/conversations/%s/activities",
+		ensureTrailingSlash(serviceURL), conversationID)
+
+	payload := map[string]string{
+		"type": "typing",
+	}
+	return b.sendBotFrameworkRequest(url, payload)
+}
+
+// PresenceName returns the channel name for presence tracking.
+func (b *Bot) PresenceName() string { return "teams" }
+
 // HandleWebhook handles incoming Bot Framework webhook events.
 // POST /api/teams/webhook
-func (tb *TeamsBot) HandleWebhook(w http.ResponseWriter, r *http.Request) {
+func (b *Bot) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -123,23 +134,23 @@ func (tb *TeamsBot) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Read body.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		logError("teams: read body failed", "error", err)
+		b.rt.LogError("teams: read body failed", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	r.Body.Close()
 
 	// Validate auth (JWT in Authorization header).
-	if err := tb.validateAuth(r); err != nil {
-		logWarn("teams: auth validation failed", "error", err)
+	if err := b.validateAuth(r); err != nil {
+		b.rt.LogWarn("teams: auth validation failed", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	// Parse activity.
-	var activity teamsActivity
+	var activity Activity
 	if err := json.Unmarshal(body, &activity); err != nil {
-		logError("teams: parse activity failed", "error", err)
+		b.rt.LogError("teams: parse activity failed", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -148,12 +159,12 @@ func (tb *TeamsBot) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	// Process activity asynchronously.
-	go tb.processActivity(activity)
+	go b.processActivity(activity)
 }
 
 // validateAuth validates the JWT token from the Authorization header.
 // For simplicity: validates structure + verifies appId in claims (skip full JWKS rotation).
-func (tb *TeamsBot) validateAuth(r *http.Request) error {
+func (b *Bot) validateAuth(r *http.Request) error {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
 		return fmt.Errorf("teams: missing Authorization header")
@@ -178,11 +189,11 @@ func (tb *TeamsBot) validateAuth(r *http.Request) error {
 	}
 
 	var claims struct {
-		Iss    string `json:"iss"`
-		Aud    string `json:"aud"`
-		AppID  string `json:"appid"`
-		Exp    int64  `json:"exp"`
-		Nbf    int64  `json:"nbf"`
+		Iss   string `json:"iss"`
+		Aud   string `json:"aud"`
+		AppID string `json:"appid"`
+		Exp   int64  `json:"exp"`
+		Nbf   int64  `json:"nbf"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return fmt.Errorf("teams: parse JWT claims: %w", err)
@@ -200,9 +211,9 @@ func (tb *TeamsBot) validateAuth(r *http.Request) error {
 	}
 
 	// Validate audience matches our appId.
-	if tb.cfg.Teams.AppID != "" {
-		if claims.Aud != tb.cfg.Teams.AppID {
-			return fmt.Errorf("teams: audience mismatch (got %q, want %q)", claims.Aud, tb.cfg.Teams.AppID)
+	if b.cfg.AppID != "" {
+		if claims.Aud != b.cfg.AppID {
+			return fmt.Errorf("teams: audience mismatch (got %q, want %q)", claims.Aud, b.cfg.AppID)
 		}
 	}
 
@@ -241,53 +252,53 @@ func base64URLDecode(s string) ([]byte, error) {
 }
 
 // processActivity handles a Teams activity after webhook validation.
-func (tb *TeamsBot) processActivity(activity teamsActivity) {
+func (b *Bot) processActivity(activity Activity) {
 	switch activity.Type {
 	case "message":
-		tb.handleMessageActivity(activity)
+		b.handleMessageActivity(activity)
 	case "conversationUpdate":
-		tb.handleConversationUpdate(activity)
+		b.handleConversationUpdate(activity)
 	case "invoke":
-		tb.handleInvokeActivity(activity)
+		b.handleInvokeActivity(activity)
 	default:
-		logDebug("teams: unhandled activity type", "type", activity.Type)
+		b.rt.LogDebugCtx(context.Background(), "teams: unhandled activity type", "type", activity.Type)
 	}
 }
 
 // handleMessageActivity processes an incoming message from Teams.
-func (tb *TeamsBot) handleMessageActivity(activity teamsActivity) {
+func (b *Bot) handleMessageActivity(activity Activity) {
 	// Dedup: check if already processed.
 	if activity.ID != "" {
-		tb.mu.Lock()
-		if _, seen := tb.processed[activity.ID]; seen {
-			tb.mu.Unlock()
-			logDebug("teams: duplicate activity ignored", "activityID", activity.ID)
+		b.mu.Lock()
+		if _, seen := b.processed[activity.ID]; seen {
+			b.mu.Unlock()
+			b.rt.LogDebugCtx(context.Background(), "teams: duplicate activity ignored", "activityID", activity.ID)
 			return
 		}
-		tb.processed[activity.ID] = time.Now()
-		tb.processedSize++
+		b.processed[activity.ID] = time.Now()
+		b.processedSize++
 
 		// Cleanup old entries every 1000 activities.
-		if tb.processedSize > 1000 {
+		if b.processedSize > 1000 {
 			cutoff := time.Now().Add(-1 * time.Hour)
-			for id, t := range tb.processed {
+			for id, t := range b.processed {
 				if t.Before(cutoff) {
-					delete(tb.processed, id)
-					tb.processedSize--
+					delete(b.processed, id)
+					b.processedSize--
 				}
 			}
 		}
-		tb.mu.Unlock()
+		b.mu.Unlock()
 	}
 
 	// Handle Adaptive Card action submissions (value field).
 	if activity.Value != nil && len(activity.Value) > 0 {
 		var val map[string]interface{}
 		if json.Unmarshal(activity.Value, &val) == nil && len(val) > 0 {
-			logInfo("teams: adaptive card action", "from", activity.From.Name, "value", string(activity.Value))
+			b.rt.LogInfo("teams: adaptive card action", "from", activity.From.Name, "value", string(activity.Value))
 			// Treat the JSON value as a prompt.
 			valJSON, _ := json.Marshal(val)
-			tb.dispatchToAgent(string(valJSON), activity)
+			b.dispatchToAgent(string(valJSON), activity)
 			return
 		}
 	}
@@ -298,19 +309,19 @@ func (tb *TeamsBot) handleMessageActivity(activity teamsActivity) {
 	}
 
 	// Remove bot mention prefix (e.g., "<at>BotName</at> ").
-	text = removeBotMention(text)
+	text = RemoveBotMention(text)
 	if text == "" {
 		return
 	}
 
-	logInfo("teams: received message", "from", activity.From.Name, "conversation", activity.Conversation.ID, "text", truncate(text, 100))
+	b.rt.LogInfo("teams: received message", "from", activity.From.Name, "conversation", activity.Conversation.ID, "text", b.rt.Truncate(text, 100))
 
 	// Dispatch to agent.
-	tb.dispatchToAgent(text, activity)
+	b.dispatchToAgent(text, activity)
 }
 
-// removeBotMention strips Teams @mention tags from the message text.
-func removeBotMention(text string) string {
+// RemoveBotMention strips Teams @mention tags from the message text.
+func RemoveBotMention(text string) string {
 	// Teams wraps mentions in <at>Name</at> tags.
 	for {
 		start := strings.Index(text, "<at>")
@@ -327,119 +338,94 @@ func removeBotMention(text string) string {
 }
 
 // handleConversationUpdate handles bot join/leave events.
-func (tb *TeamsBot) handleConversationUpdate(activity teamsActivity) {
-	logInfo("teams: conversation update", "conversation", activity.Conversation.ID)
+func (b *Bot) handleConversationUpdate(activity Activity) {
+	b.rt.LogInfo("teams: conversation update", "conversation", activity.Conversation.ID)
 }
 
 // handleInvokeActivity handles invoke activities (e.g., messaging extensions).
-func (tb *TeamsBot) handleInvokeActivity(activity teamsActivity) {
-	logInfo("teams: invoke activity", "conversation", activity.Conversation.ID)
+func (b *Bot) handleInvokeActivity(activity Activity) {
+	b.rt.LogInfo("teams: invoke activity", "conversation", activity.Conversation.ID)
 }
 
 // dispatchToAgent dispatches a message to the agent system and replies via Teams.
-func (tb *TeamsBot) dispatchToAgent(text string, activity teamsActivity) {
-	ctx := trace.WithID(context.Background(), trace.NewID("teams"))
-	dbPath := tb.cfg.HistoryDB
+func (b *Bot) dispatchToAgent(text string, activity Activity) {
+	traceID := b.rt.NewTraceID("teams")
+	ctx := b.rt.WithTraceID(context.Background(), traceID)
 
 	// Route to determine agent.
-	role := tb.cfg.Teams.DefaultAgent
+	role := b.cfg.DefaultAgent
 	if role == "" {
-		route := routeTask(ctx, tb.cfg, RouteRequest{Prompt: text, Source: "teams"})
-		role = route.Agent
-		logInfoCtx(ctx, "teams route result", "agent", role, "method", route.Method)
+		var err error
+		role, err = b.rt.Route(ctx, text, "teams")
+		if err != nil {
+			b.rt.LogErrorCtx(ctx, "teams: route error", err)
+		}
+		b.rt.LogInfoCtx(ctx, "teams route result", "agent", role)
 	}
 
 	// Find or create session.
-	chKey := channelSessionKey("teams", activity.From.ID, activity.Conversation.ID)
-	sess, err := getOrCreateChannelSession(dbPath, "teams", chKey, role, "")
+	chKey := "teams:" + activity.From.ID + ":" + activity.Conversation.ID
+	sessID, err := b.rt.GetOrCreateSession("teams", chKey, role, "")
 	if err != nil {
-		logErrorCtx(ctx, "teams session error", "error", err)
+		b.rt.LogErrorCtx(ctx, "teams session error", err)
 	}
 
 	// Build context-aware prompt.
 	contextPrompt := text
-	if sess != nil {
-		sessionCtx := buildSessionContext(dbPath, sess.ID, tb.cfg.Session.contextMessagesOrDefault())
-		contextPrompt = wrapWithContext(sessionCtx, text)
+	if sessID != "" {
+		sessionCtx := b.rt.BuildSessionContext(sessID, b.rt.SessionContextLimit())
+		if sessionCtx != "" {
+			contextPrompt = sessionCtx + "\n\n" + text
+		}
 
 		// Record user message to session.
-		now := time.Now().Format(time.RFC3339)
-		addSessionMessage(dbPath, SessionMessage{
-			SessionID: sess.ID,
-			Role:      "user",
-			Content:   truncateStr(text, 5000),
-			CreatedAt: now,
-		})
-		updateSessionStats(dbPath, sess.ID, 0, 0, 0, 1)
+		b.rt.AddSessionMessage(sessID, "user", messaging.TruncateStr(text, 5000))
+		b.rt.UpdateSessionStats(sessID, 0, 0, 0, 1)
 
 		title := text
 		if len(title) > 100 {
 			title = title[:100]
 		}
-		updateSessionTitle(dbPath, sess.ID, title)
+		b.rt.UpdateSessionTitle(sessID, title)
 	}
 
-	// Create task.
-	task := Task{
-		Prompt: contextPrompt,
-		Agent:  role,
-		Source: "teams",
-	}
-	fillDefaults(tb.cfg, &task)
-	if sess != nil {
-		task.SessionID = sess.ID
-	}
+	// Fill task defaults and apply agent-specific config.
+	taskID := b.rt.FillTaskDefaults(&role, nil, "teams")
 
-	// Apply agent-specific config.
-	if role != "" {
-		if soulPrompt, err := loadAgentPrompt(tb.cfg, role); err == nil && soulPrompt != "" {
-			task.SystemPrompt = soulPrompt
-		}
-		if rc, ok := tb.cfg.Agents[role]; ok {
-			if rc.Model != "" {
-				task.Model = rc.Model
-			}
-			if rc.PermissionMode != "" {
-				task.PermissionMode = rc.PermissionMode
-			}
-		}
-	}
+	soulPrompt, _ := b.rt.LoadAgentPrompt(role)
+	model, permMode, _ := b.rt.AgentConfig(role)
 
-	task.Prompt = expandPrompt(task.Prompt, "", tb.cfg.HistoryDB, role, tb.cfg.KnowledgeDir, tb.cfg)
+	// Expand prompt variables.
+	contextPrompt = b.rt.ExpandPrompt(contextPrompt, role)
 
 	// Run task.
-	taskStart := time.Now()
-	result := runSingleTask(ctx, tb.cfg, task, tb.sem, tb.childSem, role)
+	result, _ := b.rt.Submit(ctx, messaging.TaskRequest{
+		AgentRole:      role,
+		Content:        contextPrompt,
+		SessionID:      sessID,
+		SystemPrompt:   soulPrompt,
+		Model:          model,
+		PermissionMode: permMode,
+		Meta:           map[string]string{"source": "teams"},
+	})
 
 	// Record to history.
-	recordHistory(tb.cfg.HistoryDB, task.ID, task.Name, task.Source, role, task, result,
-		taskStart.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
+	b.rt.RecordHistory(taskID, "", "teams", role, result.OutputFile, nil, result)
 
 	// Record assistant response to session.
-	if sess != nil {
-		now := time.Now().Format(time.RFC3339)
+	if sessID != "" {
 		msgRole := "assistant"
-		content := truncateStr(result.Output, 5000)
+		content := messaging.TruncateStr(result.Output, 5000)
 		if result.Status != "success" {
 			msgRole = "system"
 			errMsg := result.Error
 			if errMsg == "" {
 				errMsg = result.Status
 			}
-			content = fmt.Sprintf("[%s] %s", result.Status, truncateStr(errMsg, 2000))
+			content = fmt.Sprintf("[%s] %s", result.Status, messaging.TruncateStr(errMsg, 2000))
 		}
-		addSessionMessage(dbPath, SessionMessage{
-			SessionID: sess.ID,
-			Role:      msgRole,
-			Content:   content,
-			CostUSD:   result.CostUSD,
-			TokensIn:  result.TokensIn,
-			TokensOut: result.TokensOut,
-			Model:     result.Model,
-			TaskID:    task.ID,
-			CreatedAt: now,
-		})
-		updateSessionStats(dbPath, sess.ID, result.CostUSD, result.TokensIn, result.TokensOut, 0)
+		b.rt.AddSessionMessage(sessID, msgRole, content)
+		b.rt.UpdateSessionStats(sessID, result.CostUSD, result.TokensIn, result.TokensOut, 0)
 	}
 
 	// Build response.
@@ -448,74 +434,69 @@ func (tb *TeamsBot) dispatchToAgent(text string, activity teamsActivity) {
 		response = fmt.Sprintf("Error: %s", result.Error)
 	}
 
-	// Teams text messages limit: truncate at 28KB (Teams limit is ~28KB for text).
+	// Teams text messages limit: truncate at 28KB.
 	if len(response) > 28000 {
 		response = response[:27997] + "..."
 	}
 
 	// Send reply.
-	if err := tb.sendReply(activity.ServiceURL, activity.Conversation.ID, activity.ID, response); err != nil {
-		logError("teams: reply failed", "error", err)
+	if err := b.sendReply(activity.ServiceURL, activity.Conversation.ID, activity.ID, response); err != nil {
+		b.rt.LogError("teams: reply failed", err)
 		// Fall back to proactive message.
-		if proactiveErr := tb.sendProactive(activity.ServiceURL, activity.Conversation.ID, response); proactiveErr != nil {
-			logError("teams: proactive also failed", "error", proactiveErr)
+		if proactiveErr := b.sendProactive(activity.ServiceURL, activity.Conversation.ID, response); proactiveErr != nil {
+			b.rt.LogError("teams: proactive also failed", proactiveErr)
 		}
 	}
 
-	logInfoCtx(ctx, "teams task complete", "taskID", task.ID, "status", result.Status, "cost", result.CostUSD)
+	b.rt.LogInfoCtx(ctx, "teams task complete", "taskID", taskID, "status", result.Status, "cost", result.CostUSD)
 
 	// Emit SSE event.
-	if tb.state != nil && tb.state.broker != nil {
-		tb.state.broker.Publish("teams", SSEEvent{
-			Type: "teams",
-			Data: map[string]interface{}{
-				"from":           activity.From.Name,
-				"conversationId": activity.Conversation.ID,
-				"taskID":         task.ID,
-				"status":         result.Status,
-				"cost":           result.CostUSD,
-			},
-		})
-	}
+	b.rt.PublishEvent("teams", map[string]interface{}{
+		"from":           activity.From.Name,
+		"conversationId": activity.Conversation.ID,
+		"taskID":         taskID,
+		"status":         result.Status,
+		"cost":           result.CostUSD,
+	})
 }
 
 // --- Teams Bot Framework API ---
 
-// getToken obtains (or returns cached) an OAuth2 bearer token for outbound Bot Framework API calls.
-func (tb *TeamsBot) getToken() (string, error) {
+// GetToken obtains (or returns cached) an OAuth2 bearer token for outbound Bot Framework API calls.
+func (b *Bot) GetToken() (string, error) {
 	// Check cache first.
-	tb.tokenCache.mu.RLock()
-	if tb.tokenCache.token != "" && time.Now().Before(tb.tokenCache.expiresAt) {
-		token := tb.tokenCache.token
-		tb.tokenCache.mu.RUnlock()
+	b.tc.mu.RLock()
+	if b.tc.token != "" && time.Now().Before(b.tc.expiresAt) {
+		token := b.tc.token
+		b.tc.mu.RUnlock()
 		return token, nil
 	}
-	tb.tokenCache.mu.RUnlock()
+	b.tc.mu.RUnlock()
 
 	// Acquire write lock to refresh.
-	tb.tokenCache.mu.Lock()
-	defer tb.tokenCache.mu.Unlock()
+	b.tc.mu.Lock()
+	defer b.tc.mu.Unlock()
 
 	// Double-check after acquiring write lock.
-	if tb.tokenCache.token != "" && time.Now().Before(tb.tokenCache.expiresAt) {
-		return tb.tokenCache.token, nil
+	if b.tc.token != "" && time.Now().Before(b.tc.expiresAt) {
+		return b.tc.token, nil
 	}
 
 	// Request new token.
 	data := fmt.Sprintf(
 		"grant_type=client_credentials&client_id=%s&client_secret=%s&scope=%s",
-		tb.cfg.Teams.AppID,
-		tb.cfg.Teams.AppPassword,
+		b.cfg.AppID,
+		b.cfg.AppPassword,
 		"https%3A%2F%2Fapi.botframework.com%2F.default",
 	)
 
-	req, err := http.NewRequest("POST", tb.tokenURL, strings.NewReader(data))
+	req, err := http.NewRequest("POST", b.tokenURL, strings.NewReader(data))
 	if err != nil {
 		return "", fmt.Errorf("teams: create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := tb.httpClient.Do(req)
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("teams: token request failed: %w", err)
 	}
@@ -544,16 +525,16 @@ func (tb *TeamsBot) getToken() (string, error) {
 	if expiresIn > 5*time.Minute {
 		expiresIn -= 5 * time.Minute
 	}
-	tb.tokenCache.token = tokenResp.AccessToken
-	tb.tokenCache.expiresAt = time.Now().Add(expiresIn)
+	b.tc.token = tokenResp.AccessToken
+	b.tc.expiresAt = time.Now().Add(expiresIn)
 
-	logDebug("teams: token refreshed", "expiresIn", tokenResp.ExpiresIn)
+	b.rt.LogDebugCtx(context.Background(), "teams: token refreshed", "expiresIn", tokenResp.ExpiresIn)
 	return tokenResp.AccessToken, nil
 }
 
 // sendReply sends a reply to a specific activity in a conversation.
 // POST to serviceUrl/v3/conversations/{conversationId}/activities/{activityId}
-func (tb *TeamsBot) sendReply(serviceURL, conversationID, activityID, text string) error {
+func (b *Bot) sendReply(serviceURL, conversationID, activityID, text string) error {
 	if serviceURL == "" || conversationID == "" {
 		return fmt.Errorf("teams: missing serviceURL or conversationID")
 	}
@@ -566,12 +547,12 @@ func (tb *TeamsBot) sendReply(serviceURL, conversationID, activityID, text strin
 		"text": text,
 	}
 
-	return tb.sendBotFrameworkRequest(url, payload)
+	return b.sendBotFrameworkRequest(url, payload)
 }
 
 // sendProactive sends a proactive message to a conversation (no reply-to activity).
 // POST to serviceUrl/v3/conversations/{conversationId}/activities
-func (tb *TeamsBot) sendProactive(serviceURL, conversationID, text string) error {
+func (b *Bot) sendProactive(serviceURL, conversationID, text string) error {
 	if serviceURL == "" || conversationID == "" {
 		return fmt.Errorf("teams: missing serviceURL or conversationID")
 	}
@@ -584,11 +565,11 @@ func (tb *TeamsBot) sendProactive(serviceURL, conversationID, text string) error
 		"text": text,
 	}
 
-	return tb.sendBotFrameworkRequest(url, payload)
+	return b.sendBotFrameworkRequest(url, payload)
 }
 
-// sendAdaptiveCard sends an Adaptive Card to a conversation.
-func (tb *TeamsBot) sendAdaptiveCard(serviceURL, conversationID string, card map[string]interface{}) error {
+// SendAdaptiveCard sends an Adaptive Card to a conversation.
+func (b *Bot) SendAdaptiveCard(serviceURL, conversationID string, card map[string]interface{}) error {
 	if serviceURL == "" || conversationID == "" {
 		return fmt.Errorf("teams: missing serviceURL or conversationID")
 	}
@@ -606,17 +587,17 @@ func (tb *TeamsBot) sendAdaptiveCard(serviceURL, conversationID string, card map
 		},
 	}
 
-	return tb.sendBotFrameworkRequest(url, payload)
+	return b.sendBotFrameworkRequest(url, payload)
 }
 
 // sendBotFrameworkRequest sends an authenticated POST request to the Bot Framework API.
-func (tb *TeamsBot) sendBotFrameworkRequest(url string, payload interface{}) error {
+func (b *Bot) sendBotFrameworkRequest(url string, payload interface{}) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("teams: marshal payload: %w", err)
 	}
 
-	token, err := tb.getToken()
+	token, err := b.GetToken()
 	if err != nil {
 		return fmt.Errorf("teams: get token: %w", err)
 	}
@@ -629,7 +610,7 @@ func (tb *TeamsBot) sendBotFrameworkRequest(url string, payload interface{}) err
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := tb.httpClient.Do(req)
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("teams: request failed: %w", err)
 	}
@@ -640,7 +621,7 @@ func (tb *TeamsBot) sendBotFrameworkRequest(url string, payload interface{}) err
 		return fmt.Errorf("teams: HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	logDebug("teams: API request sent", "url", url, "status", resp.StatusCode)
+	b.rt.LogDebugCtx(context.Background(), "teams: API request sent", "url", url, "status", resp.StatusCode)
 	return nil
 }
 
@@ -654,8 +635,8 @@ func ensureTrailingSlash(url string) string {
 
 // --- Teams Adaptive Card Builder ---
 
-// buildSimpleAdaptiveCard creates a simple Adaptive Card with a title and body text.
-func buildSimpleAdaptiveCard(title, body string) map[string]interface{} {
+// BuildSimpleAdaptiveCard creates a simple Adaptive Card with a title and body text.
+func BuildSimpleAdaptiveCard(title, body string) map[string]interface{} {
 	card := map[string]interface{}{
 		"type":    "AdaptiveCard",
 		"version": "1.4",
@@ -676,17 +657,17 @@ func buildSimpleAdaptiveCard(title, body string) map[string]interface{} {
 	return card
 }
 
-// buildAdaptiveCardWithActions creates an Adaptive Card with action buttons.
-func buildAdaptiveCardWithActions(title, body string, actions []map[string]interface{}) map[string]interface{} {
-	card := buildSimpleAdaptiveCard(title, body)
+// BuildAdaptiveCardWithActions creates an Adaptive Card with action buttons.
+func BuildAdaptiveCardWithActions(title, body string, actions []map[string]interface{}) map[string]interface{} {
+	card := BuildSimpleAdaptiveCard(title, body)
 	if len(actions) > 0 {
 		card["actions"] = actions
 	}
 	return card
 }
 
-// buildSubmitAction creates an Action.Submit for an Adaptive Card.
-func buildSubmitAction(title string, data map[string]interface{}) map[string]interface{} {
+// BuildSubmitAction creates an Action.Submit for an Adaptive Card.
+func BuildSubmitAction(title string, data map[string]interface{}) map[string]interface{} {
 	return map[string]interface{}{
 		"type":  "Action.Submit",
 		"title": title,
@@ -696,14 +677,15 @@ func buildSubmitAction(title string, data map[string]interface{}) map[string]int
 
 // --- Teams Notification Integration ---
 
-// TeamsNotifier sends notifications via Teams Bot Framework API.
-type TeamsNotifier struct {
-	Bot            *TeamsBot
+// Notifier sends notifications via Teams Bot Framework API.
+type Notifier struct {
+	Bot            *Bot
 	ServiceURL     string // cached service URL for proactive messages
 	ConversationID string // target conversation ID
 }
 
-func (n *TeamsNotifier) Send(text string) error {
+// Send sends a text notification to the configured conversation.
+func (n *Notifier) Send(text string) error {
 	if text == "" {
 		return nil
 	}
@@ -715,4 +697,5 @@ func (n *TeamsNotifier) Send(text string) error {
 	return n.Bot.sendProactive(n.ServiceURL, n.ConversationID, text)
 }
 
-func (n *TeamsNotifier) Name() string { return "teams" }
+// Name returns the notifier name.
+func (n *Notifier) Name() string { return "teams" }

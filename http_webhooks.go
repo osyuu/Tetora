@@ -28,7 +28,7 @@ func (s *Server) registerWebhookRoutes(mux *http.ServeMux) {
 
 	// --- P15.1: LINE Channel --- Register LINE webhook endpoint.
 	if s.lineBot != nil {
-		webhookPath := cfg.LINE.webhookPathOrDefault()
+		webhookPath := cfg.LINE.WebhookPathOrDefault()
 		mux.HandleFunc(webhookPath, s.lineBot.HandleWebhook)
 	}
 
@@ -51,6 +51,6 @@ func (s *Server) registerWebhookRoutes(mux *http.ServeMux) {
 
 	// --- P20.2: iMessage --- BlueBubbles webhook.
 	if s.imessageBot != nil {
-		mux.HandleFunc(cfg.IMessage.webhookPathOrDefault(), s.imessageBot.webhookHandler)
+		mux.HandleFunc(cfg.IMessage.WebhookPathOrDefault(), s.imessageBot.WebhookHandler)
 	}
 }

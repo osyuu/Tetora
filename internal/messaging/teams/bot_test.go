@@ -1,8 +1,7 @@
-package main
-
-// --- P15.3: Teams Channel ---
+package teams
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,17 +11,70 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tetora/internal/messaging"
 )
+
+// --- Mock BotRuntime ---
+
+type mockRuntime struct{}
+
+func (m *mockRuntime) Submit(_ context.Context, _ messaging.TaskRequest) (messaging.TaskResult, error) {
+	return messaging.TaskResult{Status: "success"}, nil
+}
+func (m *mockRuntime) Route(_ context.Context, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) GetOrCreateSession(_, _, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) BuildSessionContext(_ string, _ int) string                     { return "" }
+func (m *mockRuntime) AddSessionMessage(_, _, _ string)                               {}
+func (m *mockRuntime) UpdateSessionStats(_ string, _, _, _, _ float64)                {}
+func (m *mockRuntime) RecordHistory(_, _, _, _, _ string, _, _ interface{})           {}
+func (m *mockRuntime) PublishEvent(_ string, _ map[string]interface{})                {}
+func (m *mockRuntime) IsActive() bool                                                 { return false }
+func (m *mockRuntime) ExpandPrompt(prompt, _ string) string                           { return prompt }
+func (m *mockRuntime) LoadAgentPrompt(_ string) (string, error)                       { return "", nil }
+func (m *mockRuntime) FillTaskDefaults(_ *string, _ *string, _ string) string         { return "task-id" }
+func (m *mockRuntime) HistoryDB() string                                              { return ":memory:" }
+func (m *mockRuntime) WorkspaceDir() string                                           { return "/tmp" }
+func (m *mockRuntime) SaveUpload(_ string, _ []byte) (string, error)                  { return "", nil }
+func (m *mockRuntime) Truncate(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
+}
+func (m *mockRuntime) NewTraceID(_ string) string                                                  { return "trace-id" }
+func (m *mockRuntime) WithTraceID(ctx context.Context, _ string) context.Context                  { return ctx }
+func (m *mockRuntime) LogInfo(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogWarn(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogError(_ string, _ error, _ ...interface{})                               {}
+func (m *mockRuntime) LogInfoCtx(_ context.Context, _ string, _ ...interface{})                   {}
+func (m *mockRuntime) LogErrorCtx(_ context.Context, _ string, _ error, _ ...interface{})         {}
+func (m *mockRuntime) LogDebugCtx(_ context.Context, _ string, _ ...interface{})                  {}
+func (m *mockRuntime) ClientIP(_ *http.Request) string                                             { return "" }
+func (m *mockRuntime) AuditLog(_, _, _, _ string)                                                  {}
+func (m *mockRuntime) QueryCostStats() (float64, float64, float64)                                 { return 0, 0, 0 }
+func (m *mockRuntime) UpdateAgentModel(_, _ string) error                                          { return nil }
+func (m *mockRuntime) MaybeCompactSession(_ string, _ int, _ float64)                              {}
+func (m *mockRuntime) UpdateSessionTitle(_, _ string)                                              {}
+func (m *mockRuntime) SessionContextLimit() int                                                     { return 10 }
+func (m *mockRuntime) AgentConfig(_ string) (string, string, bool)                                 { return "", "", false }
+
+var testRT = &mockRuntime{}
+
+// newBot is a test helper that creates a Bot with the mock runtime.
+func newBot(cfg Config) *Bot {
+	return NewBot(cfg, testRT)
+}
+
+// --- Tests ---
 
 func TestTeamsJWTValidation(t *testing.T) {
 	appID := "test-app-id-12345"
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled: true,
-			AppID:   appID,
-		},
+	cfg := Config{
+		Enabled: true,
+		AppID:   appID,
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 
 	// Helper to build a JWT token from claims.
 	buildJWT := func(claims map[string]interface{}) string {
@@ -164,7 +216,7 @@ func TestTeamsActivityParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var activity teamsActivity
+			var activity Activity
 			if err := json.Unmarshal([]byte(tt.payload), &activity); err != nil {
 				t.Fatalf("unmarshal failed: %v", err)
 			}
@@ -204,17 +256,15 @@ func TestTeamsReplyMessageConstruction(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled:     true,
-			AppID:       "test-app",
-			AppPassword: "test-secret",
-		},
+	cfg := Config{
+		Enabled:     true,
+		AppID:       "test-app",
+		AppPassword: "test-secret",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 	// Pre-populate token cache to avoid real token request.
-	bot.tokenCache.token = "test-bearer-token"
-	bot.tokenCache.expiresAt = time.Now().Add(1 * time.Hour)
+	bot.tc.token = "test-bearer-token"
+	bot.tc.expiresAt = time.Now().Add(1 * time.Hour)
 
 	err := bot.sendReply(srv.URL, "conv-123", "act-456", "Hello from Tetora!")
 	if err != nil {
@@ -246,16 +296,14 @@ func TestTeamsProactiveMessage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled:     true,
-			AppID:       "test-app",
-			AppPassword: "test-secret",
-		},
+	cfg := Config{
+		Enabled:     true,
+		AppID:       "test-app",
+		AppPassword: "test-secret",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
-	bot.tokenCache.token = "test-bearer-token"
-	bot.tokenCache.expiresAt = time.Now().Add(1 * time.Hour)
+	bot := newBot(cfg)
+	bot.tc.token = "test-bearer-token"
+	bot.tc.expiresAt = time.Now().Add(1 * time.Hour)
 
 	err := bot.sendProactive(srv.URL, "conv-789", "Proactive message from Tetora")
 	if err != nil {
@@ -276,7 +324,7 @@ func TestTeamsProactiveMessage(t *testing.T) {
 }
 
 func TestTeamsAdaptiveCardGeneration(t *testing.T) {
-	card := buildSimpleAdaptiveCard("Task Result", "The task completed successfully.")
+	card := BuildSimpleAdaptiveCard("Task Result", "The task completed successfully.")
 
 	if card["type"] != "AdaptiveCard" {
 		t.Errorf("card.type = %v, want 'AdaptiveCard'", card["type"])
@@ -312,11 +360,11 @@ func TestTeamsAdaptiveCardGeneration(t *testing.T) {
 
 func TestTeamsAdaptiveCardWithActions(t *testing.T) {
 	actions := []map[string]interface{}{
-		buildSubmitAction("Approve", map[string]interface{}{"action": "approve", "taskId": "t-123"}),
-		buildSubmitAction("Reject", map[string]interface{}{"action": "reject", "taskId": "t-123"}),
+		BuildSubmitAction("Approve", map[string]interface{}{"action": "approve", "taskId": "t-123"}),
+		BuildSubmitAction("Reject", map[string]interface{}{"action": "reject", "taskId": "t-123"}),
 	}
 
-	card := buildAdaptiveCardWithActions("Approval Required", "Please review the task.", actions)
+	card := BuildAdaptiveCardWithActions("Approval Required", "Please review the task.", actions)
 
 	cardActions, ok := card["actions"].([]map[string]interface{})
 	if !ok {
@@ -347,21 +395,19 @@ func TestTeamsAdaptiveCardSending(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled:     true,
-			AppID:       "test-app",
-			AppPassword: "test-secret",
-		},
+	cfg := Config{
+		Enabled:     true,
+		AppID:       "test-app",
+		AppPassword: "test-secret",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
-	bot.tokenCache.token = "test-bearer-token"
-	bot.tokenCache.expiresAt = time.Now().Add(1 * time.Hour)
+	bot := newBot(cfg)
+	bot.tc.token = "test-bearer-token"
+	bot.tc.expiresAt = time.Now().Add(1 * time.Hour)
 
-	card := buildSimpleAdaptiveCard("Test", "Card content")
-	err := bot.sendAdaptiveCard(srv.URL, "conv-123", card)
+	card := BuildSimpleAdaptiveCard("Test", "Card content")
+	err := bot.SendAdaptiveCard(srv.URL, "conv-123", card)
 	if err != nil {
-		t.Fatalf("sendAdaptiveCard() error: %v", err)
+		t.Fatalf("SendAdaptiveCard() error: %v", err)
 	}
 
 	attachments, ok := capturedBody["attachments"].([]interface{})
@@ -408,20 +454,18 @@ func TestTeamsTokenRefresh(t *testing.T) {
 	}))
 	defer tokenSrv.Close()
 
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled:     true,
-			AppID:       "test-app",
-			AppPassword: "test-secret",
-		},
+	cfg := Config{
+		Enabled:     true,
+		AppID:       "test-app",
+		AppPassword: "test-secret",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 	bot.tokenURL = tokenSrv.URL
 
 	// First call: should fetch a new token.
-	tok1, err := bot.getToken()
+	tok1, err := bot.GetToken()
 	if err != nil {
-		t.Fatalf("getToken() error: %v", err)
+		t.Fatalf("GetToken() error: %v", err)
 	}
 	if tok1 != "token-1" {
 		t.Errorf("token = %q, want 'token-1'", tok1)
@@ -431,9 +475,9 @@ func TestTeamsTokenRefresh(t *testing.T) {
 	}
 
 	// Second call: should return cached token.
-	tok2, err := bot.getToken()
+	tok2, err := bot.GetToken()
 	if err != nil {
-		t.Fatalf("getToken() error: %v", err)
+		t.Fatalf("GetToken() error: %v", err)
 	}
 	if tok2 != "token-1" {
 		t.Errorf("token = %q, want 'token-1' (cached)", tok2)
@@ -443,13 +487,13 @@ func TestTeamsTokenRefresh(t *testing.T) {
 	}
 
 	// Expire the cache and fetch again.
-	bot.tokenCache.mu.Lock()
-	bot.tokenCache.expiresAt = time.Now().Add(-1 * time.Minute)
-	bot.tokenCache.mu.Unlock()
+	bot.tc.mu.Lock()
+	bot.tc.expiresAt = time.Now().Add(-1 * time.Minute)
+	bot.tc.mu.Unlock()
 
-	tok3, err := bot.getToken()
+	tok3, err := bot.GetToken()
 	if err != nil {
-		t.Fatalf("getToken() error: %v", err)
+		t.Fatalf("GetToken() error: %v", err)
 	}
 	if tok3 != "token-2" {
 		t.Errorf("token = %q, want 'token-2' (refreshed)", tok3)
@@ -461,15 +505,11 @@ func TestTeamsTokenRefresh(t *testing.T) {
 
 func TestTeamsWebhookHandlerValidRequest(t *testing.T) {
 	now := time.Now().Unix()
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled: true,
-			AppID:   "test-app",
-		},
+	cfg := Config{
+		Enabled: true,
+		AppID:   "test-app",
 	}
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-	bot := newTeamsBot(cfg, state, sem, nil)
+	bot := newBot(cfg)
 
 	// Build a valid JWT.
 	claimsJSON, _ := json.Marshal(map[string]interface{}{
@@ -503,13 +543,11 @@ func TestTeamsWebhookHandlerValidRequest(t *testing.T) {
 }
 
 func TestTeamsWebhookHandlerInvalidAuth(t *testing.T) {
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled: true,
-			AppID:   "test-app",
-		},
+	cfg := Config{
+		Enabled: true,
+		AppID:   "test-app",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 
 	body := `{"type": "message", "text": "hello"}`
 	req := httptest.NewRequest("POST", "/api/teams/webhook", strings.NewReader(body))
@@ -525,13 +563,11 @@ func TestTeamsWebhookHandlerInvalidAuth(t *testing.T) {
 
 func TestTeamsWebhookHandlerInvalidBody(t *testing.T) {
 	now := time.Now().Unix()
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled: true,
-			AppID:   "test-app",
-		},
+	cfg := Config{
+		Enabled: true,
+		AppID:   "test-app",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 
 	// Build valid JWT.
 	claimsJSON, _ := json.Marshal(map[string]interface{}{
@@ -557,13 +593,11 @@ func TestTeamsWebhookHandlerInvalidBody(t *testing.T) {
 }
 
 func TestTeamsWebhookHandlerInvalidMethod(t *testing.T) {
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled: true,
-			AppID:   "test-app",
-		},
+	cfg := Config{
+		Enabled: true,
+		AppID:   "test-app",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 
 	req := httptest.NewRequest("GET", "/api/teams/webhook", nil)
 	w := httptest.NewRecorder()
@@ -578,12 +612,12 @@ func TestTeamsWebhookHandlerInvalidMethod(t *testing.T) {
 func TestTeamsConfigValidation(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     TeamsConfig
+		cfg     Config
 		wantErr bool
 	}{
 		{
 			name: "valid config",
-			cfg: TeamsConfig{
+			cfg: Config{
 				Enabled:     true,
 				AppID:       "app-id-123",
 				AppPassword: "secret-456",
@@ -593,7 +627,7 @@ func TestTeamsConfigValidation(t *testing.T) {
 		},
 		{
 			name: "missing appId",
-			cfg: TeamsConfig{
+			cfg: Config{
 				Enabled:     true,
 				AppID:       "",
 				AppPassword: "secret-456",
@@ -602,7 +636,7 @@ func TestTeamsConfigValidation(t *testing.T) {
 		},
 		{
 			name: "missing appPassword",
-			cfg: TeamsConfig{
+			cfg: Config{
 				Enabled:     true,
 				AppID:       "app-id-123",
 				AppPassword: "",
@@ -611,7 +645,7 @@ func TestTeamsConfigValidation(t *testing.T) {
 		},
 		{
 			name: "disabled is ok with missing fields",
-			cfg: TeamsConfig{
+			cfg: Config{
 				Enabled: false,
 			},
 			wantErr: false,
@@ -646,7 +680,7 @@ func TestTeamsConversationReference(t *testing.T) {
 		"recipient": {"id": "bot-456", "name": "Tetora Bot"}
 	}`
 
-	var activity teamsActivity
+	var activity Activity
 	if err := json.Unmarshal([]byte(payload), &activity); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -672,18 +706,16 @@ func TestTeamsNotifier(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled:     true,
-			AppID:       "test-app",
-			AppPassword: "test-secret",
-		},
+	cfg := Config{
+		Enabled:     true,
+		AppID:       "test-app",
+		AppPassword: "test-secret",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
-	bot.tokenCache.token = "test-bearer-token"
-	bot.tokenCache.expiresAt = time.Now().Add(1 * time.Hour)
+	bot := newBot(cfg)
+	bot.tc.token = "test-bearer-token"
+	bot.tc.expiresAt = time.Now().Add(1 * time.Hour)
 
-	notifier := &TeamsNotifier{
+	notifier := &Notifier{
 		Bot:            bot,
 		ServiceURL:     srv.URL,
 		ConversationID: "conv-notify-123",
@@ -712,30 +744,19 @@ func TestTeamsNotifier(t *testing.T) {
 }
 
 func TestTeamsBotCreation(t *testing.T) {
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled:     true,
-			AppID:       "app-id",
-			AppPassword: "app-secret",
-			TenantID:    "tenant-id",
-		},
+	cfg := Config{
+		Enabled:     true,
+		AppID:       "app-id",
+		AppPassword: "app-secret",
+		TenantID:    "tenant-id",
 	}
 
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-
-	bot := newTeamsBot(cfg, state, sem, nil)
+	bot := NewBot(cfg, testRT)
 	if bot == nil {
-		t.Fatal("newTeamsBot returned nil")
+		t.Fatal("NewBot returned nil")
 	}
 	if bot.cfg != cfg {
 		t.Error("bot config not set correctly")
-	}
-	if bot.state != state {
-		t.Error("bot state not set correctly")
-	}
-	if bot.sem != sem {
-		t.Error("bot semaphore not set correctly")
 	}
 	if bot.processed == nil {
 		t.Error("bot processed map not initialized")
@@ -778,9 +799,9 @@ func TestTeamsRemoveBotMention(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := removeBotMention(tt.input)
+		got := RemoveBotMention(tt.input)
 		if got != tt.want {
-			t.Errorf("removeBotMention(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("RemoveBotMention(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }
@@ -842,13 +863,11 @@ func TestTeamsEnsureTrailingSlash(t *testing.T) {
 }
 
 func TestTeamsSendReplyMissingParams(t *testing.T) {
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled: true,
-			AppID:   "test-app",
-		},
+	cfg := Config{
+		Enabled: true,
+		AppID:   "test-app",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 
 	// Missing serviceURL.
 	err := bot.sendReply("", "conv-123", "act-456", "text")
@@ -864,13 +883,11 @@ func TestTeamsSendReplyMissingParams(t *testing.T) {
 }
 
 func TestTeamsSendProactiveMissingParams(t *testing.T) {
-	cfg := &Config{
-		Teams: TeamsConfig{
-			Enabled: true,
-			AppID:   "test-app",
-		},
+	cfg := Config{
+		Enabled: true,
+		AppID:   "test-app",
 	}
-	bot := newTeamsBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 
 	// Missing serviceURL.
 	err := bot.sendProactive("", "conv-123", "text")
@@ -897,7 +914,7 @@ func TestTeamsGroupConversation(t *testing.T) {
 		"recipient": {"id": "bot-789", "name": "Tetora Bot"}
 	}`
 
-	var activity teamsActivity
+	var activity Activity
 	if err := json.Unmarshal([]byte(payload), &activity); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -907,7 +924,7 @@ func TestTeamsGroupConversation(t *testing.T) {
 	}
 
 	// Test mention removal.
-	cleaned := removeBotMention(activity.Text)
+	cleaned := RemoveBotMention(activity.Text)
 	if cleaned != "what is the status?" {
 		t.Errorf("cleaned text = %q, want 'what is the status?'", cleaned)
 	}
@@ -934,7 +951,7 @@ func TestTeamsAttachmentParsing(t *testing.T) {
 		]
 	}`
 
-	var activity teamsActivity
+	var activity Activity
 	if err := json.Unmarshal([]byte(payload), &activity); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
