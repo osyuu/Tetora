@@ -18,6 +18,10 @@ import (
 	"time"
 
 	"tetora/internal/cost"
+	"tetora/internal/messaging/gchat"
+	"tetora/internal/messaging/matrix"
+	signalbot "tetora/internal/messaging/signal"
+	"tetora/internal/messaging/whatsapp"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
 )
@@ -795,9 +799,10 @@ func main() {
 		initMetrics()
 
 		// Initialize WhatsApp bot.
-		var whatsappBot *WhatsAppBot
+		var whatsappBot *whatsapp.Bot
 		if cfg.WhatsApp.Enabled && cfg.WhatsApp.PhoneNumberID != "" && cfg.WhatsApp.AccessToken != "" {
-			whatsappBot = newWhatsAppBot(cfg, state, sem, childSem, cron)
+			rt := newMessagingRuntime(cfg, state, sem, childSem)
+			whatsappBot = whatsapp.NewBot(cfg.WhatsApp, rt)
 			logInfo("whatsapp bot enabled", "endpoint", "/api/whatsapp/webhook")
 		}
 
@@ -836,9 +841,10 @@ func main() {
 		}
 
 		// --- P15.2: Matrix Channel --- Initialize Matrix bot.
-		var matrixBot *MatrixBot
+		var matrixBot *matrix.Bot
 		if cfg.Matrix.Enabled && cfg.Matrix.Homeserver != "" && cfg.Matrix.AccessToken != "" {
-			matrixBot = newMatrixBot(cfg, state, sem, childSem)
+			rt := newMessagingRuntime(cfg, state, sem, childSem)
+			matrixBot = matrix.NewBot(cfg.Matrix, rt)
 			logInfo("matrix bot enabled", "homeserver", cfg.Matrix.Homeserver, "userId", cfg.Matrix.UserID)
 		}
 
@@ -850,26 +856,28 @@ func main() {
 		}
 
 		// --- P15.4: Signal Channel --- Initialize Signal bot.
-		var signalBot *SignalBot
+		var signalBot *signalbot.Bot
 		if cfg.Signal.Enabled && cfg.Signal.PhoneNumber != "" {
-			signalBot = newSignalBot(cfg, state, sem, childSem)
+			rt := newMessagingRuntime(cfg, state, sem, childSem)
+			signalBot = signalbot.NewBot(cfg.Signal, rt)
 			if cfg.Signal.PollingMode {
 				signalBot.Start()
-				logInfo("signal bot enabled (polling mode)", "interval", cfg.Signal.pollIntervalOrDefault())
+				logInfo("signal bot enabled (polling mode)", "interval", cfg.Signal.PollIntervalOrDefault())
 			} else {
-				logInfo("signal bot enabled", "endpoint", cfg.Signal.webhookPathOrDefault())
+				logInfo("signal bot enabled", "endpoint", cfg.Signal.WebhookPathOrDefault())
 			}
 		}
 
 		// --- P15.5: Google Chat Channel --- Initialize Google Chat bot.
-		var gchatBot *GoogleChatBot
+		var gchatBot *gchat.Bot
 		if cfg.GoogleChat.Enabled && cfg.GoogleChat.ServiceAccountKey != "" {
+			rt := newMessagingRuntime(cfg, state, sem, childSem)
 			var err error
-			gchatBot, err = newGoogleChatBot(cfg, state, sem, childSem)
+			gchatBot, err = gchat.NewBot(cfg.GoogleChat, rt)
 			if err != nil {
 				logError("failed to initialize google chat bot", "error", err)
 			} else {
-				logInfo("google chat bot enabled", "endpoint", cfg.GoogleChat.webhookPathOrDefault())
+				logInfo("google chat bot enabled", "endpoint", cfg.GoogleChat.WebhookPathOrDefault())
 			}
 		}
 
@@ -990,7 +998,7 @@ func main() {
 			cfg: cfg, app: app, state: state, sem: sem, childSem: childSem, cron: cron, secMon: secMon, mcpHost: mcpHost,
 			proactiveEngine: proactiveEngine, groupChatEngine: groupChatEngine, voiceEngine: voiceEngine,
 			slackBot: slackBot, whatsappBot: whatsappBot, pluginHost: pluginHost,
-			lineBot: lineBot, teamsBot: teamsBot, signalBot: signalBot, gchatBot: gchatBot, imessageBot: imessageBot,
+			lineBot: lineBot, teamsBot: teamsBot, signalBot: signalBot, gchatBot: gchatBot, imessageBot: imessageBot, matrixBot: matrixBot,
 			heartbeatMonitor: heartbeatMon,
 			hookReceiver:     hookRecv,
 			triggerEngine:    triggerEngine,

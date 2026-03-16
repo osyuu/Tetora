@@ -7,6 +7,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"tetora/internal/messaging/matrix"
+	signalbot "tetora/internal/messaging/signal"
+	"tetora/internal/messaging/whatsapp"
 )
 
 // Notifier sends text notifications to a channel.
@@ -84,20 +88,8 @@ func (m *MultiNotifier) Send(text string) {
 	}
 }
 
-// WhatsAppNotifier sends via WhatsApp Cloud API.
-type WhatsAppNotifier struct {
-	Config    WhatsAppConfig
-	Recipient string // phone number to send to
-}
-
-func (w *WhatsAppNotifier) Send(text string) error {
-	if err := sendWhatsAppMessage(w.Config, w.Recipient, text); err != nil {
-		return fmt.Errorf("whatsapp: %w", err)
-	}
-	return nil
-}
-
-func (w *WhatsAppNotifier) Name() string { return "whatsapp" }
+// WhatsAppNotifier is an alias for the internal whatsapp.Notifier.
+type WhatsAppNotifier = whatsapp.Notifier
 
 // buildDiscordNotifierByName returns a DiscordNotifier for the named channel (from cfg.Notifications), or nil.
 func buildDiscordNotifierByName(cfg *Config, name string) *DiscordNotifier {
@@ -127,8 +119,8 @@ func buildNotifiers(cfg *Config) []Notifier {
 		case "whatsapp":
 			// For WhatsApp, WebhookURL should contain the recipient phone number
 			if ch.WebhookURL != "" && cfg.WhatsApp.Enabled {
-				notifiers = append(notifiers, &WhatsAppNotifier{
-					Config:    cfg.WhatsApp,
+				notifiers = append(notifiers, &whatsapp.Notifier{
+					Cfg:       cfg.WhatsApp,
 					Recipient: ch.WebhookURL, // use webhookUrl field for phone number
 				})
 			}
@@ -143,7 +135,7 @@ func buildNotifiers(cfg *Config) []Notifier {
 		case "matrix": // --- P15.2: Matrix Channel ---
 			// For Matrix, WebhookURL should contain the target room ID
 			if ch.WebhookURL != "" && cfg.Matrix.Enabled {
-				notifiers = append(notifiers, &MatrixNotifier{
+				notifiers = append(notifiers, &matrix.MatrixNotifier{
 					Config: cfg.Matrix,
 					RoomID: ch.WebhookURL, // use webhookUrl field for Matrix room ID
 				})
@@ -169,7 +161,7 @@ func buildNotifiers(cfg *Config) []Notifier {
 				if isGroup {
 					recipient = strings.TrimPrefix(recipient, "group:")
 				}
-				notifiers = append(notifiers, &SignalNotifier{
+				notifiers = append(notifiers, &signalbot.Notifier{
 					Config:    cfg.Signal,
 					Recipient: recipient,
 					IsGroup:   isGroup,

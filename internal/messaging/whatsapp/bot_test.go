@@ -1,27 +1,80 @@
-package main
+package whatsapp
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"tetora/internal/messaging"
 )
 
+// --- Mock BotRuntime ---
+
+type mockRuntime struct{}
+
+func (m *mockRuntime) Submit(_ context.Context, _ messaging.TaskRequest) (messaging.TaskResult, error) {
+	return messaging.TaskResult{Status: "success"}, nil
+}
+func (m *mockRuntime) Route(_ context.Context, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) GetOrCreateSession(_, _, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) BuildSessionContext(_ string, _ int) string                     { return "" }
+func (m *mockRuntime) AddSessionMessage(_, _, _ string)                               {}
+func (m *mockRuntime) UpdateSessionStats(_ string, _, _, _, _ float64)                {}
+func (m *mockRuntime) RecordHistory(_, _, _, _, _ string, _, _ interface{})           {}
+func (m *mockRuntime) PublishEvent(_ string, _ map[string]interface{})                {}
+func (m *mockRuntime) IsActive() bool                                                 { return false }
+func (m *mockRuntime) ExpandPrompt(prompt, _ string) string                           { return prompt }
+func (m *mockRuntime) LoadAgentPrompt(_ string) (string, error)                       { return "", nil }
+func (m *mockRuntime) FillTaskDefaults(_ *string, _ *string, _ string) string         { return "task-id" }
+func (m *mockRuntime) HistoryDB() string                                              { return ":memory:" }
+func (m *mockRuntime) WorkspaceDir() string                                           { return "/tmp" }
+func (m *mockRuntime) SaveUpload(_ string, _ []byte) (string, error)                  { return "", nil }
+func (m *mockRuntime) Truncate(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
+}
+func (m *mockRuntime) NewTraceID(_ string) string                                                  { return "trace-id" }
+func (m *mockRuntime) WithTraceID(ctx context.Context, _ string) context.Context                  { return ctx }
+func (m *mockRuntime) LogInfo(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogWarn(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogError(_ string, _ error, _ ...interface{})                               {}
+func (m *mockRuntime) LogInfoCtx(_ context.Context, _ string, _ ...interface{})                   {}
+func (m *mockRuntime) LogErrorCtx(_ context.Context, _ string, _ error, _ ...interface{})         {}
+func (m *mockRuntime) LogDebugCtx(_ context.Context, _ string, _ ...interface{})                  {}
+func (m *mockRuntime) ClientIP(_ *http.Request) string                                             { return "" }
+func (m *mockRuntime) AuditLog(_, _, _, _ string)                                                  {}
+func (m *mockRuntime) QueryCostStats() (float64, float64, float64)                                 { return 0, 0, 0 }
+func (m *mockRuntime) UpdateAgentModel(_, _ string) error                                          { return nil }
+func (m *mockRuntime) MaybeCompactSession(_ string, _ int, _ float64)                              {}
+func (m *mockRuntime) UpdateSessionTitle(_, _ string)                                              {}
+func (m *mockRuntime) SessionContextLimit() int                                                     { return 10 }
+func (m *mockRuntime) AgentConfig(_ string) (string, string, bool)                                 { return "", "", false }
+
+var testRT = &mockRuntime{}
+
+// newBot is a test helper that creates a Bot with the mock runtime.
+func newBot(cfg Config) *Bot {
+	return NewBot(cfg, testRT)
+}
+
+// --- Tests ---
+
 func TestWhatsAppWebhookVerification(t *testing.T) {
-	cfg := &Config{
-		WhatsApp: WhatsAppConfig{
-			Enabled:     true,
-			VerifyToken: "test_verify_token_123",
-		},
+	cfg := Config{
+		Enabled:     true,
+		VerifyToken: "test_verify_token_123",
 	}
 
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-	bot := newWhatsAppBot(cfg, state, sem, nil, nil)
+	bot := newBot(cfg)
 
 	tests := []struct {
 		name       string
@@ -62,7 +115,7 @@ func TestWhatsAppWebhookVerification(t *testing.T) {
 			req := httptest.NewRequest("GET", "/api/whatsapp/webhook?hub.mode="+tt.mode+"&hub.verify_token="+tt.token+"&hub.challenge="+tt.challenge, nil)
 			w := httptest.NewRecorder()
 
-			bot.whatsAppWebhookHandler(w, req)
+			bot.WebhookHandler(w, req)
 
 			if w.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
@@ -166,9 +219,9 @@ func TestWhatsAppSignatureVerification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := verifyWhatsAppSignature(tt.appSecret, tt.body, tt.signature)
+			got := verifySignature(tt.appSecret, tt.body, tt.signature)
 			if got != tt.want {
-				t.Errorf("verifyWhatsAppSignature() = %v, want %v", got, tt.want)
+				t.Errorf("verifySignature() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -177,52 +230,50 @@ func TestWhatsAppSignatureVerification(t *testing.T) {
 func TestWhatsAppAPIVersion(t *testing.T) {
 	tests := []struct {
 		name string
-		cfg  WhatsAppConfig
+		cfg  Config
 		want string
 	}{
 		{
 			name: "default version",
-			cfg:  WhatsAppConfig{},
+			cfg:  Config{},
 			want: "v21.0",
 		},
 		{
 			name: "custom version",
-			cfg:  WhatsAppConfig{APIVersion: "v18.0"},
+			cfg:  Config{APIVersion: "v18.0"},
 			want: "v18.0",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.cfg.apiVersion()
+			got := tt.cfg.APIVersion_()
 			if got != tt.want {
-				t.Errorf("apiVersion() = %q, want %q", got, tt.want)
+				t.Errorf("APIVersion_() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestWhatsAppConfigEnabled(t *testing.T) {
-	cfg := &Config{
-		WhatsApp: WhatsAppConfig{
-			Enabled:       true,
-			PhoneNumberID: "123456789",
-			AccessToken:   "test_token",
-			VerifyToken:   "verify_token",
-		},
+	cfg := Config{
+		Enabled:       true,
+		PhoneNumberID: "123456789",
+		AccessToken:   "test_token",
+		VerifyToken:   "verify_token",
 	}
 
-	if !cfg.WhatsApp.Enabled {
+	if !cfg.Enabled {
 		t.Error("WhatsApp should be enabled")
 	}
 
-	if cfg.WhatsApp.PhoneNumberID != "123456789" {
-		t.Errorf("PhoneNumberID = %q, want %q", cfg.WhatsApp.PhoneNumberID, "123456789")
+	if cfg.PhoneNumberID != "123456789" {
+		t.Errorf("PhoneNumberID = %q, want %q", cfg.PhoneNumberID, "123456789")
 	}
 }
 
 func TestWhatsAppMessageText(t *testing.T) {
-	text := &whatsAppMessageText{
+	text := &messageText{
 		Body: "Hello, world!",
 	}
 
@@ -236,7 +287,7 @@ func TestWhatsAppMessageText(t *testing.T) {
 		t.Fatalf("marshal failed: %v", err)
 	}
 
-	var parsed whatsAppMessageText
+	var parsed messageText
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -247,22 +298,13 @@ func TestWhatsAppMessageText(t *testing.T) {
 }
 
 func TestWhatsAppDedupMessages(t *testing.T) {
-	cfg := &Config{
-		WhatsApp: WhatsAppConfig{
-			Enabled:       true,
-			PhoneNumberID: "123456789",
-			AccessToken:   "test_token",
-		},
-		SmartDispatch: SmartDispatchConfig{
-			Enabled:     false,
-			DefaultAgent: "琉璃",
-		},
-		HistoryDB: ":memory:",
+	cfg := Config{
+		Enabled:       true,
+		PhoneNumberID: "123456789",
+		AccessToken:   "test_token",
 	}
 
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-	bot := newWhatsAppBot(cfg, state, sem, nil, nil)
+	bot := newBot(cfg)
 
 	// Mark message as processed.
 	bot.mu.Lock()
@@ -284,32 +326,19 @@ func TestWhatsAppDedupMessages(t *testing.T) {
 }
 
 func TestWhatsAppBotCreation(t *testing.T) {
-	cfg := &Config{
-		WhatsApp: WhatsAppConfig{
-			Enabled:       true,
-			PhoneNumberID: "123456789",
-			AccessToken:   "test_token",
-		},
+	cfg := Config{
+		Enabled:       true,
+		PhoneNumberID: "123456789",
+		AccessToken:   "test_token",
 	}
 
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-
-	bot := newWhatsAppBot(cfg, state, sem, nil, nil)
+	bot := newBot(cfg)
 	if bot == nil {
-		t.Fatal("newWhatsAppBot returned nil")
+		t.Fatal("newBot returned nil")
 	}
 
 	if bot.cfg != cfg {
 		t.Error("bot config not set correctly")
-	}
-
-	if bot.state != state {
-		t.Error("bot state not set correctly")
-	}
-
-	if bot.sem != sem {
-		t.Error("bot semaphore not set correctly")
 	}
 
 	if bot.processed == nil {

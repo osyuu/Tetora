@@ -240,13 +240,6 @@ func (db *DiscordBot) SetTyping(ctx context.Context, channelRef string) error {
 
 func (db *DiscordBot) PresenceName() string { return "discord" }
 
-// WhatsApp Bot — no native typing API, no-op.
-func (wb *WhatsAppBot) SetTyping(ctx context.Context, channelRef string) error {
-	return nil // WhatsApp Cloud API does not support typing indicators for bots
-}
-
-func (wb *WhatsAppBot) PresenceName() string { return "whatsapp" }
-
 // LINE Bot — no native typing API, no-op.
 func (lb *LINEBot) SetTyping(ctx context.Context, channelRef string) error {
 	return nil // LINE Messaging API does not support typing indicators
@@ -278,20 +271,6 @@ func (tb *TeamsBot) SetTyping(ctx context.Context, channelRef string) error {
 }
 
 func (tb *TeamsBot) PresenceName() string { return "teams" }
-
-// Signal Bot — no standard typing API, no-op.
-func (sb *SignalBot) SetTyping(ctx context.Context, channelRef string) error {
-	return nil // signal-cli-rest-api does not expose typing indicators
-}
-
-func (sb *SignalBot) PresenceName() string { return "signal" }
-
-// Google Chat Bot — no typing API, no-op.
-func (gcb *GoogleChatBot) SetTyping(ctx context.Context, channelRef string) error {
-	return nil // Google Chat API does not support typing indicators
-}
-
-func (gcb *GoogleChatBot) PresenceName() string { return "gchat" }
 
 // iMessage Bot — no typing API via BlueBubbles, no-op.
 func (ib *IMessageBot) SetTyping(ctx context.Context, channelRef string) error {

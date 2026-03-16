@@ -1,8 +1,7 @@
-package main
-
-// --- P15.2: Matrix Channel ---
+package matrix
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +10,62 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"tetora/internal/messaging"
 )
+
+// --- Mock BotRuntime ---
+
+type mockRuntime struct{}
+
+func (m *mockRuntime) Submit(_ context.Context, _ messaging.TaskRequest) (messaging.TaskResult, error) {
+	return messaging.TaskResult{Status: "success"}, nil
+}
+func (m *mockRuntime) Route(_ context.Context, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) GetOrCreateSession(_, _, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) BuildSessionContext(_ string, _ int) string                     { return "" }
+func (m *mockRuntime) AddSessionMessage(_, _, _ string)                               {}
+func (m *mockRuntime) UpdateSessionStats(_ string, _, _, _, _ float64)                {}
+func (m *mockRuntime) RecordHistory(_, _, _, _, _ string, _, _ interface{})           {}
+func (m *mockRuntime) PublishEvent(_ string, _ map[string]interface{})                {}
+func (m *mockRuntime) IsActive() bool                                                 { return false }
+func (m *mockRuntime) ExpandPrompt(prompt, _ string) string                           { return prompt }
+func (m *mockRuntime) LoadAgentPrompt(_ string) (string, error)                       { return "", nil }
+func (m *mockRuntime) FillTaskDefaults(_ *string, _ *string, _ string) string         { return "task-id" }
+func (m *mockRuntime) HistoryDB() string                                              { return ":memory:" }
+func (m *mockRuntime) WorkspaceDir() string                                           { return "/tmp" }
+func (m *mockRuntime) SaveUpload(_ string, _ []byte) (string, error)                  { return "", nil }
+func (m *mockRuntime) Truncate(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
+}
+func (m *mockRuntime) NewTraceID(_ string) string                                                  { return "trace-id" }
+func (m *mockRuntime) WithTraceID(ctx context.Context, _ string) context.Context                  { return ctx }
+func (m *mockRuntime) LogInfo(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogWarn(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogError(_ string, _ error, _ ...interface{})                               {}
+func (m *mockRuntime) LogInfoCtx(_ context.Context, _ string, _ ...interface{})                   {}
+func (m *mockRuntime) LogErrorCtx(_ context.Context, _ string, _ error, _ ...interface{})         {}
+func (m *mockRuntime) LogDebugCtx(_ context.Context, _ string, _ ...interface{})                  {}
+func (m *mockRuntime) ClientIP(_ *http.Request) string                                             { return "" }
+func (m *mockRuntime) AuditLog(_, _, _, _ string)                                                  {}
+func (m *mockRuntime) QueryCostStats() (float64, float64, float64)                                 { return 0, 0, 0 }
+func (m *mockRuntime) UpdateAgentModel(_, _ string) error                                          { return nil }
+func (m *mockRuntime) MaybeCompactSession(_ string, _ int, _ float64)                              {}
+func (m *mockRuntime) UpdateSessionTitle(_, _ string)                                              {}
+func (m *mockRuntime) SessionContextLimit() int                                                     { return 10 }
+func (m *mockRuntime) AgentConfig(_ string) (string, string, bool)                                 { return "", "", false }
+
+var testRT = &mockRuntime{}
+
+// newBot is a test helper that creates a Bot with the mock runtime.
+func newBot(cfg Config) *Bot {
+	return NewBot(cfg, testRT)
+}
+
+// --- Tests ---
 
 func TestMatrixSyncResponseParsing(t *testing.T) {
 	payload := `{
@@ -141,16 +195,14 @@ func TestMatrixSyncResponseParsing(t *testing.T) {
 }
 
 func TestMatrixMessageEventHandling(t *testing.T) {
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:     true,
-			Homeserver:  "https://matrix.example.com",
-			UserID:      "@tetora:example.com",
-			AccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:     true,
+		Homeserver:  "https://matrix.example.com",
+		UserID:      "@tetora:example.com",
+		AccessToken: "test_token",
 	}
 
-	mb := newMatrixBot(cfg, nil, nil, nil)
+	mb := newBot(cfg)
 
 	// Text message from someone else: should be processed.
 	textEvent := matrixEvent{
@@ -178,7 +230,7 @@ func TestMatrixMessageEventHandling(t *testing.T) {
 		EventID: "$own1",
 		Content: json.RawMessage(`{"msgtype": "m.text", "body": "Own message"}`),
 	}
-	if ownEvent.Sender == mb.cfg.Matrix.UserID {
+	if ownEvent.Sender == mb.cfg.UserID {
 		// Correctly identified as own message.
 	} else {
 		t.Error("failed to identify own message")
@@ -230,16 +282,14 @@ func TestMatrixSendMessageWithTxnId(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:     true,
-			Homeserver:  srv.URL,
-			UserID:      "@tetora:example.com",
-			AccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:     true,
+		Homeserver:  srv.URL,
+		UserID:      "@tetora:example.com",
+		AccessToken: "test_token",
 	}
 
-	mb := newMatrixBot(cfg, nil, nil, nil)
+	mb := newBot(cfg)
 
 	err := mb.sendMessage("!roomid:example.com", "Hello from Tetora!")
 	if err != nil {
@@ -289,15 +339,13 @@ func TestMatrixJoinRoom(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:     true,
-			Homeserver:  srv.URL,
-			AccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:     true,
+		Homeserver:  srv.URL,
+		AccessToken: "test_token",
 	}
 
-	mb := newMatrixBot(cfg, nil, nil, nil)
+	mb := newBot(cfg)
 
 	err := mb.joinRoom("!roomid:example.com")
 	if err != nil {
@@ -328,15 +376,13 @@ func TestMatrixLeaveRoom(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:     true,
-			Homeserver:  srv.URL,
-			AccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:     true,
+		Homeserver:  srv.URL,
+		AccessToken: "test_token",
 	}
 
-	mb := newMatrixBot(cfg, nil, nil, nil)
+	mb := newBot(cfg)
 
 	err := mb.leaveRoom("!roomid:example.com")
 	if err != nil {
@@ -404,17 +450,15 @@ func TestMatrixAutoJoinInvitedRooms(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:     true,
-			Homeserver:  srv.URL,
-			UserID:      "@tetora:example.com",
-			AccessToken: "test_token",
-			AutoJoin:    true,
-		},
+	cfg := Config{
+		Enabled:     true,
+		Homeserver:  srv.URL,
+		UserID:      "@tetora:example.com",
+		AccessToken: "test_token",
+		AutoJoin:    true,
 	}
 
-	mb := newMatrixBot(cfg, nil, nil, nil)
+	mb := newBot(cfg)
 
 	// Simulate invited rooms.
 	invitedRooms := map[string]matrixInvitedRoom{
@@ -462,16 +506,14 @@ func TestMatrixSyncTokenPersistence(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:     true,
-			Homeserver:  srv.URL,
-			UserID:      "@tetora:example.com",
-			AccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:     true,
+		Homeserver:  srv.URL,
+		UserID:      "@tetora:example.com",
+		AccessToken: "test_token",
 	}
 
-	mb := newMatrixBot(cfg, nil, nil, nil)
+	mb := newBot(cfg)
 
 	// First sync.
 	if err := mb.sync(); err != nil {
@@ -529,16 +571,14 @@ func TestMatrixErrorHandling(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cfg := &Config{
-				Matrix: MatrixConfig{
-					Enabled:     true,
-					Homeserver:  srv.URL,
-					UserID:      "@tetora:example.com",
-					AccessToken: "bad_token",
-				},
+			cfg := Config{
+				Enabled:     true,
+				Homeserver:  srv.URL,
+				UserID:      "@tetora:example.com",
+				AccessToken: "bad_token",
 			}
 
-			mb := newMatrixBot(cfg, nil, nil, nil)
+			mb := newBot(cfg)
 			err := mb.sync()
 			if err == nil {
 				t.Fatal("expected error, got nil")
@@ -553,12 +593,12 @@ func TestMatrixErrorHandling(t *testing.T) {
 func TestMatrixConfigValidation(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     MatrixConfig
+		cfg     Config
 		wantErr bool
 	}{
 		{
 			name: "valid config",
-			cfg: MatrixConfig{
+			cfg: Config{
 				Enabled:     true,
 				Homeserver:  "https://matrix.example.com",
 				UserID:      "@tetora:example.com",
@@ -568,7 +608,7 @@ func TestMatrixConfigValidation(t *testing.T) {
 		},
 		{
 			name: "missing homeserver",
-			cfg: MatrixConfig{
+			cfg: Config{
 				Enabled:     true,
 				Homeserver:  "",
 				UserID:      "@tetora:example.com",
@@ -578,7 +618,7 @@ func TestMatrixConfigValidation(t *testing.T) {
 		},
 		{
 			name: "missing access token",
-			cfg: MatrixConfig{
+			cfg: Config{
 				Enabled:     true,
 				Homeserver:  "https://matrix.example.com",
 				UserID:      "@tetora:example.com",
@@ -588,7 +628,7 @@ func TestMatrixConfigValidation(t *testing.T) {
 		},
 		{
 			name: "missing user ID",
-			cfg: MatrixConfig{
+			cfg: Config{
 				Enabled:     true,
 				Homeserver:  "https://matrix.example.com",
 				UserID:      "",
@@ -598,7 +638,7 @@ func TestMatrixConfigValidation(t *testing.T) {
 		},
 		{
 			name: "disabled is ok with missing fields",
-			cfg: MatrixConfig{
+			cfg: Config{
 				Enabled: false,
 			},
 			wantErr: false,
@@ -634,7 +674,7 @@ func TestMatrixNotifier(t *testing.T) {
 	defer srv.Close()
 
 	notifier := &MatrixNotifier{
-		Config: MatrixConfig{
+		Config: Config{
 			Homeserver:  srv.URL,
 			AccessToken: "test_token",
 		},
@@ -670,7 +710,7 @@ func TestMatrixNotifier(t *testing.T) {
 
 	// Test empty room ID returns error.
 	notifier2 := &MatrixNotifier{
-		Config: MatrixConfig{
+		Config: Config{
 			Homeserver:  srv.URL,
 			AccessToken: "test_token",
 		},
@@ -682,32 +722,21 @@ func TestMatrixNotifier(t *testing.T) {
 }
 
 func TestMatrixBotCreation(t *testing.T) {
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:     true,
-			Homeserver:  "https://matrix.example.com",
-			UserID:      "@tetora:example.com",
-			AccessToken: "token_abc",
-			AutoJoin:    true,
-			DefaultAgent: "琉璃",
-		},
+	cfg := Config{
+		Enabled:      true,
+		Homeserver:   "https://matrix.example.com",
+		UserID:       "@tetora:example.com",
+		AccessToken:  "token_abc",
+		AutoJoin:     true,
+		DefaultAgent: "琉璃",
 	}
 
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-
-	mb := newMatrixBot(cfg, state, sem, nil)
+	mb := newBot(cfg)
 	if mb == nil {
-		t.Fatal("newMatrixBot returned nil")
+		t.Fatal("NewBot returned nil")
 	}
 	if mb.cfg != cfg {
 		t.Error("bot config not set correctly")
-	}
-	if mb.state != state {
-		t.Error("bot state not set correctly")
-	}
-	if mb.sem != sem {
-		t.Error("bot semaphore not set correctly")
 	}
 	if mb.apiBase != "https://matrix.example.com/_matrix/client/v3" {
 		t.Errorf("apiBase = %q, want %q", mb.apiBase, "https://matrix.example.com/_matrix/client/v3")
@@ -724,15 +753,13 @@ func TestMatrixBotCreation(t *testing.T) {
 }
 
 func TestMatrixSendMessageEmptyRoomID(t *testing.T) {
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:     true,
-			Homeserver:  "https://matrix.example.com",
-			AccessToken: "test_token",
-		},
+	cfg := Config{
+		Enabled:     true,
+		Homeserver:  "https://matrix.example.com",
+		AccessToken: "test_token",
 	}
 
-	mb := newMatrixBot(cfg, nil, nil, nil)
+	mb := newBot(cfg)
 
 	err := mb.sendMessage("", "hello")
 	if err == nil {
@@ -751,22 +778,23 @@ func TestMatrixSendMessageEmptyRoomID(t *testing.T) {
 
 func TestMatrixHomeserverTrailingSlash(t *testing.T) {
 	// Test that trailing slash in homeserver URL is handled correctly.
-	cfg := &Config{
-		Matrix: MatrixConfig{
-			Enabled:    true,
-			Homeserver: "https://matrix.example.com/",
-		},
+	cfg := Config{
+		Enabled:    true,
+		Homeserver: "https://matrix.example.com/",
 	}
 
-	mb := newMatrixBot(cfg, nil, nil, nil)
+	mb := newBot(cfg)
 	expected := "https://matrix.example.com/_matrix/client/v3"
 	if mb.apiBase != expected {
 		t.Errorf("apiBase = %q, want %q", mb.apiBase, expected)
 	}
 
 	// Without trailing slash.
-	cfg.Matrix.Homeserver = "https://matrix.example.com"
-	mb2 := newMatrixBot(cfg, nil, nil, nil)
+	cfg2 := Config{
+		Enabled:    true,
+		Homeserver: "https://matrix.example.com",
+	}
+	mb2 := newBot(cfg2)
 	if mb2.apiBase != expected {
 		t.Errorf("apiBase = %q, want %q", mb2.apiBase, expected)
 	}

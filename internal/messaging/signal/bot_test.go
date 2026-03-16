@@ -1,7 +1,8 @@
-package main
+package signal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,38 +10,79 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tetora/internal/messaging"
 )
 
-// --- P15.4: Signal Channel Tests ---
+// --- Mock BotRuntime ---
+
+type mockRuntime struct{}
+
+func (m *mockRuntime) Submit(_ context.Context, _ messaging.TaskRequest) (messaging.TaskResult, error) {
+	return messaging.TaskResult{Status: "success"}, nil
+}
+func (m *mockRuntime) Route(_ context.Context, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) GetOrCreateSession(_, _, _, _ string) (string, error)          { return "", nil }
+func (m *mockRuntime) BuildSessionContext(_ string, _ int) string                     { return "" }
+func (m *mockRuntime) AddSessionMessage(_, _, _ string)                               {}
+func (m *mockRuntime) UpdateSessionStats(_ string, _, _, _, _ float64)                {}
+func (m *mockRuntime) RecordHistory(_, _, _, _, _ string, _, _ interface{})           {}
+func (m *mockRuntime) PublishEvent(_ string, _ map[string]interface{})                {}
+func (m *mockRuntime) IsActive() bool                                                 { return false }
+func (m *mockRuntime) ExpandPrompt(prompt, _ string) string                           { return prompt }
+func (m *mockRuntime) LoadAgentPrompt(_ string) (string, error)                       { return "", nil }
+func (m *mockRuntime) FillTaskDefaults(_ *string, _ *string, _ string) string         { return "task-id" }
+func (m *mockRuntime) HistoryDB() string                                              { return ":memory:" }
+func (m *mockRuntime) WorkspaceDir() string                                           { return "/tmp" }
+func (m *mockRuntime) SaveUpload(_ string, _ []byte) (string, error)                  { return "", nil }
+func (m *mockRuntime) Truncate(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
+}
+func (m *mockRuntime) NewTraceID(_ string) string                                                  { return "trace-id" }
+func (m *mockRuntime) WithTraceID(ctx context.Context, _ string) context.Context                  { return ctx }
+func (m *mockRuntime) LogInfo(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogWarn(_ string, _ ...interface{})                                          {}
+func (m *mockRuntime) LogError(_ string, _ error, _ ...interface{})                               {}
+func (m *mockRuntime) LogInfoCtx(_ context.Context, _ string, _ ...interface{})                   {}
+func (m *mockRuntime) LogErrorCtx(_ context.Context, _ string, _ error, _ ...interface{})         {}
+func (m *mockRuntime) LogDebugCtx(_ context.Context, _ string, _ ...interface{})                  {}
+func (m *mockRuntime) ClientIP(_ *http.Request) string                                             { return "" }
+func (m *mockRuntime) AuditLog(_, _, _, _ string)                                                  {}
+func (m *mockRuntime) QueryCostStats() (float64, float64, float64)                                 { return 0, 0, 0 }
+func (m *mockRuntime) UpdateAgentModel(_, _ string) error                                          { return nil }
+func (m *mockRuntime) MaybeCompactSession(_ string, _ int, _ float64)                              {}
+func (m *mockRuntime) UpdateSessionTitle(_, _ string)                                              {}
+func (m *mockRuntime) SessionContextLimit() int                                                     { return 10 }
+func (m *mockRuntime) AgentConfig(_ string) (string, string, bool)                                 { return "", "", false }
+
+var testRT = &mockRuntime{}
+
+// newBot is a test helper that creates a Bot with the mock runtime.
+func newBot(cfg Config) *Bot {
+	return NewBot(cfg, testRT)
+}
+
+// --- Tests ---
 
 func TestSignalWebhookParsing(t *testing.T) {
-	cfg := &Config{
-		Signal: SignalConfig{
-			Enabled:     true,
-			APIBaseURL:  "http://localhost:8080",
-			PhoneNumber: "+1234567890",
-		},
-		HistoryDB:    ":memory:",
-		MaxConcurrent: 1,
-		ClaudePath:   "claude",
-		DefaultModel: "claude-opus-4",
-		Agents:        map[string]AgentConfig{},
-		Providers:    map[string]ProviderConfig{},
-		baseDir:      "/tmp/tetora-test",
+	cfg := Config{
+		Enabled:     true,
+		APIBaseURL:  "http://localhost:8080",
+		PhoneNumber: "+1234567890",
 	}
-	cfg.registry = initProviders(cfg)
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-	bot := newSignalBot(cfg, state, sem, nil)
+	bot := newBot(cfg)
 
 	// Sample webhook payload.
-	payload := signalReceivePayload{
-		Envelope: signalEnvelope{
+	payload := receivePayload{
+		Envelope: envelope{
 			Source:     "+0987654321",
 			SourceName: "Test User",
 			SourceUUID: "test-uuid",
 			Timestamp:  time.Now().UnixMilli(),
-			DataMessage: &signalDataMessage{
+			DataMessage: &dataMessage{
 				Timestamp: time.Now().UnixMilli(),
 				Message:   "Hello from Signal",
 			},
@@ -70,35 +112,23 @@ func TestSignalWebhookParsing(t *testing.T) {
 }
 
 func TestSignalGroupMessageHandling(t *testing.T) {
-	cfg := &Config{
-		Signal: SignalConfig{
-			Enabled:     true,
-			APIBaseURL:  "http://localhost:8080",
-			PhoneNumber: "+1234567890",
-		},
-		HistoryDB:    ":memory:",
-		MaxConcurrent: 1,
-		ClaudePath:   "claude",
-		DefaultModel: "claude-opus-4",
-		Agents:        map[string]AgentConfig{},
-		Providers:    map[string]ProviderConfig{},
-		baseDir:      "/tmp/tetora-test",
+	cfg := Config{
+		Enabled:     true,
+		APIBaseURL:  "http://localhost:8080",
+		PhoneNumber: "+1234567890",
 	}
-	cfg.registry = initProviders(cfg)
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-	bot := newSignalBot(cfg, state, sem, nil)
+	bot := newBot(cfg)
 
 	// Sample group message.
-	payload := signalReceivePayload{
-		Envelope: signalEnvelope{
+	payload := receivePayload{
+		Envelope: envelope{
 			Source:     "+0987654321",
 			SourceName: "Group Member",
 			Timestamp:  time.Now().UnixMilli(),
-			DataMessage: &signalDataMessage{
+			DataMessage: &dataMessage{
 				Timestamp: time.Now().UnixMilli(),
 				Message:   "Group message test",
-				GroupInfo: &signalGroupInfo{
+				GroupInfo: &groupInfo{
 					GroupID: "group-123",
 					Type:    "DELIVER",
 				},
@@ -128,34 +158,22 @@ func TestSignalGroupMessageHandling(t *testing.T) {
 }
 
 func TestSignalMessageDedup(t *testing.T) {
-	cfg := &Config{
-		Signal: SignalConfig{
-			Enabled: true,
-		},
-		HistoryDB:    ":memory:",
-		MaxConcurrent: 1,
-		ClaudePath:   "claude",
-		DefaultModel: "claude-opus-4",
-		Agents:        map[string]AgentConfig{},
-		Providers:    map[string]ProviderConfig{},
-		baseDir:      "/tmp/tetora-test",
+	cfg := Config{
+		Enabled: true,
 	}
-	cfg.registry = initProviders(cfg)
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-	bot := newSignalBot(cfg, state, sem, nil)
+	bot := newBot(cfg)
 
-	envelope := signalEnvelope{
+	env := envelope{
 		Source:    "+0987654321",
 		Timestamp: time.Now().UnixMilli(),
-		DataMessage: &signalDataMessage{
+		DataMessage: &dataMessage{
 			Timestamp: time.Now().UnixMilli(),
 			Message:   "Duplicate test",
 		},
 	}
 
 	// Process once.
-	bot.processEnvelope(envelope)
+	bot.processEnvelope(env)
 	time.Sleep(50 * time.Millisecond)
 
 	bot.mu.Lock()
@@ -163,7 +181,7 @@ func TestSignalMessageDedup(t *testing.T) {
 	bot.mu.Unlock()
 
 	// Process again (should be deduped).
-	bot.processEnvelope(envelope)
+	bot.processEnvelope(env)
 	time.Sleep(50 * time.Millisecond)
 
 	bot.mu.Lock()
@@ -187,14 +205,12 @@ func TestSignalSendMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &Config{
-		Signal: SignalConfig{
-			Enabled:     true,
-			APIBaseURL:  server.URL,
-			PhoneNumber: "+1234567890",
-		},
+	cfg := Config{
+		Enabled:     true,
+		APIBaseURL:  server.URL,
+		PhoneNumber: "+1234567890",
 	}
-	bot := newSignalBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 
 	err := bot.SendMessage("+0987654321", "Test message")
 	if err != nil {
@@ -211,7 +227,7 @@ func TestSignalSendMessage(t *testing.T) {
 	}
 
 	// Verify payload.
-	var payload signalSendRequest
+	var payload sendRequest
 	if err := json.Unmarshal(capturedBody, &payload); err != nil {
 		t.Fatalf("unmarshal payload failed: %v", err)
 	}
@@ -235,13 +251,11 @@ func TestSignalSendGroupMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &Config{
-		Signal: SignalConfig{
-			Enabled:    true,
-			APIBaseURL: server.URL,
-		},
+	cfg := Config{
+		Enabled:    true,
+		APIBaseURL: server.URL,
 	}
-	bot := newSignalBot(cfg, nil, nil, nil)
+	bot := newBot(cfg)
 
 	err := bot.SendGroupMessage("group-abc123", "Test group message")
 	if err != nil {
@@ -249,7 +263,7 @@ func TestSignalSendGroupMessage(t *testing.T) {
 	}
 
 	// Verify payload.
-	var payload signalSendRequest
+	var payload sendRequest
 	if err := json.Unmarshal(capturedBody, &payload); err != nil {
 		t.Fatalf("unmarshal payload failed: %v", err)
 	}
@@ -272,8 +286,8 @@ func TestSignalNotifier(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier := &SignalNotifier{
-		Config: SignalConfig{
+	notifier := &Notifier{
+		Config: Config{
 			APIBaseURL: server.URL,
 		},
 		Recipient: "+1234567890",
@@ -286,7 +300,7 @@ func TestSignalNotifier(t *testing.T) {
 	}
 
 	// Verify payload.
-	var payload signalSendRequest
+	var payload sendRequest
 	if err := json.Unmarshal(capturedBody, &payload); err != nil {
 		t.Fatalf("unmarshal payload failed: %v", err)
 	}
@@ -309,8 +323,8 @@ func TestSignalNotifierGroupMode(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier := &SignalNotifier{
-		Config: SignalConfig{
+	notifier := &Notifier{
+		Config: Config{
 			APIBaseURL: server.URL,
 		},
 		Recipient: "group-xyz",
@@ -323,7 +337,7 @@ func TestSignalNotifierGroupMode(t *testing.T) {
 	}
 
 	// Verify payload.
-	var payload signalSendRequest
+	var payload sendRequest
 	if err := json.Unmarshal(capturedBody, &payload); err != nil {
 		t.Fatalf("unmarshal payload failed: %v", err)
 	}
@@ -338,26 +352,21 @@ func TestSignalNotifierGroupMode(t *testing.T) {
 }
 
 func TestSignalEmptyMessageIgnored(t *testing.T) {
-	cfg := &Config{
-		Signal: SignalConfig{
-			Enabled: true,
-		},
-		HistoryDB: ":memory:",
+	cfg := Config{
+		Enabled: true,
 	}
-	state := newDispatchState()
-	sem := make(chan struct{}, 1)
-	bot := newSignalBot(cfg, state, sem, nil)
+	bot := newBot(cfg)
 
-	envelope := signalEnvelope{
+	env := envelope{
 		Source:    "+0987654321",
 		Timestamp: time.Now().UnixMilli(),
-		DataMessage: &signalDataMessage{
+		DataMessage: &dataMessage{
 			Timestamp: time.Now().UnixMilli(),
 			Message:   "",
 		},
 	}
 
-	bot.processEnvelope(envelope)
+	bot.processEnvelope(env)
 	time.Sleep(50 * time.Millisecond)
 
 	bot.mu.Lock()

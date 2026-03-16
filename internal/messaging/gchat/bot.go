@@ -1,6 +1,4 @@
-package main
-
-// --- P15.5: Google Chat Channel ---
+package gchat
 
 import (
 	"bytes"
@@ -20,36 +18,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tetora/internal/messaging"
 )
-
-// --- Google Chat Config ---
-
-// GoogleChatConfig holds configuration for Google Chat integration.
-type GoogleChatConfig struct {
-	Enabled           bool   `json:"enabled,omitempty"`
-	ServiceAccountKey string `json:"serviceAccountKey,omitempty"` // JSON key file path or $ENV_VAR
-	WebhookPath       string `json:"webhookPath,omitempty"`       // default "/api/gchat/webhook"
-	DefaultAgent       string `json:"defaultAgent,omitempty"`       // agent role for Google Chat messages
-}
-
-// webhookPathOrDefault returns the configured webhook path or default.
-func (c GoogleChatConfig) webhookPathOrDefault() string {
-	if c.WebhookPath != "" {
-		return c.WebhookPath
-	}
-	return "/api/gchat/webhook"
-}
 
 // --- Google Chat Message Types ---
 
 // gchatEvent represents an incoming event from Google Chat.
 type gchatEvent struct {
-	Type    string         `json:"type"`    // "MESSAGE", "ADDED_TO_SPACE", "REMOVED_FROM_SPACE", "CARD_CLICKED"
-	EventTime string       `json:"eventTime"`
-	Space   gchatSpace     `json:"space"`
-	Message *gchatMessage  `json:"message,omitempty"`
-	User    gchatUser      `json:"user"`
-	Action  *gchatAction   `json:"action,omitempty"`
+	Type      string        `json:"type"` // "MESSAGE", "ADDED_TO_SPACE", "REMOVED_FROM_SPACE", "CARD_CLICKED"
+	EventTime string        `json:"eventTime"`
+	Space     gchatSpace    `json:"space"`
+	Message   *gchatMessage `json:"message,omitempty"`
+	User      gchatUser     `json:"user"`
+	Action    *gchatAction  `json:"action,omitempty"`
 }
 
 // gchatSpace represents a Google Chat space (room/DM).
@@ -61,19 +43,19 @@ type gchatSpace struct {
 
 // gchatMessage represents a message in Google Chat.
 type gchatMessage struct {
-	Name         string              `json:"name"`         // "spaces/{space}/messages/{message}"
-	Sender       gchatUser           `json:"sender"`
-	CreateTime   string              `json:"createTime"`
-	Text         string              `json:"text"`
-	Thread       *gchatThread        `json:"thread,omitempty"`
-	ArgumentText string              `json:"argumentText"` // text after @bot mention
-	Annotations  []gchatAnnotation   `json:"annotations,omitempty"`
-	Attachment   []gchatAttachment   `json:"attachment,omitempty"`
+	Name         string            `json:"name"`         // "spaces/{space}/messages/{message}"
+	Sender       gchatUser         `json:"sender"`
+	CreateTime   string            `json:"createTime"`
+	Text         string            `json:"text"`
+	Thread       *gchatThread      `json:"thread,omitempty"`
+	ArgumentText string            `json:"argumentText"` // text after @bot mention
+	Annotations  []gchatAnnotation `json:"annotations,omitempty"`
+	Attachment   []gchatAttachment `json:"attachment,omitempty"`
 }
 
 // gchatUser represents a Google Chat user.
 type gchatUser struct {
-	Name        string `json:"name"`        // "users/{user_id}"
+	Name        string `json:"name"` // "users/{user_id}"
 	DisplayName string `json:"displayName"`
 	AvatarUrl   string `json:"avatarUrl,omitempty"`
 	Email       string `json:"email,omitempty"`
@@ -87,10 +69,10 @@ type gchatThread struct {
 
 // gchatAnnotation represents mentions or other annotations.
 type gchatAnnotation struct {
-	Type         string         `json:"type"` // "USER_MENTION"
-	StartIndex   int            `json:"startIndex"`
-	Length       int            `json:"length"`
-	UserMention  *gchatUserMention `json:"userMention,omitempty"`
+	Type        string            `json:"type"` // "USER_MENTION"
+	StartIndex  int               `json:"startIndex"`
+	Length      int               `json:"length"`
+	UserMention *gchatUserMention `json:"userMention,omitempty"`
 }
 
 // gchatUserMention represents a user mention.
@@ -109,7 +91,7 @@ type gchatAttachment struct {
 
 // gchatAction represents a card click action.
 type gchatAction struct {
-	ActionMethodName string `json:"actionMethodName"`
+	ActionMethodName string                 `json:"actionMethodName"`
 	Parameters       []gchatActionParameter `json:"parameters,omitempty"`
 }
 
@@ -123,7 +105,7 @@ type gchatActionParameter struct {
 
 // gchatCard represents a Google Chat card message.
 type gchatCard struct {
-	Header   *gchatCardHeader  `json:"header,omitempty"`
+	Header   *gchatCardHeader   `json:"header,omitempty"`
 	Sections []gchatCardSection `json:"sections"`
 }
 
@@ -154,33 +136,33 @@ type gchatTextParagraph struct {
 
 // gchatKeyValue represents a key-value widget.
 type gchatKeyValue struct {
-	TopLabel string `json:"topLabel,omitempty"`
-	Content  string `json:"content"`
+	TopLabel    string `json:"topLabel,omitempty"`
+	Content     string `json:"content"`
 	BottomLabel string `json:"bottomLabel,omitempty"`
-	Icon     string `json:"icon,omitempty"`
+	Icon        string `json:"icon,omitempty"`
 }
 
 // gchatButton represents a button widget.
 type gchatButton struct {
-	TextButton *gchatTextButton `json:"textButton,omitempty"`
+	TextButton  *gchatTextButton  `json:"textButton,omitempty"`
 	ImageButton *gchatImageButton `json:"imageButton,omitempty"`
 }
 
 // gchatTextButton represents a text button.
 type gchatTextButton struct {
-	Text    string        `json:"text"`
-	OnClick gchatOnClick  `json:"onClick"`
+	Text    string       `json:"text"`
+	OnClick gchatOnClick `json:"onClick"`
 }
 
 // gchatImageButton represents an image button.
 type gchatImageButton struct {
-	Icon    string        `json:"icon"` // "STAR", "BOOKMARK", etc.
-	OnClick gchatOnClick  `json:"onClick"`
+	Icon    string       `json:"icon"` // "STAR", "BOOKMARK", etc.
+	OnClick gchatOnClick `json:"onClick"`
 }
 
 // gchatOnClick represents a button click action.
 type gchatOnClick struct {
-	Action   *gchatAction `json:"action,omitempty"`
+	Action   *gchatAction   `json:"action,omitempty"`
 	OpenLink *gchatOpenLink `json:"openLink,omitempty"`
 }
 
@@ -193,8 +175,8 @@ type gchatOpenLink struct {
 
 // gchatSendRequest represents a request to send a message to Google Chat.
 type gchatSendRequest struct {
-	Text   string      `json:"text,omitempty"`
-	Cards  []gchatCard `json:"cards,omitempty"`
+	Text   string       `json:"text,omitempty"`
+	Cards  []gchatCard  `json:"cards,omitempty"`
 	Thread *gchatThread `json:"thread,omitempty"`
 }
 
@@ -214,21 +196,19 @@ type serviceAccountKey struct {
 	ClientX509CertURL       string `json:"client_x509_cert_url"`
 }
 
-// --- Google Chat Bot ---
+// --- Bot ---
 
-// GoogleChatBot handles incoming Google Chat messages and sends responses.
-type GoogleChatBot struct {
-	cfg     *Config
-	state   *dispatchState
-	sem      chan struct{}
-	childSem chan struct{}
-	saKey    *serviceAccountKey // parsed service account key
-	privKey *rsa.PrivateKey    // parsed RSA private key
+// Bot handles incoming Google Chat messages and sends responses.
+type Bot struct {
+	cfg     Config
+	rt      messaging.BotRuntime
+	saKey   *serviceAccountKey
+	privKey *rsa.PrivateKey
 
 	// Token cache.
-	tokenCache    string
-	tokenExpiry   time.Time
-	tokenMu       sync.Mutex
+	tokenCache  string
+	tokenExpiry time.Time
+	tokenMu     sync.Mutex
 
 	// Dedup: track recently processed message IDs.
 	processed     map[string]time.Time
@@ -239,19 +219,16 @@ type GoogleChatBot struct {
 	httpClient *http.Client
 }
 
-// newGoogleChatBot creates a new GoogleChatBot instance.
-func newGoogleChatBot(cfg *Config, state *dispatchState, sem, childSem chan struct{}) (*GoogleChatBot, error) {
-	bot := &GoogleChatBot{
+// NewBot creates a new Bot instance, loading and parsing the service account key.
+func NewBot(cfg Config, rt messaging.BotRuntime) (*Bot, error) {
+	b := &Bot{
 		cfg:        cfg,
-		state:      state,
-		sem:        sem,
-		childSem:   childSem,
+		rt:         rt,
 		processed:  make(map[string]time.Time),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 
-	// Load service account key.
-	keyPath := cfg.GoogleChat.ServiceAccountKey
+	keyPath := cfg.ServiceAccountKey
 	if keyPath == "" {
 		return nil, fmt.Errorf("gchat: serviceAccountKey not configured")
 	}
@@ -265,7 +242,7 @@ func newGoogleChatBot(cfg *Config, state *dispatchState, sem, childSem chan stru
 	if err := json.Unmarshal(keyData, &saKey); err != nil {
 		return nil, fmt.Errorf("gchat: failed to parse service account key: %w", err)
 	}
-	bot.saKey = &saKey
+	b.saKey = &saKey
 
 	// Parse RSA private key.
 	block, _ := pem.Decode([]byte(saKey.PrivateKey))
@@ -273,27 +250,27 @@ func newGoogleChatBot(cfg *Config, state *dispatchState, sem, childSem chan stru
 		return nil, fmt.Errorf("gchat: failed to decode PEM private key")
 	}
 
-	privKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
 		// Try PKCS1 format.
-		privKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		parsed, err = x509.ParsePKCS1PrivateKey(block.Bytes)
 		if err != nil {
 			return nil, fmt.Errorf("gchat: failed to parse private key: %w", err)
 		}
 	}
 
-	rsaKey, ok := privKey.(*rsa.PrivateKey)
+	rsaKey, ok := parsed.(*rsa.PrivateKey)
 	if !ok {
 		return nil, fmt.Errorf("gchat: private key is not RSA")
 	}
-	bot.privKey = rsaKey
+	b.privKey = rsaKey
 
-	logInfo("gchat: initialized", "clientEmail", saKey.ClientEmail)
-	return bot, nil
+	rt.LogInfo("gchat: initialized", "clientEmail", saKey.ClientEmail)
+	return b, nil
 }
 
 // HandleWebhook handles incoming Google Chat events.
-func (bot *GoogleChatBot) HandleWebhook(w http.ResponseWriter, r *http.Request) {
+func (b *Bot) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -301,38 +278,37 @@ func (bot *GoogleChatBot) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		logError("gchat: failed to read webhook body", "error", err)
+		b.rt.LogError("gchat: failed to read webhook body", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
 	var event gchatEvent
 	if err := json.Unmarshal(body, &event); err != nil {
-		logError("gchat: failed to parse webhook event", "error", err)
+		b.rt.LogError("gchat: failed to parse webhook event", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	logDebug("gchat: received event", "type", event.Type, "space", event.Space.Name)
+	b.rt.LogDebugCtx(r.Context(), "gchat: received event", "type", event.Type, "space", event.Space.Name)
 
-	// Handle different event types.
 	switch event.Type {
 	case "MESSAGE":
-		bot.handleMessage(w, &event)
+		b.handleMessage(w, &event)
 	case "ADDED_TO_SPACE":
-		bot.handleAddedToSpace(w, &event)
+		b.handleAddedToSpace(w, &event)
 	case "REMOVED_FROM_SPACE":
-		bot.handleRemovedFromSpace(w, &event)
+		b.handleRemovedFromSpace(w, &event)
 	case "CARD_CLICKED":
-		bot.handleCardClicked(w, &event)
+		b.handleCardClicked(w, &event)
 	default:
-		logWarn("gchat: unknown event type", "type", event.Type)
+		b.rt.LogWarn("gchat: unknown event type", "type", event.Type)
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
 // handleMessage processes a MESSAGE event.
-func (bot *GoogleChatBot) handleMessage(w http.ResponseWriter, event *gchatEvent) {
+func (b *Bot) handleMessage(w http.ResponseWriter, event *gchatEvent) {
 	if event.Message == nil {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -340,12 +316,12 @@ func (bot *GoogleChatBot) handleMessage(w http.ResponseWriter, event *gchatEvent
 
 	// Dedup check.
 	msgID := event.Message.Name
-	if bot.isDuplicate(msgID) {
-		logDebug("gchat: duplicate message", "msgID", msgID)
+	if b.isDuplicate(msgID) {
+		b.rt.LogDebugCtx(context.Background(), "gchat: duplicate message", "msgID", msgID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	bot.markProcessed(msgID)
+	b.markProcessed(msgID)
 
 	// Ignore bot messages.
 	if event.Message.Sender.Type == "BOT" {
@@ -364,86 +340,67 @@ func (bot *GoogleChatBot) handleMessage(w http.ResponseWriter, event *gchatEvent
 	}
 
 	// Determine agent.
-	role := bot.cfg.GoogleChat.DefaultAgent
-	if role == "" {
-		role = bot.cfg.SmartDispatch.DefaultAgent
-	}
+	role := b.cfg.DefaultAgent
 
-	// Dispatch task.
+	// Resolve thread name.
 	spaceName := event.Space.Name
 	threadName := ""
 	if event.Message.Thread != nil {
 		threadName = event.Message.Thread.Name
 	}
 
-	go bot.dispatchTask(spaceName, threadName, role, text, event.User.DisplayName)
+	go b.dispatchTask(spaceName, threadName, role, text, event.User.DisplayName)
 
 	// Send immediate acknowledgment.
 	resp := gchatSendRequest{Text: "Processing..."}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
 // handleAddedToSpace processes an ADDED_TO_SPACE event.
-func (bot *GoogleChatBot) handleAddedToSpace(w http.ResponseWriter, event *gchatEvent) {
-	logInfo("gchat: added to space", "space", event.Space.Name, "type", event.Space.Type)
+func (b *Bot) handleAddedToSpace(w http.ResponseWriter, event *gchatEvent) {
+	b.rt.LogInfo("gchat: added to space", "space", event.Space.Name, "type", event.Space.Type)
 
-	welcomeText := fmt.Sprintf("Hello! I'm Tetora bot. Send me a message to get started.")
-	resp := gchatSendRequest{Text: welcomeText}
-
+	resp := gchatSendRequest{Text: "Hello! I'm Tetora bot. Send me a message to get started."}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
 // handleRemovedFromSpace processes a REMOVED_FROM_SPACE event.
-func (bot *GoogleChatBot) handleRemovedFromSpace(w http.ResponseWriter, event *gchatEvent) {
-	logInfo("gchat: removed from space", "space", event.Space.Name)
+func (b *Bot) handleRemovedFromSpace(w http.ResponseWriter, event *gchatEvent) {
+	b.rt.LogInfo("gchat: removed from space", "space", event.Space.Name)
 	w.WriteHeader(http.StatusOK)
 }
 
 // handleCardClicked processes a CARD_CLICKED event.
-func (bot *GoogleChatBot) handleCardClicked(w http.ResponseWriter, event *gchatEvent) {
-	logDebug("gchat: card clicked", "action", event.Action)
-
-	// Could dispatch task based on action parameters.
+func (b *Bot) handleCardClicked(w http.ResponseWriter, event *gchatEvent) {
+	b.rt.LogDebugCtx(context.Background(), "gchat: card clicked", "action", event.Action)
 	w.WriteHeader(http.StatusOK)
 }
 
-// dispatchTask dispatches a task to the agent.
-func (bot *GoogleChatBot) dispatchTask(spaceName, threadName, role, text, userName string) {
+// dispatchTask dispatches a task to the agent and sends the result back.
+// Google Chat does not use session management.
+func (b *Bot) dispatchTask(spaceName, threadName, role, text, userName string) {
 	ctx := context.Background()
 
-	// Acquire semaphore.
-	select {
-	case bot.sem <- struct{}{}:
-		defer func() { <-bot.sem }()
-	default:
-		bot.sendTextMessage(spaceName, threadName, "System busy. Please try again later.")
-		return
-	}
-
-	// Build task from agent config.
-	roleConfig, exists := bot.cfg.Agents[role]
+	model, permMode, exists := b.rt.AgentConfig(role)
 	if !exists {
-		bot.sendTextMessage(spaceName, threadName, fmt.Sprintf("Unknown agent: %s", role))
+		b.sendTextMessage(spaceName, threadName, fmt.Sprintf("Unknown agent: %s", role)) //nolint:errcheck
 		return
 	}
 
-	task := Task{
-		ID:             fmt.Sprintf("gchat-%d", time.Now().UnixNano()),
-		Name:           fmt.Sprintf("gchat-%s", userName),
-		Prompt:         text,
-		Model:          roleConfig.Model,
-		Provider:       roleConfig.Provider,
-		Workdir:        bot.cfg.DefaultWorkdir,
-		Timeout:        bot.cfg.DefaultTimeout,
-		Budget:         bot.cfg.DefaultBudget,
-		PermissionMode: roleConfig.PermissionMode,
-	}
+	prompt := b.rt.ExpandPrompt(text, role)
+	soulPrompt, _ := b.rt.LoadAgentPrompt(role)
 
-	result := runTask(ctx, bot.cfg, task, bot.state)
+	result, _ := b.rt.Submit(ctx, messaging.TaskRequest{
+		AgentRole:      role,
+		Content:        prompt,
+		SystemPrompt:   soulPrompt,
+		Model:          model,
+		PermissionMode: permMode,
+		Meta:           map[string]string{"source": "gchat", "user": userName},
+	})
 
-	// Send result back to Google Chat.
 	var responseText string
 	if result.Error != "" {
 		responseText = fmt.Sprintf("Error: %s", result.Error)
@@ -451,32 +408,32 @@ func (bot *GoogleChatBot) dispatchTask(spaceName, threadName, role, text, userNa
 		responseText = result.Output
 	}
 
-	if err := bot.sendTextMessage(spaceName, threadName, responseText); err != nil {
-		logError("gchat: failed to send response", "space", spaceName, "error", err)
+	if err := b.sendTextMessage(spaceName, threadName, responseText); err != nil {
+		b.rt.LogError("gchat: failed to send response", err, "space", spaceName)
 	}
 }
 
 // sendTextMessage sends a text message to a Google Chat space.
-func (bot *GoogleChatBot) sendTextMessage(spaceName, threadName, text string) error {
+func (b *Bot) sendTextMessage(spaceName, threadName, text string) error {
 	req := gchatSendRequest{Text: text}
 	if threadName != "" {
 		req.Thread = &gchatThread{Name: threadName}
 	}
-	return bot.sendMessage(spaceName, req)
+	return b.sendMessage(spaceName, req)
 }
 
 // sendCardMessage sends a card message to a Google Chat space.
-func (bot *GoogleChatBot) sendCardMessage(spaceName, threadName string, card gchatCard) error {
+func (b *Bot) sendCardMessage(spaceName, threadName string, card gchatCard) error {
 	req := gchatSendRequest{Cards: []gchatCard{card}}
 	if threadName != "" {
 		req.Thread = &gchatThread{Name: threadName}
 	}
-	return bot.sendMessage(spaceName, req)
+	return b.sendMessage(spaceName, req)
 }
 
-// sendMessage sends a message to a Google Chat space.
-func (bot *GoogleChatBot) sendMessage(spaceName string, req gchatSendRequest) error {
-	token, err := bot.getAccessToken()
+// sendMessage sends a message to a Google Chat space via the REST API.
+func (b *Bot) sendMessage(spaceName string, req gchatSendRequest) error {
+	token, err := b.getAccessToken()
 	if err != nil {
 		return fmt.Errorf("failed to get access token: %w", err)
 	}
@@ -491,11 +448,10 @@ func (bot *GoogleChatBot) sendMessage(spaceName string, req gchatSendRequest) er
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
-
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := bot.httpClient.Do(httpReq)
+	resp, err := b.httpClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
@@ -510,46 +466,42 @@ func (bot *GoogleChatBot) sendMessage(spaceName string, req gchatSendRequest) er
 }
 
 // getAccessToken returns a valid OAuth2 access token, generating a new one if needed.
-func (bot *GoogleChatBot) getAccessToken() (string, error) {
-	bot.tokenMu.Lock()
-	defer bot.tokenMu.Unlock()
+func (b *Bot) getAccessToken() (string, error) {
+	b.tokenMu.Lock()
+	defer b.tokenMu.Unlock()
 
 	// Return cached token if still valid.
-	if bot.tokenCache != "" && time.Now().Before(bot.tokenExpiry) {
-		return bot.tokenCache, nil
+	if b.tokenCache != "" && time.Now().Before(b.tokenExpiry) {
+		return b.tokenCache, nil
 	}
 
-	// Generate new JWT.
-	jwt, err := bot.createJWT()
+	jwt, err := b.createJWT()
 	if err != nil {
 		return "", fmt.Errorf("failed to create JWT: %w", err)
 	}
 
-	// Exchange JWT for access token.
-	token, expiresIn, err := bot.exchangeJWT(jwt)
+	token, expiresIn, err := b.exchangeJWT(jwt)
 	if err != nil {
 		return "", fmt.Errorf("failed to exchange JWT: %w", err)
 	}
 
-	// Cache token.
-	bot.tokenCache = token
-	bot.tokenExpiry = time.Now().Add(time.Duration(expiresIn-60) * time.Second) // 60s buffer
+	b.tokenCache = token
+	b.tokenExpiry = time.Now().Add(time.Duration(expiresIn-60) * time.Second) // 60s buffer
 
 	return token, nil
 }
 
-// createJWT creates a JWT for service account authentication.
-func (bot *GoogleChatBot) createJWT() (string, error) {
+// createJWT creates a signed JWT for service account authentication.
+func (b *Bot) createJWT() (string, error) {
 	now := time.Now().Unix()
 	claims := map[string]interface{}{
-		"iss":   bot.saKey.ClientEmail,
+		"iss":   b.saKey.ClientEmail,
 		"scope": "https://www.googleapis.com/auth/chat.bot",
 		"aud":   "https://oauth2.googleapis.com/token",
 		"exp":   now + 3600,
 		"iat":   now,
 	}
 
-	// Build header.
 	header := map[string]string{
 		"alg": "RS256",
 		"typ": "JWT",
@@ -557,25 +509,22 @@ func (bot *GoogleChatBot) createJWT() (string, error) {
 	headerJSON, _ := json.Marshal(header)
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
 
-	// Build claims.
 	claimsJSON, _ := json.Marshal(claims)
 	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
 
-	// Sign.
 	signInput := headerB64 + "." + claimsB64
 	hash := sha256.Sum256([]byte(signInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, bot.privKey, crypto.SHA256, hash[:])
+	signature, err := rsa.SignPKCS1v15(rand.Reader, b.privKey, crypto.SHA256, hash[:])
 	if err != nil {
 		return "", fmt.Errorf("failed to sign JWT: %w", err)
 	}
 	signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
 
-	jwt := signInput + "." + signatureB64
-	return jwt, nil
+	return signInput + "." + signatureB64, nil
 }
 
-// exchangeJWT exchanges a JWT for an OAuth2 access token.
-func (bot *GoogleChatBot) exchangeJWT(jwt string) (token string, expiresIn int, err error) {
+// exchangeJWT exchanges a signed JWT for an OAuth2 access token.
+func (b *Bot) exchangeJWT(jwt string) (token string, expiresIn int, err error) {
 	payload := fmt.Sprintf("grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=%s", jwt)
 
 	req, err := http.NewRequest("POST", "https://oauth2.googleapis.com/token", strings.NewReader(payload))
@@ -584,7 +533,7 @@ func (bot *GoogleChatBot) exchangeJWT(jwt string) (token string, expiresIn int, 
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := bot.httpClient.Do(req)
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return "", 0, err
 	}
@@ -608,49 +557,61 @@ func (bot *GoogleChatBot) exchangeJWT(jwt string) (token string, expiresIn int, 
 }
 
 // isDuplicate checks if a message ID has been processed recently.
-func (bot *GoogleChatBot) isDuplicate(msgID string) bool {
-	bot.mu.Lock()
-	defer bot.mu.Unlock()
+func (b *Bot) isDuplicate(msgID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	// Clean old entries (older than 5 minutes).
 	cutoff := time.Now().Add(-5 * time.Minute)
-	for id, t := range bot.processed {
+	for id, t := range b.processed {
 		if t.Before(cutoff) {
-			delete(bot.processed, id)
-			bot.processedSize--
+			delete(b.processed, id)
+			b.processedSize--
 		}
 	}
 
-	// Limit map size.
-	if bot.processedSize > 10000 {
-		bot.processed = make(map[string]time.Time)
-		bot.processedSize = 0
+	// Limit map size to prevent unbounded growth.
+	if b.processedSize > 10000 {
+		b.processed = make(map[string]time.Time)
+		b.processedSize = 0
 	}
 
-	_, exists := bot.processed[msgID]
+	_, exists := b.processed[msgID]
 	return exists
 }
 
 // markProcessed marks a message ID as processed.
-func (bot *GoogleChatBot) markProcessed(msgID string) {
-	bot.mu.Lock()
-	defer bot.mu.Unlock()
-	bot.processed[msgID] = time.Now()
-	bot.processedSize++
+func (b *Bot) markProcessed(msgID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.processed[msgID] = time.Now()
+	b.processedSize++
 }
 
-// --- GoogleChatNotifier implements Notifier interface ---
+// SetTyping is a no-op; Google Chat does not support typing indicators.
+func (b *Bot) SetTyping(_ context.Context, _ string) error {
+	return nil
+}
 
-// GoogleChatNotifier sends notifications to Google Chat.
-type GoogleChatNotifier struct {
-	Bot       *GoogleChatBot
+// PresenceName returns the platform identifier.
+func (b *Bot) PresenceName() string {
+	return "gchat"
+}
+
+// --- Notifier ---
+
+// Notifier sends notifications to a fixed Google Chat space.
+type Notifier struct {
+	Bot       *Bot
 	SpaceName string // "spaces/{space_id}"
 }
 
-func (g *GoogleChatNotifier) Send(text string) error {
-	return g.Bot.sendTextMessage(g.SpaceName, "", text)
+// Send sends a text message to the configured space.
+func (n *Notifier) Send(text string) error {
+	return n.Bot.sendTextMessage(n.SpaceName, "", text)
 }
 
-func (g *GoogleChatNotifier) Name() string {
+// Name returns the notifier identifier.
+func (n *Notifier) Name() string {
 	return "gchat"
 }

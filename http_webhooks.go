@@ -14,7 +14,7 @@ func (s *Server) registerWebhookRoutes(mux *http.ServeMux) {
 
 	// Register WhatsApp webhook endpoint (uses its own auth via signature verification).
 	if s.whatsappBot != nil {
-		mux.HandleFunc("/api/whatsapp/webhook", s.whatsappBot.whatsAppWebhookHandler)
+		mux.HandleFunc("/api/whatsapp/webhook", s.whatsappBot.WebhookHandler)
 	}
 
 	// --- P14.1: Discord Components v2 ---
@@ -39,13 +39,13 @@ func (s *Server) registerWebhookRoutes(mux *http.ServeMux) {
 
 	// --- P15.4: Signal Channel --- Register Signal webhook endpoint.
 	if s.signalBot != nil {
-		webhookPath := cfg.Signal.webhookPathOrDefault()
+		webhookPath := cfg.Signal.WebhookPathOrDefault()
 		mux.HandleFunc(webhookPath, s.signalBot.HandleWebhook)
 	}
 
 	// --- P15.5: Google Chat Channel --- Register Google Chat webhook endpoint.
 	if s.gchatBot != nil {
-		webhookPath := cfg.GoogleChat.webhookPathOrDefault()
+		webhookPath := cfg.GoogleChat.WebhookPathOrDefault()
 		mux.HandleFunc(webhookPath, s.gchatBot.HandleWebhook)
 	}
 

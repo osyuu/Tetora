@@ -7,12 +7,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
-	"reflect"
 	"sync"
 	"time"
+
+	"tetora/internal/messaging/gchat"
+	"tetora/internal/messaging/matrix"
+	"tetora/internal/messaging/signal"
+	"tetora/internal/messaging/whatsapp"
 )
+
+// Config type aliases for messaging platforms whose bots are in internal/messaging.
+type MatrixConfig = matrix.Config
+type WhatsAppConfig = whatsapp.Config
+type SignalConfig = signal.Config
+type GoogleChatConfig = gchat.Config
 
 // --- Config Types ---
 

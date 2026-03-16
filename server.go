@@ -3,6 +3,11 @@ package main
 import (
 	"sync"
 	"time"
+
+	"tetora/internal/messaging/gchat"
+	"tetora/internal/messaging/matrix"
+	"tetora/internal/messaging/signal"
+	"tetora/internal/messaging/whatsapp"
 )
 
 // Server holds all dependencies for the HTTP server.
@@ -19,13 +24,14 @@ type Server struct {
 	groupChatEngine *GroupChatEngine
 	voiceEngine     *VoiceEngine
 	slackBot        *SlackBot
-	whatsappBot     *WhatsAppBot
+	whatsappBot     *whatsapp.Bot
 	pluginHost      *PluginHost
 	lineBot         *LINEBot
 	teamsBot        *TeamsBot
-	signalBot       *SignalBot
-	gchatBot        *GoogleChatBot
+	signalBot       *signal.Bot
+	gchatBot        *gchat.Bot
 	imessageBot     *IMessageBot
+	matrixBot       *matrix.Bot
 	// internal (created at start)
 	taskBoardDispatcher *TaskBoardDispatcher
 	canvasEngine        *CanvasEngine

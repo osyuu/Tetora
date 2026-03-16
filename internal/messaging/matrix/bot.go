@@ -1,6 +1,6 @@
-package main
+package matrix
 
-// --- P15.2: Matrix Channel ---
+// bot.go implements the Matrix sync-loop bot extracted from the root package.
 
 import (
 	"bytes"
@@ -13,20 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"tetora/internal/trace"
+	"tetora/internal/messaging"
 )
-
-// --- Matrix Config ---
-
-// MatrixConfig holds configuration for Matrix (Element/Synapse) integration.
-type MatrixConfig struct {
-	Enabled     bool   `json:"enabled,omitempty"`
-	Homeserver  string `json:"homeserver,omitempty"`   // e.g. "https://matrix.example.com"
-	UserID      string `json:"userId,omitempty"`       // e.g. "@tetora:example.com"
-	AccessToken string `json:"accessToken,omitempty"`  // $ENV_VAR supported
-	AutoJoin    bool   `json:"autoJoin,omitempty"`     // auto-join invited rooms
-	DefaultAgent string `json:"defaultAgent,omitempty"`  // agent role for Matrix messages
-}
 
 // --- Matrix Sync Response Types ---
 
@@ -86,53 +74,49 @@ type matrixErrorResponse struct {
 
 // --- Matrix Bot ---
 
-// MatrixBot manages the Matrix sync loop and message handling.
-type MatrixBot struct {
-	cfg        *Config
-	state      *dispatchState
-	sem        chan struct{}
-	childSem   chan struct{}
-	apiBase    string        // homeserver URL + /_matrix/client/v3
-	sinceToken string        // for incremental sync
-	txnID      int64         // atomic counter for transaction IDs
+// Bot manages the Matrix sync loop and message handling.
+type Bot struct {
+	cfg        Config
+	rt         messaging.BotRuntime
+	apiBase    string // homeserver URL + /_matrix/client/v3
+	sinceToken string // for incremental sync
+	txnID      int64  // atomic counter for transaction IDs
 	stopCh     chan struct{}
 	httpClient *http.Client
 }
 
-// newMatrixBot creates a new MatrixBot instance.
-func newMatrixBot(cfg *Config, state *dispatchState, sem, childSem chan struct{}) *MatrixBot {
-	apiBase := strings.TrimRight(cfg.Matrix.Homeserver, "/") + "/_matrix/client/v3"
-	return &MatrixBot{
+// NewBot creates a new Bot instance.
+func NewBot(cfg Config, rt messaging.BotRuntime) *Bot {
+	apiBase := strings.TrimRight(cfg.Homeserver, "/") + "/_matrix/client/v3"
+	return &Bot{
 		cfg:        cfg,
-		state:      state,
-		sem:        sem,
-		childSem:   childSem,
+		rt:         rt,
 		apiBase:    apiBase,
 		stopCh:     make(chan struct{}),
 		httpClient: &http.Client{Timeout: 60 * time.Second}, // long-poll needs longer timeout
 	}
 }
 
-// Run starts the sync loop in a goroutine. Blocks until Stop is called.
-func (mb *MatrixBot) Run(ctx context.Context) {
-	logInfo("matrix bot starting sync loop", "homeserver", mb.cfg.Matrix.Homeserver, "userId", mb.cfg.Matrix.UserID)
+// Run starts the sync loop. Blocks until ctx is cancelled or Stop is called.
+func (b *Bot) Run(ctx context.Context) {
+	b.rt.LogInfo("matrix bot starting sync loop", "homeserver", b.cfg.Homeserver, "userId", b.cfg.UserID)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-mb.stopCh:
+		case <-b.stopCh:
 			return
 		default:
 		}
 
-		if err := mb.sync(); err != nil {
-			logWarn("matrix sync error", "error", err)
+		if err := b.sync(); err != nil {
+			b.rt.LogWarn("matrix sync error", "error", err)
 			// Backoff on error.
 			select {
 			case <-ctx.Done():
 				return
-			case <-mb.stopCh:
+			case <-b.stopCh:
 				return
 			case <-time.After(5 * time.Second):
 			}
@@ -141,28 +125,28 @@ func (mb *MatrixBot) Run(ctx context.Context) {
 }
 
 // Stop signals the bot to stop the sync loop.
-func (mb *MatrixBot) Stop() {
+func (b *Bot) Stop() {
 	select {
-	case <-mb.stopCh:
+	case <-b.stopCh:
 	default:
-		close(mb.stopCh)
+		close(b.stopCh)
 	}
 }
 
 // sync performs a single sync iteration.
-func (mb *MatrixBot) sync() error {
-	url := mb.apiBase + "/sync?timeout=30000"
-	if mb.sinceToken != "" {
-		url += "&since=" + mb.sinceToken
+func (b *Bot) sync() error {
+	url := b.apiBase + "/sync?timeout=30000"
+	if b.sinceToken != "" {
+		url += "&since=" + b.sinceToken
 	}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("matrix: create sync request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+mb.cfg.Matrix.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+b.cfg.AccessToken)
 
-	resp, err := mb.httpClient.Do(req)
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("matrix: sync request: %w", err)
 	}
@@ -183,15 +167,15 @@ func (mb *MatrixBot) sync() error {
 
 	// Update since token for next sync.
 	if syncResp.NextBatch != "" {
-		mb.sinceToken = syncResp.NextBatch
+		b.sinceToken = syncResp.NextBatch
 	}
 
 	// Process invited rooms (auto-join).
-	if mb.cfg.Matrix.AutoJoin {
+	if b.cfg.AutoJoin {
 		for roomID := range syncResp.Rooms.Invite {
-			logInfo("matrix: auto-joining invited room", "roomID", roomID)
-			if err := mb.joinRoom(roomID); err != nil {
-				logWarn("matrix: auto-join failed", "roomID", roomID, "error", err)
+			b.rt.LogInfo("matrix: auto-joining invited room", "roomID", roomID)
+			if err := b.joinRoom(roomID); err != nil {
+				b.rt.LogWarn("matrix: auto-join failed", "roomID", roomID, "error", err)
 			}
 		}
 	}
@@ -199,7 +183,7 @@ func (mb *MatrixBot) sync() error {
 	// Process joined room events.
 	for roomID, room := range syncResp.Rooms.Join {
 		for _, event := range room.Timeline.Events {
-			mb.handleRoomEvent(roomID, event)
+			b.handleRoomEvent(roomID, event)
 		}
 	}
 
@@ -207,27 +191,27 @@ func (mb *MatrixBot) sync() error {
 }
 
 // handleRoomEvent processes a single event from a room timeline.
-func (mb *MatrixBot) handleRoomEvent(roomID string, event matrixEvent) {
+func (b *Bot) handleRoomEvent(roomID string, event matrixEvent) {
 	// Only process m.room.message events.
 	if event.Type != "m.room.message" {
 		return
 	}
 
 	// Ignore own messages.
-	if event.Sender == mb.cfg.Matrix.UserID {
+	if event.Sender == b.cfg.UserID {
 		return
 	}
 
 	// Parse message content.
 	var content matrixMessageContent
 	if err := json.Unmarshal(event.Content, &content); err != nil {
-		logDebug("matrix: failed to parse message content", "eventID", event.EventID, "error", err)
+		b.rt.LogDebugCtx(context.Background(), "matrix: failed to parse message content", "eventID", event.EventID, "error", err)
 		return
 	}
 
 	// Only process text messages.
 	if content.MsgType != "m.text" {
-		logDebug("matrix: ignoring non-text message", "msgtype", content.MsgType, "eventID", event.EventID)
+		b.rt.LogDebugCtx(context.Background(), "matrix: ignoring non-text message", "msgtype", content.MsgType, "eventID", event.EventID)
 		return
 	}
 
@@ -236,116 +220,93 @@ func (mb *MatrixBot) handleRoomEvent(roomID string, event matrixEvent) {
 		return
 	}
 
-	logInfo("matrix: received message", "from", event.Sender, "room", roomID, "text", truncate(text, 100))
+	b.rt.LogInfo("matrix: received message", "from", event.Sender, "room", roomID, "text", b.rt.Truncate(text, 100))
 
 	// Dispatch to agent asynchronously.
-	go mb.dispatchToAgent(text, event.Sender, roomID)
+	go b.dispatchToAgent(text, event.Sender, roomID)
 }
 
 // dispatchToAgent dispatches a message to the agent system and sends a reply.
-func (mb *MatrixBot) dispatchToAgent(text, sender, roomID string) {
-	ctx := trace.WithID(context.Background(), trace.NewID("matrix"))
-	dbPath := mb.cfg.HistoryDB
+func (b *Bot) dispatchToAgent(text, sender, roomID string) {
+	traceID := b.rt.NewTraceID("matrix")
+	ctx := b.rt.WithTraceID(context.Background(), traceID)
 
 	// Route to determine agent.
-	role := mb.cfg.Matrix.DefaultAgent
+	role := b.cfg.DefaultAgent
 	if role == "" {
-		route := routeTask(ctx, mb.cfg, RouteRequest{Prompt: text, Source: "matrix"})
-		role = route.Agent
-		logInfoCtx(ctx, "matrix route result", "agent", role, "method", route.Method)
+		routed, err := b.rt.Route(ctx, text, "matrix")
+		if err != nil {
+			b.rt.LogErrorCtx(ctx, "matrix: route error", err)
+		} else {
+			role = routed
+			b.rt.LogInfoCtx(ctx, "matrix route result", "agent", role)
+		}
 	}
 
 	// Find or create session.
-	chKey := channelSessionKey("matrix", sender, roomID)
-	sess, err := getOrCreateChannelSession(dbPath, "matrix", chKey, role, "")
+	chKey := "matrix:" + sender + ":" + roomID
+	sessID, err := b.rt.GetOrCreateSession("matrix", chKey, role, "")
 	if err != nil {
-		logErrorCtx(ctx, "matrix session error", "error", err)
+		b.rt.LogErrorCtx(ctx, "matrix session error", err)
 	}
 
 	// Build context-aware prompt.
 	contextPrompt := text
-	if sess != nil {
-		sessionCtx := buildSessionContext(dbPath, sess.ID, mb.cfg.Session.contextMessagesOrDefault())
-		contextPrompt = wrapWithContext(sessionCtx, text)
+	if sessID != "" {
+		sessionCtx := b.rt.BuildSessionContext(sessID, b.rt.SessionContextLimit())
+		if sessionCtx != "" {
+			contextPrompt = sessionCtx + "\n\n---\n\n" + text
+		}
 
 		// Record user message to session.
-		now := time.Now().Format(time.RFC3339)
-		addSessionMessage(dbPath, SessionMessage{
-			SessionID: sess.ID,
-			Role:      "user",
-			Content:   truncateStr(text, 5000),
-			CreatedAt: now,
-		})
-		updateSessionStats(dbPath, sess.ID, 0, 0, 0, 1)
+		b.rt.AddSessionMessage(sessID, "user", messaging.TruncateStr(text, 5000))
+		b.rt.UpdateSessionStats(sessID, 0, 0, 0, 1)
 
 		title := text
 		if len(title) > 100 {
 			title = title[:100]
 		}
-		updateSessionTitle(dbPath, sess.ID, title)
+		b.rt.UpdateSessionTitle(sessID, title)
 	}
 
-	// Create task.
-	task := Task{
-		Prompt: contextPrompt,
-		Agent:  role,
-		Source: "matrix",
-	}
-	fillDefaults(mb.cfg, &task)
-	if sess != nil {
-		task.SessionID = sess.ID
-	}
+	// Expand prompt with agent knowledge and context variables.
+	contextPrompt = b.rt.ExpandPrompt(contextPrompt, role)
 
-	// Apply agent-specific config.
-	if role != "" {
-		if soulPrompt, err := loadAgentPrompt(mb.cfg, role); err == nil && soulPrompt != "" {
-			task.SystemPrompt = soulPrompt
-		}
-		if rc, ok := mb.cfg.Agents[role]; ok {
-			if rc.Model != "" {
-				task.Model = rc.Model
-			}
-			if rc.PermissionMode != "" {
-				task.PermissionMode = rc.PermissionMode
-			}
-		}
-	}
+	// Load agent-specific config.
+	soulPrompt, _ := b.rt.LoadAgentPrompt(role)
+	model, permMode, _ := b.rt.AgentConfig(role)
 
-	task.Prompt = expandPrompt(task.Prompt, "", mb.cfg.HistoryDB, role, mb.cfg.KnowledgeDir, mb.cfg)
+	// Fill task defaults (generates task ID, resolves agent name).
+	taskID := b.rt.FillTaskDefaults(&role, nil, "matrix")
 
 	// Run task.
-	taskStart := time.Now()
-	result := runSingleTask(ctx, mb.cfg, task, mb.sem, mb.childSem, role)
+	result, _ := b.rt.Submit(ctx, messaging.TaskRequest{
+		AgentRole:      role,
+		Content:        contextPrompt,
+		SessionID:      sessID,
+		SystemPrompt:   soulPrompt,
+		Model:          model,
+		PermissionMode: permMode,
+		Meta:           map[string]string{"source": "matrix"},
+	})
 
 	// Record to history.
-	recordHistory(mb.cfg.HistoryDB, task.ID, task.Name, task.Source, role, task, result,
-		taskStart.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
+	b.rt.RecordHistory(taskID, "", "matrix", role, result.OutputFile, nil, result)
 
 	// Record assistant response to session.
-	if sess != nil {
-		now := time.Now().Format(time.RFC3339)
+	if sessID != "" {
 		msgRole := "assistant"
-		content := truncateStr(result.Output, 5000)
+		content := messaging.TruncateStr(result.Output, 5000)
 		if result.Status != "success" {
 			msgRole = "system"
 			errMsg := result.Error
 			if errMsg == "" {
 				errMsg = result.Status
 			}
-			content = fmt.Sprintf("[%s] %s", result.Status, truncateStr(errMsg, 2000))
+			content = fmt.Sprintf("[%s] %s", result.Status, messaging.TruncateStr(errMsg, 2000))
 		}
-		addSessionMessage(dbPath, SessionMessage{
-			SessionID: sess.ID,
-			Role:      msgRole,
-			Content:   content,
-			CostUSD:   result.CostUSD,
-			TokensIn:  result.TokensIn,
-			TokensOut: result.TokensOut,
-			Model:     result.Model,
-			TaskID:    task.ID,
-			CreatedAt: now,
-		})
-		updateSessionStats(dbPath, sess.ID, result.CostUSD, result.TokensIn, result.TokensOut, 0)
+		b.rt.AddSessionMessage(sessID, msgRole, content)
+		b.rt.UpdateSessionStats(sessID, result.CostUSD, result.TokensIn, result.TokensOut, 0)
 	}
 
 	// Build response.
@@ -360,31 +321,26 @@ func (mb *MatrixBot) dispatchToAgent(text, sender, roomID string) {
 	}
 
 	// Send response.
-	if err := mb.sendMessage(roomID, response); err != nil {
-		logErrorCtx(ctx, "matrix: send reply failed", "roomID", roomID, "error", err)
+	if err := b.sendMessage(roomID, response); err != nil {
+		b.rt.LogErrorCtx(ctx, "matrix: send reply failed", err, "roomID", roomID)
 	}
 
-	logInfoCtx(ctx, "matrix task complete", "taskID", task.ID, "status", result.Status, "cost", result.CostUSD)
+	b.rt.LogInfoCtx(ctx, "matrix task complete", "taskID", taskID, "status", result.Status, "cost", result.CostUSD)
 
 	// Emit SSE event.
-	if mb.state.broker != nil {
-		mb.state.broker.Publish("matrix", SSEEvent{
-			Type: "matrix",
-			Data: map[string]interface{}{
-				"from":   sender,
-				"room":   roomID,
-				"taskID": task.ID,
-				"status": result.Status,
-				"cost":   result.CostUSD,
-			},
-		})
-	}
+	b.rt.PublishEvent("matrix", map[string]interface{}{
+		"from":   sender,
+		"room":   roomID,
+		"taskID": taskID,
+		"status": result.Status,
+		"cost":   result.CostUSD,
+	})
 }
 
 // --- Matrix REST API ---
 
 // sendMessage sends a text message to a Matrix room.
-func (mb *MatrixBot) sendMessage(roomID, text string) error {
+func (b *Bot) sendMessage(roomID, text string) error {
 	if roomID == "" {
 		return fmt.Errorf("matrix: empty room ID")
 	}
@@ -392,42 +348,42 @@ func (mb *MatrixBot) sendMessage(roomID, text string) error {
 		return nil
 	}
 
-	txnID := atomic.AddInt64(&mb.txnID, 1)
+	txnID := atomic.AddInt64(&b.txnID, 1)
 	url := fmt.Sprintf("%s/rooms/%s/send/m.room.message/%d",
-		mb.apiBase, roomID, txnID)
+		b.apiBase, roomID, txnID)
 
 	payload := map[string]string{
 		"msgtype": "m.text",
 		"body":    text,
 	}
 
-	return mb.matrixPUT(url, payload)
+	return b.matrixPUT(url, payload)
 }
 
 // joinRoom joins a Matrix room by room ID or alias.
-func (mb *MatrixBot) joinRoom(roomIDOrAlias string) error {
+func (b *Bot) joinRoom(roomIDOrAlias string) error {
 	if roomIDOrAlias == "" {
 		return fmt.Errorf("matrix: empty room ID/alias")
 	}
 
-	url := fmt.Sprintf("%s/join/%s", mb.apiBase, roomIDOrAlias)
-	return mb.matrixPOST(url, map[string]string{})
+	url := fmt.Sprintf("%s/join/%s", b.apiBase, roomIDOrAlias)
+	return b.matrixPOST(url, map[string]string{})
 }
 
 // leaveRoom leaves a Matrix room.
-func (mb *MatrixBot) leaveRoom(roomID string) error {
+func (b *Bot) leaveRoom(roomID string) error {
 	if roomID == "" {
 		return fmt.Errorf("matrix: empty room ID")
 	}
 
-	url := fmt.Sprintf("%s/rooms/%s/leave", mb.apiBase, roomID)
-	return mb.matrixPOST(url, map[string]string{})
+	url := fmt.Sprintf("%s/rooms/%s/leave", b.apiBase, roomID)
+	return b.matrixPOST(url, map[string]string{})
 }
 
 // --- HTTP Helpers ---
 
 // matrixPUT sends a PUT request to the Matrix API.
-func (mb *MatrixBot) matrixPUT(url string, payload interface{}) error {
+func (b *Bot) matrixPUT(url string, payload interface{}) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("matrix: marshal payload: %w", err)
@@ -437,10 +393,10 @@ func (mb *MatrixBot) matrixPUT(url string, payload interface{}) error {
 	if err != nil {
 		return fmt.Errorf("matrix: create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+mb.cfg.Matrix.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+b.cfg.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := mb.httpClient.Do(req)
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("matrix: request failed: %w", err)
 	}
@@ -455,7 +411,7 @@ func (mb *MatrixBot) matrixPUT(url string, payload interface{}) error {
 }
 
 // matrixPOST sends a POST request to the Matrix API.
-func (mb *MatrixBot) matrixPOST(url string, payload interface{}) error {
+func (b *Bot) matrixPOST(url string, payload interface{}) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("matrix: marshal payload: %w", err)
@@ -465,10 +421,10 @@ func (mb *MatrixBot) matrixPOST(url string, payload interface{}) error {
 	if err != nil {
 		return fmt.Errorf("matrix: create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+mb.cfg.Matrix.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+b.cfg.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := mb.httpClient.Do(req)
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("matrix: request failed: %w", err)
 	}
@@ -486,7 +442,7 @@ func (mb *MatrixBot) matrixPOST(url string, payload interface{}) error {
 
 // MatrixNotifier sends notifications via Matrix room messages.
 type MatrixNotifier struct {
-	Config MatrixConfig
+	Config Config
 	RoomID string // room ID to send notifications to
 }
 
