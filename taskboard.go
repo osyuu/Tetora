@@ -1034,7 +1034,7 @@ func cmdTask(args []string) {
 		fmt.Println("Usage: tetora task <list|create|show|update|move|assign|comment|thread>")
 		fmt.Println("\nCommands:")
 		fmt.Println("  list [--status=STATUS] [--assignee=AGENT] [--project=PROJECT]")
-		fmt.Println("  create --title=TITLE [--description=DESC] [--priority=PRIORITY] [--assignee=AGENT] [--type=TYPE]")
+		fmt.Println("  create --title=TITLE [--description=DESC] [--priority=PRIORITY] [--assignee=AGENT] [--type=TYPE] [--depends-on=ID]...")
 		fmt.Println("  show TASK_ID [--full]")
 		fmt.Println("  update TASK_ID [--title=TITLE] [--description=DESC] [--priority=PRIORITY]")
 		fmt.Println("  move TASK_ID --status=STATUS")
@@ -1097,6 +1097,7 @@ func cmdTask(args []string) {
 
 	case "create":
 		var title, description, priority, assignee, taskType string
+		var dependsOn []string
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "--title=") {
 				title = strings.TrimPrefix(arg, "--title=")
@@ -1108,6 +1109,11 @@ func cmdTask(args []string) {
 				assignee = strings.TrimPrefix(arg, "--assignee=")
 			} else if strings.HasPrefix(arg, "--type=") {
 				taskType = strings.TrimPrefix(arg, "--type=")
+			} else if strings.HasPrefix(arg, "--depends-on=") {
+				depID := strings.TrimPrefix(arg, "--depends-on=")
+				if depID != "" {
+					dependsOn = append(dependsOn, depID)
+				}
 			}
 		}
 
@@ -1122,6 +1128,7 @@ func cmdTask(args []string) {
 			Priority:    priority,
 			Assignee:    assignee,
 			Type:        taskType,
+			DependsOn:   dependsOn,
 		})
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -1201,6 +1208,8 @@ func cmdTask(args []string) {
 
 		taskID := args[0]
 		updates := make(map[string]any)
+		var dependsOn []string
+		hasDeps := false
 		for _, arg := range args[1:] {
 			if strings.HasPrefix(arg, "--title=") {
 				updates["title"] = strings.TrimPrefix(arg, "--title=")
@@ -1208,7 +1217,17 @@ func cmdTask(args []string) {
 				updates["description"] = strings.TrimPrefix(arg, "--description=")
 			} else if strings.HasPrefix(arg, "--priority=") {
 				updates["priority"] = strings.TrimPrefix(arg, "--priority=")
+			} else if strings.HasPrefix(arg, "--depends-on=") {
+				depID := strings.TrimPrefix(arg, "--depends-on=")
+				if depID != "" {
+					dependsOn = append(dependsOn, depID)
+				}
+				hasDeps = true
 			}
+		}
+		if hasDeps {
+			depsJSON, _ := json.Marshal(dependsOn)
+			updates["depends_on"] = string(depsJSON)
 		}
 
 		if len(updates) == 0 {

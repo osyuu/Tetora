@@ -416,6 +416,13 @@ func (d *TaskBoardDispatcher) scan() {
 			continue
 		}
 
+		// Skip tasks whose dependencies are not yet done.
+		if hasBlockingDeps(d.engine, t) {
+			logDebug("taskboard dispatch: skipping task with blocking deps",
+				"id", t.ID, "title", t.Title, "dependsOn", t.DependsOn)
+			continue
+		}
+
 		if dispatched >= available {
 			logInfo("taskboard dispatch: maxConcurrentTasks reached, deferring remaining tasks",
 				"active", active, "dispatched", dispatched, "max", maxTasks)
