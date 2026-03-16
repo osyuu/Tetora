@@ -418,7 +418,7 @@ func main() {
 		// --- P23.5: Media Control ---
 		if cfg.Spotify.Enabled {
 			app.Spotify = newSpotifyService(cfg)
-			logInfo("spotify service initialized", "market", cfg.Spotify.marketOrDefault())
+			logInfo("spotify service initialized", "market", cfg.Spotify.MarketOrDefault())
 		}
 		if cfg.Podcast.Enabled && cfg.HistoryDB != "" {
 			if err := initPodcastDB(cfg.HistoryDB); err != nil {

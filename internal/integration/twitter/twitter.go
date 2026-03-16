@@ -1,4 +1,4 @@
-package main
+package twitter
 
 import (
 	"context"
@@ -11,62 +11,50 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tetora/internal/integration/oauthif"
 )
 
-// --- P20.3: Twitter/X Integration ---
-
-// TwitterConfig holds Twitter/X integration settings.
-type TwitterConfig struct {
+// Config holds Twitter/X integration settings.
+type Config struct {
 	Enabled     bool   `json:"enabled"`
-	RateLimit   *bool  `json:"rateLimit,omitempty"`   // respect x-rate-limit headers (default true)
-	MaxTweetLen int    `json:"maxTweetLen,omitempty"`  // default 280
-	DefaultUser string `json:"defaultUser,omitempty"`  // @handle for context
+	RateLimit   *bool  `json:"rateLimit,omitempty"`
+	MaxTweetLen int    `json:"maxTweetLen,omitempty"`
+	DefaultUser string `json:"defaultUser,omitempty"`
 }
 
-// rateLimitEnabled returns whether rate limiting is enabled (default true).
-func (c TwitterConfig) rateLimitEnabled() bool {
+// RateLimitEnabled returns whether rate limiting is enabled (default true).
+func (c Config) RateLimitEnabled() bool {
 	if c.RateLimit == nil {
 		return true
 	}
 	return *c.RateLimit
 }
 
-// maxTweetLen returns the configured max tweet length or the default 280.
-func (c TwitterConfig) maxTweetLen() int {
+// MaxTweetLength returns the configured max tweet length or the default 280.
+func (c Config) MaxTweetLength() int {
 	if c.MaxTweetLen > 0 {
 		return c.MaxTweetLen
 	}
 	return 280
 }
 
-// TwitterService manages Twitter API v2 interactions.
-type TwitterService struct {
-	cfg         *Config
-	rateLimiter map[string]*twitterRateLimit
+// Service manages Twitter API v2 interactions.
+type Service struct {
+	cfg         Config
+	oauth       oauthif.TokenProvider
+	rateLimiter map[string]*rateLimit
 	mu          sync.Mutex
 }
 
-// twitterRateLimit tracks per-endpoint rate limit state.
-type twitterRateLimit struct {
+// rateLimit tracks per-endpoint rate limit state.
+type rateLimit struct {
 	Remaining int
 	Reset     time.Time
 }
 
-// globalTwitterService is the singleton Twitter service instance.
-var globalTwitterService *TwitterService
-
-// twitterBaseURL is the Twitter API v2 base URL.
-const twitterBaseURL = "https://api.twitter.com/2"
-
-// newTwitterService creates a new TwitterService.
-func newTwitterService(cfg *Config) *TwitterService {
-	return &TwitterService{
-		cfg:         cfg,
-		rateLimiter: make(map[string]*twitterRateLimit),
-	}
-}
-
-// --- Types ---
+// BaseURL is the Twitter API v2 base URL.
+var BaseURL = "https://api.twitter.com/2"
 
 // Tweet represents a tweet from the Twitter API v2.
 type Tweet struct {
@@ -81,8 +69,8 @@ type Tweet struct {
 	Replies      int    `json:"replies,omitempty"`
 }
 
-// TwitterUser represents a Twitter user profile.
-type TwitterUser struct {
+// User represents a Twitter user profile.
+type User struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Username    string `json:"username"`
@@ -92,12 +80,19 @@ type TwitterUser struct {
 	TweetCount  int    `json:"tweetCount,omitempty"`
 }
 
+// New creates a new TwitterService.
+func New(cfg Config, oauth oauthif.TokenProvider) *Service {
+	return &Service{
+		cfg:         cfg,
+		oauth:       oauth,
+		rateLimiter: make(map[string]*rateLimit),
+	}
+}
+
 // --- Rate Limiter ---
 
-// checkRateLimit checks if a request to the given endpoint is allowed.
-// Returns an error if rate limit is depleted and the reset time is in the future.
-func (s *TwitterService) checkRateLimit(endpoint string) error {
-	if !s.cfg.Twitter.rateLimitEnabled() {
+func (s *Service) checkRateLimit(endpoint string) error {
+	if !s.cfg.RateLimitEnabled() {
 		return nil
 	}
 	s.mu.Lock()
@@ -105,7 +100,7 @@ func (s *TwitterService) checkRateLimit(endpoint string) error {
 
 	rl, ok := s.rateLimiter[endpoint]
 	if !ok {
-		return nil // no rate limit info yet
+		return nil
 	}
 	if rl.Remaining <= 0 && time.Now().Before(rl.Reset) {
 		return fmt.Errorf("twitter rate limit exceeded for %s; resets at %s", endpoint, rl.Reset.Format(time.RFC3339))
@@ -113,9 +108,8 @@ func (s *TwitterService) checkRateLimit(endpoint string) error {
 	return nil
 }
 
-// updateRateLimit parses rate limit headers from a Twitter API response.
-func (s *TwitterService) updateRateLimit(endpoint string, resp *http.Response) {
-	if !s.cfg.Twitter.rateLimitEnabled() {
+func (s *Service) updateRateLimit(endpoint string, resp *http.Response) {
+	if !s.cfg.RateLimitEnabled() {
 		return
 	}
 
@@ -128,7 +122,7 @@ func (s *TwitterService) updateRateLimit(endpoint string, resp *http.Response) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rl := &twitterRateLimit{}
+	rl := &rateLimit{}
 
 	if remaining != "" {
 		if n, err := strconv.Atoi(remaining); err == nil {
@@ -145,9 +139,8 @@ func (s *TwitterService) updateRateLimit(endpoint string, resp *http.Response) {
 
 // --- API Methods ---
 
-// doRequest performs a Twitter API request with rate limit handling.
-func (s *TwitterService) doRequest(ctx context.Context, endpoint, method, reqURL string, body io.Reader) (*http.Response, error) {
-	if globalOAuthManager == nil {
+func (s *Service) doRequest(ctx context.Context, endpoint, method, reqURL string, body io.Reader) (*http.Response, error) {
+	if s.oauth == nil {
 		return nil, fmt.Errorf("oauth manager not initialized; configure OAuth for twitter")
 	}
 
@@ -155,7 +148,7 @@ func (s *TwitterService) doRequest(ctx context.Context, endpoint, method, reqURL
 		return nil, err
 	}
 
-	resp, err := globalOAuthManager.Request(ctx, "twitter", method, reqURL, body)
+	resp, err := s.oauth.Request(ctx, "twitter", method, reqURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("twitter %s: %w", endpoint, err)
 	}
@@ -164,9 +157,9 @@ func (s *TwitterService) doRequest(ctx context.Context, endpoint, method, reqURL
 	return resp, nil
 }
 
-// PostTweet posts a new tweet. If replyTo is non-empty, the tweet is posted as a reply.
-func (s *TwitterService) PostTweet(ctx context.Context, text string, replyTo string) (*Tweet, error) {
-	maxLen := s.cfg.Twitter.maxTweetLen()
+// PostTweet posts a new tweet.
+func (s *Service) PostTweet(ctx context.Context, text string, replyTo string) (*Tweet, error) {
+	maxLen := s.cfg.MaxTweetLength()
 	if len([]rune(text)) > maxLen {
 		return nil, fmt.Errorf("tweet text exceeds maximum length of %d characters", maxLen)
 	}
@@ -181,7 +174,7 @@ func (s *TwitterService) PostTweet(ctx context.Context, text string, replyTo str
 		return nil, fmt.Errorf("marshal tweet body: %w", err)
 	}
 
-	reqURL := twitterBaseURL + "/tweets"
+	reqURL := BaseURL + "/tweets"
 	resp, err := s.doRequest(ctx, "POST /tweets", http.MethodPost, reqURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		return nil, err
@@ -209,8 +202,8 @@ func (s *TwitterService) PostTweet(ctx context.Context, text string, replyTo str
 	}, nil
 }
 
-// ReadTimeline reads the authenticated user's home timeline (reverse chronological).
-func (s *TwitterService) ReadTimeline(ctx context.Context, maxResults int) ([]Tweet, error) {
+// ReadTimeline reads the authenticated user's home timeline.
+func (s *Service) ReadTimeline(ctx context.Context, maxResults int) ([]Tweet, error) {
 	if maxResults <= 0 {
 		maxResults = 10
 	}
@@ -224,7 +217,7 @@ func (s *TwitterService) ReadTimeline(ctx context.Context, maxResults int) ([]Tw
 	params.Set("expansions", "author_id")
 	params.Set("user.fields", "username,name")
 
-	reqURL := fmt.Sprintf("%s/users/me/timelines/reverse_chronological?%s", twitterBaseURL, params.Encode())
+	reqURL := fmt.Sprintf("%s/users/me/timelines/reverse_chronological?%s", BaseURL, params.Encode())
 	resp, err := s.doRequest(ctx, "GET /timeline", http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
@@ -236,11 +229,11 @@ func (s *TwitterService) ReadTimeline(ctx context.Context, maxResults int) ([]Tw
 		return nil, fmt.Errorf("twitter timeline (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	return parseTweetsResponse(resp.Body)
+	return ParseTweetsResponse(resp.Body)
 }
 
 // SearchTweets searches for recent tweets matching a query.
-func (s *TwitterService) SearchTweets(ctx context.Context, query string, maxResults int) ([]Tweet, error) {
+func (s *Service) SearchTweets(ctx context.Context, query string, maxResults int) ([]Tweet, error) {
 	if maxResults <= 0 {
 		maxResults = 10
 	}
@@ -255,7 +248,7 @@ func (s *TwitterService) SearchTweets(ctx context.Context, query string, maxResu
 	params.Set("expansions", "author_id")
 	params.Set("user.fields", "username,name")
 
-	reqURL := fmt.Sprintf("%s/tweets/search/recent?%s", twitterBaseURL, params.Encode())
+	reqURL := fmt.Sprintf("%s/tweets/search/recent?%s", BaseURL, params.Encode())
 	resp, err := s.doRequest(ctx, "GET /search", http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
@@ -267,23 +260,23 @@ func (s *TwitterService) SearchTweets(ctx context.Context, query string, maxResu
 		return nil, fmt.Errorf("twitter search (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	return parseTweetsResponse(resp.Body)
+	return ParseTweetsResponse(resp.Body)
 }
 
 // ReplyToTweet posts a reply to a specific tweet.
-func (s *TwitterService) ReplyToTweet(ctx context.Context, tweetID, text string) (*Tweet, error) {
+func (s *Service) ReplyToTweet(ctx context.Context, tweetID, text string) (*Tweet, error) {
 	return s.PostTweet(ctx, text, tweetID)
 }
 
 // SendDM sends a direct message to a specific user by their user ID.
-func (s *TwitterService) SendDM(ctx context.Context, recipientID, text string) error {
+func (s *Service) SendDM(ctx context.Context, recipientID, text string) error {
 	reqBody := map[string]string{"text": text}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("marshal dm body: %w", err)
 	}
 
-	reqURL := fmt.Sprintf("%s/dm_conversations/with/%s/messages", twitterBaseURL, url.PathEscape(recipientID))
+	reqURL := fmt.Sprintf("%s/dm_conversations/with/%s/messages", BaseURL, url.PathEscape(recipientID))
 	resp, err := s.doRequest(ctx, "POST /dm", http.MethodPost, reqURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		return err
@@ -299,14 +292,13 @@ func (s *TwitterService) SendDM(ctx context.Context, recipientID, text string) e
 }
 
 // GetUserByUsername looks up a Twitter user by their @username.
-func (s *TwitterService) GetUserByUsername(ctx context.Context, username string) (*TwitterUser, error) {
-	// Strip leading '@' if present.
+func (s *Service) GetUserByUsername(ctx context.Context, username string) (*User, error) {
 	username = strings.TrimPrefix(username, "@")
 
 	params := url.Values{}
 	params.Set("user.fields", "public_metrics,description")
 
-	reqURL := fmt.Sprintf("%s/users/by/username/%s?%s", twitterBaseURL, url.PathEscape(username), params.Encode())
+	reqURL := fmt.Sprintf("%s/users/by/username/%s?%s", BaseURL, url.PathEscape(username), params.Encode())
 	resp, err := s.doRequest(ctx, "GET /users/by/username", http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
@@ -335,7 +327,7 @@ func (s *TwitterService) GetUserByUsername(ctx context.Context, username string)
 		return nil, fmt.Errorf("decode user response: %w", err)
 	}
 
-	return &TwitterUser{
+	return &User{
 		ID:          result.Data.ID,
 		Name:        result.Data.Name,
 		Username:    result.Data.Username,
@@ -348,8 +340,8 @@ func (s *TwitterService) GetUserByUsername(ctx context.Context, username string)
 
 // --- Response Parsing ---
 
-// parseTweetsResponse parses a Twitter API v2 tweets response with user expansions.
-func parseTweetsResponse(body io.Reader) ([]Tweet, error) {
+// ParseTweetsResponse parses a Twitter API v2 tweets response with user expansions.
+func ParseTweetsResponse(body io.Reader) ([]Tweet, error) {
 	var resp struct {
 		Data []struct {
 			ID            string `json:"id"`
@@ -375,8 +367,7 @@ func parseTweetsResponse(body io.Reader) ([]Tweet, error) {
 		return nil, fmt.Errorf("decode tweets response: %w", err)
 	}
 
-	// Build user lookup map from expansions.
-	userMap := make(map[string][2]string) // id -> [name, username]
+	userMap := make(map[string][2]string)
 	for _, u := range resp.Includes.Users {
 		userMap[u.ID] = [2]string{u.Name, u.Username}
 	}
@@ -400,153 +391,4 @@ func parseTweetsResponse(body io.Reader) ([]Tweet, error) {
 	}
 
 	return tweets, nil
-}
-
-// --- Tool Handlers ---
-
-// toolTweetPost posts a new tweet.
-func toolTweetPost(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	var args struct {
-		Text    string `json:"text"`
-		ReplyTo string `json:"reply_to"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
-	}
-	if args.Text == "" {
-		return "", fmt.Errorf("text is required")
-	}
-
-	app := appFromCtx(ctx)
-	if app == nil || app.Twitter == nil {
-		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
-	}
-
-	tweet, err := app.Twitter.PostTweet(ctx, args.Text, args.ReplyTo)
-	if err != nil {
-		return "", err
-	}
-
-	b, _ := json.Marshal(map[string]any{
-		"status": "posted",
-		"tweet":  tweet,
-	})
-	return string(b), nil
-}
-
-// toolTweetTimeline reads the home timeline.
-func toolTweetTimeline(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	var args struct {
-		MaxResults int `json:"max_results"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
-	}
-
-	app := appFromCtx(ctx)
-	if app == nil || app.Twitter == nil {
-		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
-	}
-
-	tweets, err := app.Twitter.ReadTimeline(ctx, args.MaxResults)
-	if err != nil {
-		return "", err
-	}
-
-	b, _ := json.Marshal(map[string]any{
-		"count":  len(tweets),
-		"tweets": tweets,
-	})
-	return string(b), nil
-}
-
-// toolTweetSearch searches recent tweets.
-func toolTweetSearch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	var args struct {
-		Query      string `json:"query"`
-		MaxResults int    `json:"max_results"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
-	}
-	if args.Query == "" {
-		return "", fmt.Errorf("query is required")
-	}
-
-	app := appFromCtx(ctx)
-	if app == nil || app.Twitter == nil {
-		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
-	}
-
-	tweets, err := app.Twitter.SearchTweets(ctx, args.Query, args.MaxResults)
-	if err != nil {
-		return "", err
-	}
-
-	b, _ := json.Marshal(map[string]any{
-		"count":  len(tweets),
-		"tweets": tweets,
-	})
-	return string(b), nil
-}
-
-// toolTweetReply replies to a specific tweet.
-func toolTweetReply(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	var args struct {
-		TweetID string `json:"tweet_id"`
-		Text    string `json:"text"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
-	}
-	if args.TweetID == "" {
-		return "", fmt.Errorf("tweet_id is required")
-	}
-	if args.Text == "" {
-		return "", fmt.Errorf("text is required")
-	}
-
-	app := appFromCtx(ctx)
-	if app == nil || app.Twitter == nil {
-		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
-	}
-
-	tweet, err := app.Twitter.ReplyToTweet(ctx, args.TweetID, args.Text)
-	if err != nil {
-		return "", err
-	}
-
-	b, _ := json.Marshal(map[string]any{
-		"status": "replied",
-		"tweet":  tweet,
-	})
-	return string(b), nil
-}
-
-// toolTweetDM sends a direct message to a user.
-func toolTweetDM(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	var args struct {
-		RecipientID string `json:"recipient_id"`
-		Text        string `json:"text"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
-	}
-	if args.RecipientID == "" {
-		return "", fmt.Errorf("recipient_id is required")
-	}
-	if args.Text == "" {
-		return "", fmt.Errorf("text is required")
-	}
-
-	app := appFromCtx(ctx)
-	if app == nil || app.Twitter == nil {
-		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
-	}
-
-	if err := app.Twitter.SendDM(ctx, args.RecipientID, args.Text); err != nil {
-		return "", err
-	}
-
-	return `{"status":"dm_sent"}`, nil
 }

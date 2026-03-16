@@ -11,22 +11,29 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"tetora/internal/integration/drive"
 	"tetora/internal/integration/dropbox"
 	"tetora/internal/integration/gmail"
 	"tetora/internal/integration/oauthif"
+	"tetora/internal/integration/spotify"
+	"tetora/internal/integration/twitter"
 )
 
 // --- Config type aliases ---
 
 type GmailConfig = gmail.Config
+type SpotifyConfig = spotify.Config
+type TwitterConfig = twitter.Config
 
 // --- Service type aliases ---
 
 type GmailService = gmail.Service
 type DriveService = drive.Service
 type DropboxService = dropbox.Service
+type SpotifyService = spotify.Service
+type TwitterService = twitter.Service
 
 // --- Data type aliases ---
 
@@ -42,6 +49,14 @@ type DriveFileList = drive.FileList
 type DropboxFile = dropbox.File
 type DropboxListResult = dropbox.ListResult
 type DropboxSearchResult = dropbox.SearchResult
+
+// Spotify types
+type SpotifyItem = spotify.Item
+type SpotifyDevice = spotify.Device
+
+// Twitter types
+type Tweet = twitter.Tweet
+type TwitterUser = twitter.User
 
 // --- Gmail helper forwarding ---
 
@@ -59,6 +74,18 @@ func extractBody(payload map[string]any, mimeType string) string {
 
 // Drive helper forwarding
 func isTextMime(mime string) bool { return drive.IsTextMime(mime) }
+
+// Spotify helper forwarding
+func parseSearchResults(data []byte, searchType string) ([]SpotifyItem, error) {
+	return spotify.ParseSearchResults(data, searchType)
+}
+func parseSpotifyItem(data json.RawMessage, itemType string) (SpotifyItem, error) {
+	return spotify.ParseItem(data, itemType)
+}
+func jsonStrField(m map[string]any, key string) string { return spotify.JSONStrField(m, key) }
+
+// Twitter helper forwarding
+func parseTweetsResponse(body io.Reader) ([]Tweet, error) { return twitter.ParseTweetsResponse(body) }
 
 // --- OAuth adapters ---
 
@@ -118,12 +145,30 @@ func newDropboxService() *DropboxService {
 	return dropbox.New(oauth)
 }
 
+func newSpotifyService(cfg *Config) *SpotifyService {
+	var oauth oauthif.TokenProvider
+	if globalOAuthManager != nil {
+		oauth = &oauthTokenProviderAdapter{oauthRequesterAdapter{mgr: globalOAuthManager}}
+	}
+	return spotify.New(cfg.Spotify, oauth)
+}
+
+func newTwitterService(cfg *Config) *TwitterService {
+	var oauth oauthif.TokenProvider
+	if globalOAuthManager != nil {
+		oauth = &oauthTokenProviderAdapter{oauthRequesterAdapter{mgr: globalOAuthManager}}
+	}
+	return twitter.New(cfg.Twitter, oauth)
+}
+
 // --- Global singletons (backwards compat) ---
 
 var (
 	globalGmailService   *GmailService
 	globalDriveService   *DriveService
 	globalDropboxService *DropboxService
+	globalSpotifyService *SpotifyService
+	globalTwitterService *TwitterService
 )
 
 // --- Base URL forwarding for tests ---
@@ -499,4 +544,387 @@ func toolDropboxOp(ctx context.Context, cfg *Config, input json.RawMessage) (str
 	default:
 		return "", fmt.Errorf("unknown action: %s (use search, upload, download, list)", args.Action)
 	}
+}
+
+// --- Spotify tool handler stubs ---
+
+func toolSpotifyPlay(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Spotify == nil {
+		return "", fmt.Errorf("spotify not initialized")
+	}
+
+	var args struct {
+		Action   string `json:"action"`
+		Query    string `json:"query"`
+		URI      string `json:"uri"`
+		DeviceID string `json:"deviceId"`
+		Volume   int    `json:"volume"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+
+	svc := app.Spotify
+
+	switch args.Action {
+	case "play":
+		uri := args.URI
+		if uri == "" && args.Query != "" {
+			results, err := svc.Search(args.Query, "track", 1)
+			if err != nil {
+				return "", fmt.Errorf("search failed: %w", err)
+			}
+			if len(results) == 0 {
+				return "No tracks found for query: " + args.Query, nil
+			}
+			uri = results[0].URI
+			logInfo("spotify play search result", "query", args.Query, "track", results[0].Name, "artist", results[0].Artist)
+		}
+		if err := svc.Play(uri, args.DeviceID); err != nil {
+			return "", fmt.Errorf("play failed: %w", err)
+		}
+		if uri != "" {
+			return fmt.Sprintf("Now playing: %s", uri), nil
+		}
+		return "Playback resumed.", nil
+
+	case "pause":
+		if err := svc.Pause(); err != nil {
+			return "", fmt.Errorf("pause failed: %w", err)
+		}
+		return "Playback paused.", nil
+
+	case "next":
+		if err := svc.Next(); err != nil {
+			return "", fmt.Errorf("next failed: %w", err)
+		}
+		return "Skipped to next track.", nil
+
+	case "prev", "previous":
+		if err := svc.Previous(); err != nil {
+			return "", fmt.Errorf("previous failed: %w", err)
+		}
+		return "Returned to previous track.", nil
+
+	case "volume":
+		if err := svc.SetVolume(args.Volume); err != nil {
+			return "", fmt.Errorf("volume failed: %w", err)
+		}
+		return fmt.Sprintf("Volume set to %d%%.", args.Volume), nil
+
+	default:
+		return "", fmt.Errorf("unknown action %q — use play, pause, next, prev, or volume", args.Action)
+	}
+}
+
+func toolSpotifySearch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Spotify == nil {
+		return "", fmt.Errorf("spotify not initialized")
+	}
+
+	var args struct {
+		Query string `json:"query"`
+		Type  string `json:"type"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.Query == "" {
+		return "", fmt.Errorf("query required")
+	}
+	if args.Type == "" {
+		args.Type = "track"
+	}
+	if args.Limit <= 0 {
+		args.Limit = 5
+	}
+
+	results, err := app.Spotify.Search(args.Query, args.Type, args.Limit)
+	if err != nil {
+		return "", err
+	}
+	if len(results) == 0 {
+		return "No results found for: " + args.Query, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Spotify search results for %q (%s):\n\n", args.Query, args.Type)
+	for i, item := range results {
+		fmt.Fprintf(&sb, "%d. %s", i+1, item.Name)
+		if item.Artist != "" {
+			fmt.Fprintf(&sb, " — %s", item.Artist)
+		}
+		if item.Album != "" {
+			fmt.Fprintf(&sb, " [%s]", item.Album)
+		}
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "   URI: %s\n", item.URI)
+		if item.DurMS > 0 {
+			dur := time.Duration(item.DurMS) * time.Millisecond
+			min := int(dur.Minutes())
+			sec := int(dur.Seconds()) % 60
+			fmt.Fprintf(&sb, "   Duration: %d:%02d\n", min, sec)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String(), nil
+}
+
+func toolSpotifyNowPlaying(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Spotify == nil {
+		return "", fmt.Errorf("spotify not initialized")
+	}
+
+	item, err := app.Spotify.CurrentlyPlaying()
+	if err != nil {
+		return "", err
+	}
+	if item == nil {
+		return "Nothing is currently playing.", nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Now playing: %s", item.Name)
+	if item.Artist != "" {
+		fmt.Fprintf(&sb, " — %s", item.Artist)
+	}
+	if item.Album != "" {
+		fmt.Fprintf(&sb, " [%s]", item.Album)
+	}
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "URI: %s\n", item.URI)
+	if item.DurMS > 0 {
+		dur := time.Duration(item.DurMS) * time.Millisecond
+		min := int(dur.Minutes())
+		sec := int(dur.Seconds()) % 60
+		fmt.Fprintf(&sb, "Duration: %d:%02d\n", min, sec)
+	}
+	return sb.String(), nil
+}
+
+func toolSpotifyDevices(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Spotify == nil {
+		return "", fmt.Errorf("spotify not initialized")
+	}
+
+	devices, err := app.Spotify.GetDevices()
+	if err != nil {
+		return "", err
+	}
+	if len(devices) == 0 {
+		return "No active Spotify devices found.", nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Spotify devices (%d):\n\n", len(devices))
+	for i, d := range devices {
+		active := ""
+		if d.IsActive {
+			active = " [ACTIVE]"
+		}
+		fmt.Fprintf(&sb, "%d. %s (%s)%s — Volume: %d%%\n", i+1, d.Name, d.Type, active, d.Volume)
+		fmt.Fprintf(&sb, "   ID: %s\n", d.ID)
+	}
+	return sb.String(), nil
+}
+
+func toolSpotifyRecommend(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Spotify == nil {
+		return "", fmt.Errorf("spotify not initialized")
+	}
+
+	var args struct {
+		TrackIDs []string `json:"trackIds"`
+		Limit    int      `json:"limit"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+
+	if len(args.TrackIDs) == 0 {
+		current, err := app.Spotify.CurrentlyPlaying()
+		if err != nil {
+			return "", fmt.Errorf("no seed tracks provided and cannot get current track: %w", err)
+		}
+		if current == nil {
+			return "", fmt.Errorf("no seed tracks provided and nothing is playing")
+		}
+		args.TrackIDs = []string{current.ID}
+	}
+	if args.Limit <= 0 {
+		args.Limit = 5
+	}
+
+	results, err := app.Spotify.GetRecommendations(args.TrackIDs, args.Limit)
+	if err != nil {
+		return "", err
+	}
+	if len(results) == 0 {
+		return "No recommendations found.", nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Spotify recommendations (%d tracks):\n\n", len(results))
+	for i, item := range results {
+		fmt.Fprintf(&sb, "%d. %s", i+1, item.Name)
+		if item.Artist != "" {
+			fmt.Fprintf(&sb, " — %s", item.Artist)
+		}
+		if item.Album != "" {
+			fmt.Fprintf(&sb, " [%s]", item.Album)
+		}
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "   URI: %s\n\n", item.URI)
+	}
+	return sb.String(), nil
+}
+
+// --- Twitter tool handler stubs ---
+
+func toolTweetPost(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		Text    string `json:"text"`
+		ReplyTo string `json:"reply_to"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.Text == "" {
+		return "", fmt.Errorf("text is required")
+	}
+
+	app := appFromCtx(ctx)
+	if app == nil || app.Twitter == nil {
+		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
+	}
+
+	tweet, err := app.Twitter.PostTweet(ctx, args.Text, args.ReplyTo)
+	if err != nil {
+		return "", err
+	}
+
+	b, _ := json.Marshal(map[string]any{
+		"status": "posted",
+		"tweet":  tweet,
+	})
+	return string(b), nil
+}
+
+func toolTweetTimeline(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		MaxResults int `json:"max_results"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+
+	app := appFromCtx(ctx)
+	if app == nil || app.Twitter == nil {
+		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
+	}
+
+	tweets, err := app.Twitter.ReadTimeline(ctx, args.MaxResults)
+	if err != nil {
+		return "", err
+	}
+
+	b, _ := json.Marshal(map[string]any{
+		"count":  len(tweets),
+		"tweets": tweets,
+	})
+	return string(b), nil
+}
+
+func toolTweetSearch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		Query      string `json:"query"`
+		MaxResults int    `json:"max_results"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.Query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+
+	app := appFromCtx(ctx)
+	if app == nil || app.Twitter == nil {
+		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
+	}
+
+	tweets, err := app.Twitter.SearchTweets(ctx, args.Query, args.MaxResults)
+	if err != nil {
+		return "", err
+	}
+
+	b, _ := json.Marshal(map[string]any{
+		"count":  len(tweets),
+		"tweets": tweets,
+	})
+	return string(b), nil
+}
+
+func toolTweetReply(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		TweetID string `json:"tweet_id"`
+		Text    string `json:"text"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.TweetID == "" {
+		return "", fmt.Errorf("tweet_id is required")
+	}
+	if args.Text == "" {
+		return "", fmt.Errorf("text is required")
+	}
+
+	app := appFromCtx(ctx)
+	if app == nil || app.Twitter == nil {
+		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
+	}
+
+	tweet, err := app.Twitter.ReplyToTweet(ctx, args.TweetID, args.Text)
+	if err != nil {
+		return "", err
+	}
+
+	b, _ := json.Marshal(map[string]any{
+		"status": "replied",
+		"tweet":  tweet,
+	})
+	return string(b), nil
+}
+
+func toolTweetDM(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		RecipientID string `json:"recipient_id"`
+		Text        string `json:"text"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.RecipientID == "" {
+		return "", fmt.Errorf("recipient_id is required")
+	}
+	if args.Text == "" {
+		return "", fmt.Errorf("text is required")
+	}
+
+	app := appFromCtx(ctx)
+	if app == nil || app.Twitter == nil {
+		return "", fmt.Errorf("twitter not configured; enable twitter in config and connect via OAuth")
+	}
+
+	if err := app.Twitter.SendDM(ctx, args.RecipientID, args.Text); err != nil {
+		return "", err
+	}
+
+	return `{"status":"dm_sent"}`, nil
 }
