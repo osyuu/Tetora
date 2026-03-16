@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"tetora/internal/messaging"
 	"tetora/internal/trace"
@@ -38,15 +39,28 @@ var _ messaging.BotRuntime = (*messagingRuntime)(nil)
 
 func (r *messagingRuntime) Submit(ctx context.Context, req messaging.TaskRequest) (messaging.TaskResult, error) {
 	task := Task{
-		Prompt: req.Content,
-		Agent:  req.AgentRole,
-		Source: req.Meta["source"],
+		Prompt:         req.Content,
+		Agent:          req.AgentRole,
+		Source:         req.Meta["source"],
+		SessionID:      req.SessionID,
+		SystemPrompt:   req.SystemPrompt,
+		Model:          req.Model,
+		PermissionMode: req.PermissionMode,
 	}
 	fillDefaults(r.cfg, &task)
+	taskStart := time.Now()
 	result := runSingleTask(ctx, r.cfg, task, r.sem, r.childSem, req.AgentRole)
 	return messaging.TaskResult{
-		Output: result.Output,
-		Error:  result.Error,
+		Output:     result.Output,
+		Error:      result.Error,
+		Status:     result.Status,
+		CostUSD:    result.CostUSD,
+		TokensIn:   float64(result.TokensIn),
+		TokensOut:  float64(result.TokensOut),
+		Model:      result.Model,
+		OutputFile: result.OutputFile,
+		TaskID:     task.ID,
+		DurationMs: time.Since(taskStart).Milliseconds(),
 	}, nil
 }
 
@@ -83,8 +97,15 @@ func (r *messagingRuntime) UpdateSessionStats(sessionID string, cost, tokensIn, 
 }
 
 func (r *messagingRuntime) RecordHistory(taskID, name, source, agent, outputFile string, task, result interface{}) {
-	// No-op stub: actual record calls happen inline in each bot handler.
-	// Bots in root package call recordHistory() directly.
+	if r.cfg.HistoryDB == "" {
+		return
+	}
+	// Convert interfaces to concrete types if possible; otherwise record with zero values.
+	t, _ := task.(Task)
+	res, _ := result.(TaskResult)
+	startedAt := time.Now().Format(time.RFC3339)
+	finishedAt := startedAt
+	recordHistory(r.cfg.HistoryDB, taskID, name, source, agent, t, res, startedAt, finishedAt, outputFile)
 }
 
 func (r *messagingRuntime) PublishEvent(eventType string, data map[string]interface{}) {
@@ -209,4 +230,20 @@ func (r *messagingRuntime) UpdateAgentModel(agent, model string) error {
 
 func (r *messagingRuntime) MaybeCompactSession(sessionID string, msgCount int, tokenCount float64) {
 	maybeCompactSession(r.cfg, r.cfg.HistoryDB, sessionID, msgCount, int(tokenCount), r.sem, r.childSem)
+}
+
+func (r *messagingRuntime) UpdateSessionTitle(sessionID, title string) {
+	updateSessionTitle(r.cfg.HistoryDB, sessionID, title) //nolint:errcheck
+}
+
+func (r *messagingRuntime) SessionContextLimit() int {
+	return r.cfg.Session.contextMessagesOrDefault()
+}
+
+func (r *messagingRuntime) AgentConfig(agent string) (model, permMode string, found bool) {
+	rc, ok := r.cfg.Agents[agent]
+	if !ok {
+		return "", "", false
+	}
+	return rc.Model, rc.PermissionMode, true
 }

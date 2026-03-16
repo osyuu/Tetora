@@ -10,7 +10,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tetora/internal/messaging"
 )
+
+// Ensure root PresenceSetter is compatible with messaging.PresenceSetter.
+var _ messaging.PresenceSetter = (PresenceSetter)(nil)
 
 // PresenceState represents the current activity state of the bot in a channel.
 type PresenceState int

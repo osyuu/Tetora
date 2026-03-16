@@ -67,4 +67,10 @@ type BotRuntime interface {
 	UpdateAgentModel(agent, model string) error
 	// MaybeCompactSession compacts a session if needed.
 	MaybeCompactSession(sessionID string, msgCount int, tokenCount float64)
+	// UpdateSessionTitle updates the title of a session.
+	UpdateSessionTitle(sessionID, title string)
+	// SessionContextLimit returns the configured context message limit.
+	SessionContextLimit() int
+	// AgentConfig returns the model and permission mode for a named agent.
+	AgentConfig(agent string) (model, permMode string, found bool)
 }
