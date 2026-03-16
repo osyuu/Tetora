@@ -1,4 +1,5 @@
-package main
+// Package claude implements the ClaudeProvider: executes tasks using the Claude CLI.
+package claude
 
 import (
 	"bufio"
@@ -13,31 +14,63 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tetora/internal/log"
+	"tetora/internal/provider"
 )
 
-// ClaudeProvider executes tasks using the Claude CLI.
-type ClaudeProvider struct {
-	binaryPath string
-	cfg        *Config
+// DockerCmdBuilder constructs a Docker-wrapped exec.Cmd.
+// It is injected at construction time to avoid importing package main from this package.
+type DockerCmdBuilder func(
+	ctx context.Context,
+	workdir string,
+	binaryPath string,
+	args []string,
+	addDirs []string,
+	mcpPath string,
+	envVars []string,
+) *exec.Cmd
+
+// EnvFilter returns filtered KEY=VALUE env pairs for the Docker container.
+type EnvFilter func() []string
+
+// Provider executes tasks using the Claude CLI.
+type Provider struct {
+	binaryPath    string
+	dockerEnabled bool
+	buildDockerCmd DockerCmdBuilder
+	envFilter      EnvFilter
 }
 
-func (p *ClaudeProvider) Name() string { return "claude" }
+// New creates a new Claude CLI provider.
+// Pass dockerEnabled=false and nil builders when Docker is not used.
+func New(binaryPath string, dockerEnabled bool, buildDockerCmd DockerCmdBuilder, envFilter EnvFilter) *Provider {
+	return &Provider{
+		binaryPath:     binaryPath,
+		dockerEnabled:  dockerEnabled,
+		buildDockerCmd: buildDockerCmd,
+		envFilter:      envFilter,
+	}
+}
 
-func (p *ClaudeProvider) Execute(ctx context.Context, req ProviderRequest) (*ProviderResult, error) {
-	args := buildClaudeArgs(req, req.EventCh != nil)
+func (p *Provider) Name() string { return "claude" }
+
+func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider.Result, error) {
+	args := BuildArgs(req, req.EventCh != nil)
 
 	var cmd *exec.Cmd
-	if p.shouldUseDocker(req) {
-		// Rewrite args for Docker context (path remapping).
+	if p.shouldUseDocker(req) && p.buildDockerCmd != nil {
 		dockerArgs := rewriteDockerArgs(args, req.AddDirs, req.MCPPath)
-		envVars := dockerEnvFilter(p.cfg.Docker)
-		cmd = buildDockerCmd(ctx, p.cfg.Docker, req.Workdir, p.binaryPath, dockerArgs, req.AddDirs, req.MCPPath, envVars)
+		var envVars []string
+		if p.envFilter != nil {
+			envVars = p.envFilter()
+		}
+		cmd = p.buildDockerCmd(ctx, req.Workdir, p.binaryPath, dockerArgs, req.AddDirs, req.MCPPath, envVars)
 	} else {
 		cmd = exec.CommandContext(ctx, p.binaryPath, args...)
 		cmd.Dir = req.Workdir
 		// Filter out Claude Code session env vars so Claude Code doesn't refuse to start
-		// when Tetora is invoked from within a Claude Code session. Claude Code checks
-		// CLAUDECODE, CLAUDE_CODE_ENTRYPOINT, and CLAUDE_CODE_TEAM_MODE.
+		// when Tetora is invoked from within a Claude Code session.
 		rawEnv := os.Environ()
 		filteredEnv := make([]string, 0, len(rawEnv))
 		for _, e := range rawEnv {
@@ -74,9 +107,9 @@ func (p *ClaudeProvider) Execute(ctx context.Context, req ProviderRequest) (*Pro
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 
-	result := parseClaudeOutput(stdout.Bytes(), stderr.Bytes(), exitCode)
+	result := ParseOutput(stdout.Bytes(), stderr.Bytes(), exitCode)
 
-	pr := &ProviderResult{
+	pr := &provider.Result{
 		Output:     result.Output,
 		CostUSD:    result.CostUSD,
 		DurationMs: elapsed.Milliseconds(),
@@ -94,7 +127,7 @@ func (p *ClaudeProvider) Execute(ctx context.Context, req ProviderRequest) (*Pro
 		if len(promptPreview) > 120 {
 			promptPreview = promptPreview[:120]
 		}
-		logWarn("task exceeded budget soft-limit (completed normally)",
+		log.Warn("task exceeded budget soft-limit (completed normally)",
 			"budget", req.Budget, "spent", pr.CostUSD,
 			"model", req.Model, "prompt_preview", promptPreview,
 		)
@@ -108,10 +141,10 @@ func (p *ClaudeProvider) Execute(ctx context.Context, req ProviderRequest) (*Pro
 			if len(s) > 2000 {
 				s = s[:2000]
 			}
-			logWarn("claude CLI timed out with stderr",
+			log.Warn("claude CLI timed out with stderr",
 				"sessionId", req.SessionID, "timeout", req.Timeout, "stderr", s)
 		} else {
-			logWarn("claude CLI timed out with no output",
+			log.Warn("claude CLI timed out with no output",
 				"sessionId", req.SessionID, "timeout", req.Timeout,
 				"stdout_len", stdout.Len(), "exitCode", exitCode)
 		}
@@ -127,10 +160,7 @@ func (p *ClaudeProvider) Execute(ctx context.Context, req ProviderRequest) (*Pro
 }
 
 // executeStreaming runs the command and parses stream-json output in real time.
-// Each line of stdout is a JSON object. Typed SSE events are emitted for
-// assistant text, tool_use, and tool_result blocks. The final "result" message
-// is used to build the ProviderResult.
-func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req ProviderRequest) (*ProviderResult, error) {
+func (p *Provider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req provider.Request) (*provider.Result, error) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -143,23 +173,21 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
-	// Read stream-json lines: each line is a JSON object.
-	var resultMsg *claudeStreamMsg
-	toolNameByID := make(map[string]string) // tool_use ID → tool name for tool_result lookup
+	var resultMsg *streamMsg
+	toolNameByID := make(map[string]string)
 	scanner := bufio.NewScanner(stdoutPipe)
-	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024) // 1MB max line
+	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 
-		var msg claudeStreamMsg
+		var msg streamMsg
 		if err := json.Unmarshal(line, &msg); err != nil {
-			// JSON parse failure -- emit raw chunk (backward compat).
 			if req.EventCh != nil {
-				req.EventCh <- SSEEvent{
-					Type:      SSEOutputChunk,
+				req.EventCh <- provider.Event{
+					Type:      provider.EventOutputChunk,
 					TaskID:    req.SessionID,
 					SessionID: req.SessionID,
 					Data:      map[string]string{"chunk": string(line)},
@@ -172,12 +200,12 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 		switch msg.Type {
 		case "assistant":
 			if msg.Message != nil {
-				for _, block := range msg.Message.ContentBlocks() {
+				for _, block := range msg.Message.contentBlocks() {
 					switch block.Type {
 					case "text":
 						if req.EventCh != nil && block.Text != "" {
-							req.EventCh <- SSEEvent{
-								Type:      SSEOutputChunk,
+							req.EventCh <- provider.Event{
+								Type:      provider.EventOutputChunk,
 								TaskID:    req.SessionID,
 								SessionID: req.SessionID,
 								Data: map[string]any{
@@ -192,8 +220,8 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 							toolNameByID[block.ID] = block.Name
 						}
 						if req.EventCh != nil {
-							req.EventCh <- SSEEvent{
-								Type:      SSEToolCall,
+							req.EventCh <- provider.Event{
+								Type:      provider.EventToolCall,
 								TaskID:    req.SessionID,
 								SessionID: req.SessionID,
 								Data: map[string]any{
@@ -209,9 +237,8 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 			}
 		case "user":
 			if msg.Message != nil {
-				for _, block := range msg.Message.ContentBlocks() {
+				for _, block := range msg.Message.contentBlocks() {
 					if block.Type == "tool_result" && req.EventCh != nil {
-						// Truncate tool result content for SSE.
 						contentStr := ""
 						if block.Content != nil {
 							if s, ok := block.Content.(string); ok {
@@ -225,12 +252,12 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 						if len(contentStr) > 500 {
 							contentStr = contentStr[:500] + "..."
 						}
-						req.EventCh <- SSEEvent{
-							Type:      SSEToolResult,
+						req.EventCh <- provider.Event{
+							Type:      provider.EventToolResult,
 							TaskID:    req.SessionID,
 							SessionID: req.SessionID,
 							Data: map[string]any{
-							"toolUseId": block.ToolUseID,
+								"toolUseId": block.ToolUseID,
 								"name":      toolNameByID[block.ToolUseID],
 								"content":   contentStr,
 							},
@@ -244,9 +271,8 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 		}
 	}
 
-	// Drain any remaining data from pipe.
 	remaining, _ := io.ReadAll(stdoutPipe)
-	_ = remaining // already parsed line by line
+	_ = remaining
 
 	runErr := cmd.Wait()
 	elapsed := time.Since(start)
@@ -266,10 +292,10 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 			if len(s) > 2000 {
 				s = s[:2000]
 			}
-			logWarn("claude CLI streaming timed out with stderr",
+			log.Warn("claude CLI streaming timed out with stderr",
 				"sessionId", req.SessionID, "timeout", req.Timeout, "stderr", s)
 		} else {
-			logWarn("claude CLI streaming timed out with no output",
+			log.Warn("claude CLI streaming timed out with no output",
 				"sessionId", req.SessionID, "timeout", req.Timeout, "exitCode", exitCode)
 		}
 	} else if ctx.Err() != nil {
@@ -283,13 +309,10 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 	return pr, nil
 }
 
-// buildResultFromStream extracts ProviderResult from the final stream-json "result" message.
-// Falls back to parseClaudeOutput if no result message was captured.
-func buildResultFromStream(resultMsg *claudeStreamMsg, stderr []byte, exitCode int) *ProviderResult {
+func buildResultFromStream(resultMsg *streamMsg, stderr []byte, exitCode int) *provider.Result {
 	if resultMsg == nil {
-		// Fallback: no result line found (shouldn't happen normally).
-		result := parseClaudeOutput(nil, stderr, exitCode)
-		return &ProviderResult{
+		result := ParseOutput(nil, stderr, exitCode)
+		return &provider.Result{
 			Output:  result.Output,
 			CostUSD: result.CostUSD,
 			IsError: result.Status == "error",
@@ -297,21 +320,20 @@ func buildResultFromStream(resultMsg *claudeStreamMsg, stderr []byte, exitCode i
 		}
 	}
 
-	pr := &ProviderResult{
+	pr := &provider.Result{
 		Output:    resultMsg.Result,
 		CostUSD:   resultMsg.CostUSD,
 		SessionID: resultMsg.SessionID,
 		IsError:   resultMsg.IsError,
 	}
 	if resultMsg.Usage != nil {
-		pr.TokensIn = resultMsg.Usage.TotalInputTokens()
+		pr.TokensIn = resultMsg.Usage.totalInputTokens()
 		pr.TokensOut = resultMsg.Usage.OutputTokens
 	}
 	pr.ProviderMs = resultMsg.DurationMs
 	if resultMsg.IsError {
 		pr.Error = resultMsg.Subtype
 	}
-	// Detect empty run: CLI reported success but nothing was actually processed.
 	if !pr.IsError && pr.TokensIn == 0 && pr.TokensOut == 0 && pr.CostUSD == 0 && strings.TrimSpace(pr.Output) == "" {
 		pr.IsError = true
 		pr.Error = "empty run: CLI returned success but no tokens were consumed"
@@ -320,16 +342,15 @@ func buildResultFromStream(resultMsg *claudeStreamMsg, stderr []byte, exitCode i
 }
 
 // shouldUseDocker determines if this request should run in a Docker sandbox.
-// Chain: req.Docker (task override) → config.Docker.Enabled → false.
-func (p *ClaudeProvider) shouldUseDocker(req ProviderRequest) bool {
+func (p *Provider) shouldUseDocker(req provider.Request) bool {
 	if req.Docker != nil {
 		return *req.Docker
 	}
-	return p.cfg.Docker.Enabled
+	return p.dockerEnabled
 }
 
-// buildClaudeArgs constructs the claude CLI argument list from a ProviderRequest.
-func buildClaudeArgs(req ProviderRequest, streaming bool) []string {
+// BuildArgs constructs the claude CLI argument list from a Request.
+func BuildArgs(req provider.Request, streaming bool) []string {
 	outputFormat := "json"
 	if streaming {
 		outputFormat = "stream-json"
@@ -341,23 +362,10 @@ func buildClaudeArgs(req ProviderRequest, streaming bool) []string {
 		"--model", req.Model,
 		"--permission-mode", cmp.Or(req.PermissionMode, "acceptEdits"),
 	}
-	// Session handling: 3 modes based on Resume/PersistSession flags.
-	//   Resume=true:         --resume ID     (resume specific CLI session by ID)
-	//   PersistSession=true: --session-id ID (new channel session, persist for future --resume)
-	//   default:             --session-id ID --no-session-persistence (one-off task)
-	//
-	// IMPORTANT: Claude Code CLI's --continue takes NO arguments — it always
-	// resumes the most recent session in the workspace. To resume a SPECIFIC
-	// session by ID, use --resume SESSION_ID. Using --continue SESSION_ID would
-	// cause SESSION_ID to be parsed as the prompt text, and --continue would
-	// pick the most recent session → cross-channel context leakage.
-	//
-	// Safety: verify the session file actually exists before using --resume.
-	// If Claude Code didn't persist the session (crash, timeout, etc.), --resume
-	// with a missing session would fail.
+
 	resume := req.Resume
-	if resume && req.SessionID != "" && !claudeSessionFileExists(req.SessionID) {
-		logWarn("claude session file not found, falling back to new session", "sessionId", req.SessionID)
+	if resume && req.SessionID != "" && !sessionFileExists(req.SessionID) {
+		log.Warn("claude session file not found, falling back to new session", "sessionId", req.SessionID)
 		resume = false
 	}
 	if resume && req.SessionID != "" {
@@ -369,15 +377,10 @@ func buildClaudeArgs(req ProviderRequest, streaming bool) []string {
 		}
 	}
 
-	// NOTE: --max-budget-usd is intentionally NOT passed.
-	// Tetora uses a soft-limit approach: log when budget is exceeded, but don't hard-stop.
-	// This allows channel sessions and large tasks to complete naturally.
-
 	for _, dir := range req.AddDirs {
 		args = append(args, "--add-dir", dir)
 	}
 
-	// MCP injection via temp config file.
 	if req.MCPPath != "" {
 		args = append(args, "--mcp-config", req.MCPPath)
 	}
@@ -386,117 +389,140 @@ func buildClaudeArgs(req ProviderRequest, streaming bool) []string {
 		args = append(args, "--append-system-prompt", req.SystemPrompt)
 	}
 
-	// Prompt is NOT appended as a positional arg; it is piped via stdin
-	// in Execute() to avoid OS ARG_MAX limits and shell escaping issues.
 	return args
 }
 
-// claudeSessionFileExists checks whether a Claude Code session file (.jsonl) exists
-// for the given session ID. Claude Code stores sessions at:
-//   ~/.claude/projects/{projectKey}/{sessionID}.jsonl
-// Since the projectKey is derived from the workdir and we don't replicate that logic,
-// we glob across all project directories.
-func claudeSessionFileExists(sessionID string) bool {
+// sessionFileExists checks whether a Claude Code session file (.jsonl) exists.
+func sessionFileExists(sessionID string) bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return false // assume exists on error to avoid breaking --continue
+		return false
 	}
 	pattern := home + "/.claude/projects/*/" + sessionID + ".jsonl"
 	matches, err := filepath.Glob(pattern)
 	return err == nil && len(matches) > 0
 }
 
-// --- Claude Output Parsing ---
+// rewriteDockerArgs adjusts claude CLI arguments for Docker context.
+// - Rewrites --add-dir paths to /mnt/<basename>
+// - Rewrites --mcp-config path to /tmp/mcp.json
+func rewriteDockerArgs(claudeArgs []string, addDirs []string, mcpPath string) []string {
+	rewritten := make([]string, len(claudeArgs))
+	copy(rewritten, claudeArgs)
 
-// claudeOutput is the JSON from `claude --print --output-format json`.
-type claudeOutput struct {
-	Type       string       `json:"type"`
-	Subtype    string       `json:"subtype"`
-	Result     string       `json:"result"`
-	IsError    bool         `json:"is_error"`
-	DurationMs int64        `json:"duration_ms"`
-	CostUSD    float64      `json:"total_cost_usd"`
-	SessionID  string       `json:"session_id"`
-	NumTurns   int          `json:"num_turns"`
-	Usage      *claudeUsage `json:"usage,omitempty"`
+	// Build mapping of host addDir → container path.
+	dirMap := make(map[string]string)
+	for _, dir := range addDirs {
+		base := filepath.Base(dir)
+		dirMap[dir] = "/mnt/" + base
+	}
+
+	for i := 0; i < len(rewritten); i++ {
+		if rewritten[i] == "--add-dir" && i+1 < len(rewritten) {
+			if mapped, ok := dirMap[rewritten[i+1]]; ok {
+				rewritten[i+1] = mapped
+			}
+		}
+		if rewritten[i] == "--mcp-config" && i+1 < len(rewritten) && mcpPath != "" {
+			rewritten[i+1] = "/tmp/mcp.json"
+		}
+	}
+
+	return rewritten
 }
 
-// claudeUsage holds token usage reported by the Claude CLI.
-type claudeUsage struct {
+// --- Claude Output Parsing ---
+
+// output is the JSON from `claude --print --output-format json`.
+type output struct {
+	Type       string `json:"type"`
+	Subtype    string `json:"subtype"`
+	Result     string `json:"result"`
+	IsError    bool   `json:"is_error"`
+	DurationMs int64  `json:"duration_ms"`
+	CostUSD    float64 `json:"total_cost_usd"`
+	SessionID  string  `json:"session_id"`
+	NumTurns   int     `json:"num_turns"`
+	Usage      *usage  `json:"usage,omitempty"`
+}
+
+type usage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
-// TotalInputTokens returns the sum of all input token categories
-// (direct + cache creation + cache read).
-func (u *claudeUsage) TotalInputTokens() int {
+func (u *usage) totalInputTokens() int {
 	return u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
 }
 
-// claudeStreamMsg represents a single line from `--output-format stream-json`.
-type claudeStreamMsg struct {
-	Type       string       `json:"type"`              // "system", "assistant", "user", "result"
-	Subtype    string       `json:"subtype,omitempty"`
-	Message    *claudeMsg   `json:"message,omitempty"`
-	// result fields (same as claudeOutput):
-	Result     string       `json:"result,omitempty"`
-	IsError    bool         `json:"is_error,omitempty"`
-	DurationMs int64        `json:"duration_ms,omitempty"`
-	CostUSD    float64      `json:"total_cost_usd,omitempty"`
-	SessionID  string       `json:"session_id,omitempty"`
-	NumTurns   int          `json:"num_turns,omitempty"`
-	Usage      *claudeUsage `json:"usage,omitempty"`
+type streamMsg struct {
+	Type       string   `json:"type"`
+	Subtype    string   `json:"subtype,omitempty"`
+	Message    *msg     `json:"message,omitempty"`
+	Result     string   `json:"result,omitempty"`
+	IsError    bool     `json:"is_error,omitempty"`
+	DurationMs int64    `json:"duration_ms,omitempty"`
+	CostUSD    float64  `json:"total_cost_usd,omitempty"`
+	SessionID  string   `json:"session_id,omitempty"`
+	NumTurns   int      `json:"num_turns,omitempty"`
+	Usage      *usage   `json:"usage,omitempty"`
 }
 
-type claudeMsg struct {
+type msg struct {
 	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"` // string or []claudeContentBlock; use json.RawMessage to avoid parse failures
+	Content json.RawMessage `json:"content"`
 }
 
-// ContentBlocks parses Content as []claudeContentBlock. Returns nil if content
-// is a plain string or unparseable (e.g. system/rate_limit_event messages).
-func (m *claudeMsg) ContentBlocks() []claudeContentBlock {
+func (m *msg) contentBlocks() []contentBlock {
 	if m == nil || len(m.Content) == 0 {
 		return nil
 	}
-	var blocks []claudeContentBlock
+	var blocks []contentBlock
 	if err := json.Unmarshal(m.Content, &blocks); err != nil {
 		return nil
 	}
 	return blocks
 }
 
-type claudeContentBlock struct {
-	Type      string          `json:"type"` // "text", "tool_use", "tool_result"
+type contentBlock struct {
+	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   any             `json:"content,omitempty"` // tool_result content
+	Content   any             `json:"content,omitempty"`
 }
 
-// parseClaudeOutput parses Claude CLI JSON output into a TaskResult.
-// Handles two formats:
-//   - Legacy single object: {"type":"result", "result":"...", "total_cost_usd":...}
-//   - Array format (CLI v2.1+): [{"type":"system",...}, ..., {"type":"result",...}]
-func parseClaudeOutput(stdout, stderr []byte, exitCode int) TaskResult {
-	var co claudeOutput
-	result := TaskResult{ExitCode: exitCode}
+// ParsedResult holds the intermediate result from parsing claude output.
+type ParsedResult struct {
+	Output     string
+	CostUSD    float64
+	SessionID  string
+	Status     string
+	Error      string
+	TokensIn   int
+	TokensOut  int
+	ProviderMs int64
+	ExitCode   int
+}
+
+// ParseOutput parses Claude CLI JSON output into a ParsedResult.
+func ParseOutput(stdout, stderr []byte, exitCode int) ParsedResult {
+	var co output
+	result := ParsedResult{ExitCode: exitCode}
 
 	if err := json.Unmarshal(stdout, &co); err == nil && co.Type != "" {
-		return buildResultFromParsed(co, result)
+		return buildFromParsed(co, result)
 	}
 
-	// Try array format: Claude CLI v2.1+ outputs a JSON array of stream messages
-	// when using --output-format json. Find the "result" entry.
-	var msgs []claudeStreamMsg
+	var msgs []streamMsg
 	if err := json.Unmarshal(stdout, &msgs); err == nil && len(msgs) > 0 {
 		for i := len(msgs) - 1; i >= 0; i-- {
 			if msgs[i].Type == "result" {
-				co = claudeOutput{
+				co = output{
 					Type:       msgs[i].Type,
 					Subtype:    msgs[i].Subtype,
 					Result:     msgs[i].Result,
@@ -507,12 +533,11 @@ func parseClaudeOutput(stdout, stderr []byte, exitCode int) TaskResult {
 					NumTurns:   msgs[i].NumTurns,
 					Usage:      msgs[i].Usage,
 				}
-				return buildResultFromParsed(co, result)
+				return buildFromParsed(co, result)
 			}
 		}
 	}
 
-	// Fallback: treat raw output as text.
 	result.Output = string(stdout)
 	if exitCode != 0 {
 		result.Status = "error"
@@ -527,21 +552,19 @@ func parseClaudeOutput(stdout, stderr []byte, exitCode int) TaskResult {
 	return result
 }
 
-// buildResultFromParsed populates a TaskResult from a successfully parsed claudeOutput.
-func buildResultFromParsed(co claudeOutput, result TaskResult) TaskResult {
+func buildFromParsed(co output, result ParsedResult) ParsedResult {
 	result.Output = co.Result
 	result.CostUSD = co.CostUSD
 	result.SessionID = co.SessionID
 	result.ProviderMs = co.DurationMs
 	if co.Usage != nil {
-		result.TokensIn = co.Usage.TotalInputTokens()
+		result.TokensIn = co.Usage.totalInputTokens()
 		result.TokensOut = co.Usage.OutputTokens
 	}
 	if co.IsError {
 		result.Status = "error"
 		result.Error = co.Subtype
 	} else if result.TokensIn == 0 && result.TokensOut == 0 && co.CostUSD == 0 && strings.TrimSpace(co.Result) == "" {
-		// Empty run: CLI exited cleanly but never called the API.
 		result.Status = "error"
 		result.Error = "empty run: CLI returned success but no tokens were consumed"
 	} else {

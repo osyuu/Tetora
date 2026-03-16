@@ -1,4 +1,5 @@
-package main
+// Package openai implements the OpenAIProvider: executes tasks via OpenAI-compatible APIs.
+package openai
 
 import (
 	"bufio"
@@ -10,23 +11,34 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"tetora/internal/provider"
 )
 
-// OpenAIProvider executes tasks using OpenAI-compatible APIs.
+// Provider executes tasks using OpenAI-compatible APIs.
 // Supports OpenAI, Ollama, LM Studio, vLLM, and any compatible endpoint.
-type OpenAIProvider struct {
+type Provider struct {
 	name         string
 	baseURL      string
 	apiKey       string
 	defaultModel string
 }
 
-func (p *OpenAIProvider) Name() string { return p.name }
+// New creates a new OpenAI-compatible provider.
+func New(name, baseURL, apiKey, defaultModel string) *Provider {
+	return &Provider{
+		name:         name,
+		baseURL:      baseURL,
+		apiKey:       apiKey,
+		defaultModel: defaultModel,
+	}
+}
+
+func (p *Provider) Name() string { return p.name }
 
 // --- OpenAI request/response types ---
 
-// openAIToolCall represents a tool call in an assistant message.
-type openAIToolCall struct {
+type toolCall struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
@@ -35,8 +47,7 @@ type openAIToolCall struct {
 	} `json:"function"`
 }
 
-// openAIToolCallDelta represents a partial tool call in a streaming delta.
-type openAIToolCallDelta struct {
+type toolCallDelta struct {
 	Index    int    `json:"index"`
 	ID       string `json:"id,omitempty"`
 	Type     string `json:"type,omitempty"`
@@ -46,40 +57,37 @@ type openAIToolCallDelta struct {
 	} `json:"function,omitempty"`
 }
 
-// openAITool represents a tool definition in OpenAI format.
-type openAITool struct {
-	Type     string         `json:"type"`
-	Function openAIFunction `json:"function"`
+type tool struct {
+	Type     string   `json:"type"`
+	Function function `json:"function"`
 }
 
-// openAIFunction represents a function definition for OpenAI tools.
-type openAIFunction struct {
+type function struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
-// openAIMessage represents a message in the conversation.
-type openAIMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+type message struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
-type openAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []openAIMessage `json:"messages"`
-	Stream   bool            `json:"stream,omitempty"`
-	Tools    []openAITool    `json:"tools,omitempty"`
+type request struct {
+	Model    string    `json:"model"`
+	Messages []message `json:"messages"`
+	Stream   bool      `json:"stream,omitempty"`
+	Tools    []tool    `json:"tools,omitempty"`
 }
 
-type openAIResponse struct {
+type response struct {
 	ID      string `json:"id"`
 	Choices []struct {
 		Message struct {
-			Content   string           `json:"content"`
-			ToolCalls []openAIToolCall  `json:"tool_calls,omitempty"`
+			Content   string     `json:"content"`
+			ToolCalls []toolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -94,13 +102,12 @@ type openAIResponse struct {
 	} `json:"error"`
 }
 
-// openAIStreamChunk represents a chunk from the SSE stream.
-type openAIStreamChunk struct {
+type streamChunk struct {
 	ID      string `json:"id"`
 	Choices []struct {
 		Delta struct {
-			Content   string                `json:"content"`
-			ToolCalls []openAIToolCallDelta `json:"tool_calls,omitempty"`
+			Content   string          `json:"content"`
+			ToolCalls []toolCallDelta `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -111,17 +118,16 @@ type openAIStreamChunk struct {
 	} `json:"usage"`
 }
 
-func (p *OpenAIProvider) Execute(ctx context.Context, req ProviderRequest) (*ProviderResult, error) {
+func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider.Result, error) {
 	return p.executeInternal(ctx, req)
 }
 
-// ExecuteWithTools implements ToolCapableProvider for multi-turn tool conversations.
-func (p *OpenAIProvider) ExecuteWithTools(ctx context.Context, req ProviderRequest) (*ProviderResult, error) {
+// ExecuteWithTools implements provider.ToolCapableProvider for multi-turn tool conversations.
+func (p *Provider) ExecuteWithTools(ctx context.Context, req provider.Request) (*provider.Result, error) {
 	return p.executeInternal(ctx, req)
 }
 
-// executeInternal is the shared implementation for Execute and ExecuteWithTools.
-func (p *OpenAIProvider) executeInternal(ctx context.Context, req ProviderRequest) (*ProviderResult, error) {
+func (p *Provider) executeInternal(ctx context.Context, req provider.Request) (*provider.Result, error) {
 	model := req.Model
 	if model == "" {
 		model = p.defaultModel
@@ -130,35 +136,30 @@ func (p *OpenAIProvider) executeInternal(ctx context.Context, req ProviderReques
 		return nil, fmt.Errorf("no model specified for provider %q", p.name)
 	}
 
-	// Build messages.
-	var messages []openAIMessage
+	var messages []message
 	if req.SystemPrompt != "" {
-		messages = append(messages, openAIMessage{Role: "system", Content: req.SystemPrompt})
+		messages = append(messages, message{Role: "system", Content: req.SystemPrompt})
 	}
-	messages = append(messages, openAIMessage{Role: "user", Content: req.Prompt})
+	messages = append(messages, message{Role: "user", Content: req.Prompt})
 
-	// Append multi-turn messages if present (tool conversation history).
 	for _, m := range req.Messages {
-		converted := convertToOpenAIMessages(m)
+		converted := convertMessages(m)
 		messages = append(messages, converted...)
 	}
 
-	// Build tools array if provided.
-	var tools []openAITool
-	if len(req.Tools) > 0 {
-		for _, t := range req.Tools {
-			tools = append(tools, openAITool{
-				Type: "function",
-				Function: openAIFunction{
-					Name:        t.Name,
-					Description: t.Description,
-					Parameters:  t.InputSchema,
-				},
-			})
-		}
+	var tools []tool
+	for _, t := range req.Tools {
+		tools = append(tools, tool{
+			Type: "function",
+			Function: function{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		})
 	}
 
-	body := openAIRequest{
+	body := request{
 		Model:    model,
 		Messages: messages,
 		Stream:   req.EventCh != nil,
@@ -190,64 +191,53 @@ func (p *OpenAIProvider) executeInternal(ctx context.Context, req ProviderReques
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		elapsed := time.Since(start)
-		return &ProviderResult{
+		return &provider.Result{
 			IsError:    true,
-			Error:      fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateBytes(respBody, 500)),
+			Error:      fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(respBody, 500)),
 			DurationMs: elapsed.Milliseconds(),
 		}, nil
 	}
 
-	// Streaming mode.
 	if req.EventCh != nil {
 		return p.readStreamResponse(resp.Body, req, start), nil
 	}
 
-	// Non-streaming mode.
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	elapsed := time.Since(start)
 
-	return parseOpenAIResponse(respBody, elapsed.Milliseconds()), nil
+	return ParseResponse(respBody, elapsed.Milliseconds()), nil
 }
 
-// convertToOpenAIMessages converts a provider Message to one or more openAIMessages.
-// Returns a slice because OpenAI requires each tool result to be a separate message
-// with role "tool", whereas Claude bundles them in a single user message.
-func convertToOpenAIMessages(m Message) []openAIMessage {
-	// Try to parse as array of content blocks (Claude format).
-	var blocks []ContentBlock
+// convertMessages converts a provider.Message to one or more OpenAI messages.
+func convertMessages(m provider.Message) []message {
+	var blocks []provider.ContentBlock
 	if err := json.Unmarshal(m.Content, &blocks); err == nil && len(blocks) > 0 {
 		if m.Role == "assistant" {
-			// Convert tool_use blocks to OpenAI tool_calls + text content.
-			msg := openAIMessage{Role: "assistant"}
+			msg := message{Role: "assistant"}
 			var textParts []string
 			for _, b := range blocks {
 				switch b.Type {
 				case "text":
 					textParts = append(textParts, b.Text)
 				case "tool_use":
-					tc := openAIToolCall{
-						ID:   b.ID,
-						Type: "function",
-					}
+					tc := toolCall{ID: b.ID, Type: "function"}
 					tc.Function.Name = b.Name
 					tc.Function.Arguments = string(b.Input)
 					msg.ToolCalls = append(msg.ToolCalls, tc)
 				}
 			}
 			msg.Content = strings.Join(textParts, "\n")
-			return []openAIMessage{msg}
+			return []message{msg}
 		}
 
 		if m.Role == "user" {
-			// tool_result blocks become individual "tool" role messages in OpenAI format.
-			// Each tool result maps to a separate message with role "tool".
-			var msgs []openAIMessage
+			var msgs []message
 			for _, b := range blocks {
 				if b.Type == "tool_result" {
-					msgs = append(msgs, openAIMessage{
+					msgs = append(msgs, message{
 						Role:       "tool",
 						Content:    b.Content,
 						ToolCallID: b.ToolUseID,
@@ -260,36 +250,30 @@ func convertToOpenAIMessages(m Message) []openAIMessage {
 		}
 	}
 
-	// Fallback: try as plain string.
 	var s string
 	if err := json.Unmarshal(m.Content, &s); err == nil {
-		return []openAIMessage{{Role: m.Role, Content: s}}
+		return []message{{Role: m.Role, Content: s}}
 	}
 
-	// Last resort: raw content as string.
-	return []openAIMessage{{Role: m.Role, Content: string(m.Content)}}
+	return []message{{Role: m.Role, Content: string(m.Content)}}
 }
 
-// readStreamResponse reads an OpenAI SSE stream response and emits chunks.
-func (p *OpenAIProvider) readStreamResponse(body io.Reader, req ProviderRequest, start time.Time) *ProviderResult {
+func (p *Provider) readStreamResponse(body io.Reader, req provider.Request, start time.Time) *provider.Result {
 	scanner := bufio.NewScanner(body)
 	var fullContent strings.Builder
 	var sessionID string
 	var tokensIn, tokensOut int
 	var finishReason string
 
-	// Tool call accumulation for streaming.
-	type toolCallAccumulator struct {
-		id       string
-		name     string
-		argsBuf  strings.Builder
+	type accumulator struct {
+		id      string
+		name    string
+		argsBuf strings.Builder
 	}
-	var toolAccumulators []toolCallAccumulator
+	var accs []accumulator
 
 	for scanner.Scan() {
 		line := scanner.Text()
-
-		// SSE format: "data: {...}" or "data: [DONE]"
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -298,7 +282,7 @@ func (p *OpenAIProvider) readStreamResponse(body io.Reader, req ProviderRequest,
 			break
 		}
 
-		var chunk openAIStreamChunk
+		var chunk streamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
@@ -306,7 +290,6 @@ func (p *OpenAIProvider) readStreamResponse(body io.Reader, req ProviderRequest,
 		if chunk.ID != "" && sessionID == "" {
 			sessionID = chunk.ID
 		}
-
 		if chunk.Usage != nil {
 			tokensIn = chunk.Usage.PromptTokens
 			tokensOut = chunk.Usage.CompletionTokens
@@ -314,44 +297,36 @@ func (p *OpenAIProvider) readStreamResponse(body io.Reader, req ProviderRequest,
 
 		if len(chunk.Choices) > 0 {
 			choice := chunk.Choices[0]
-
-			// Capture finish reason.
 			if choice.FinishReason != nil {
 				finishReason = *choice.FinishReason
 			}
 
-			// Text content delta.
 			delta := choice.Delta.Content
 			if delta != "" {
 				fullContent.WriteString(delta)
-
 				if req.EventCh != nil {
-					req.EventCh <- SSEEvent{
-						Type:      SSEOutputChunk,
+					req.EventCh <- provider.Event{
+						Type:      provider.EventOutputChunk,
 						SessionID: req.SessionID,
-						Data: map[string]string{
-							"chunk": delta,
-						},
+						Data:      map[string]string{"chunk": delta},
 						Timestamp: time.Now().Format(time.RFC3339),
 					}
 				}
 			}
 
-			// Tool call deltas.
 			for _, tcDelta := range choice.Delta.ToolCalls {
 				idx := tcDelta.Index
-				// Grow accumulators slice if needed.
-				for len(toolAccumulators) <= idx {
-					toolAccumulators = append(toolAccumulators, toolCallAccumulator{})
+				for len(accs) <= idx {
+					accs = append(accs, accumulator{})
 				}
 				if tcDelta.ID != "" {
-					toolAccumulators[idx].id = tcDelta.ID
+					accs[idx].id = tcDelta.ID
 				}
 				if tcDelta.Function.Name != "" {
-					toolAccumulators[idx].name = tcDelta.Function.Name
+					accs[idx].name = tcDelta.Function.Name
 				}
 				if tcDelta.Function.Arguments != "" {
-					toolAccumulators[idx].argsBuf.WriteString(tcDelta.Function.Arguments)
+					accs[idx].argsBuf.WriteString(tcDelta.Function.Arguments)
 				}
 			}
 		}
@@ -359,11 +334,10 @@ func (p *OpenAIProvider) readStreamResponse(body io.Reader, req ProviderRequest,
 
 	elapsed := time.Since(start)
 
-	// Build tool calls from accumulators.
-	var toolCalls []ToolCall
-	for _, acc := range toolAccumulators {
+	var toolCalls []provider.ToolCall
+	for _, acc := range accs {
 		if acc.id != "" {
-			toolCalls = append(toolCalls, ToolCall{
+			toolCalls = append(toolCalls, provider.ToolCall{
 				ID:    acc.id,
 				Name:  acc.name,
 				Input: json.RawMessage(acc.argsBuf.String()),
@@ -371,10 +345,9 @@ func (p *OpenAIProvider) readStreamResponse(body io.Reader, req ProviderRequest,
 		}
 	}
 
-	// Map OpenAI finish_reason to normalized stop reason.
-	stopReason := mapOpenAIFinishReason(finishReason)
+	stopReason := MapFinishReason(finishReason)
 
-	result := &ProviderResult{
+	result := &provider.Result{
 		Output:     fullContent.String(),
 		DurationMs: elapsed.Milliseconds(),
 		SessionID:  sessionID,
@@ -386,17 +359,17 @@ func (p *OpenAIProvider) readStreamResponse(body io.Reader, req ProviderRequest,
 	}
 
 	if tokensIn > 0 || tokensOut > 0 {
-		result.CostUSD = estimateOpenAICost(tokensIn, tokensOut)
+		result.CostUSD = EstimateCost(tokensIn, tokensOut)
 	}
 
 	return result
 }
 
-// parseOpenAIResponse parses an OpenAI-compatible API response.
-func parseOpenAIResponse(data []byte, durationMs int64) *ProviderResult {
-	var resp openAIResponse
+// ParseResponse parses an OpenAI-compatible API response.
+func ParseResponse(data []byte, durationMs int64) *provider.Result {
+	var resp response
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return &ProviderResult{
+		return &provider.Result{
 			IsError:    true,
 			Error:      fmt.Sprintf("parse response: %v", err),
 			DurationMs: durationMs,
@@ -404,14 +377,14 @@ func parseOpenAIResponse(data []byte, durationMs int64) *ProviderResult {
 	}
 
 	if resp.Error != nil {
-		return &ProviderResult{
+		return &provider.Result{
 			IsError:    true,
 			Error:      resp.Error.Message,
 			DurationMs: durationMs,
 		}
 	}
 
-	result := &ProviderResult{
+	result := &provider.Result{
 		DurationMs: durationMs,
 		SessionID:  resp.ID,
 	}
@@ -420,35 +393,30 @@ func parseOpenAIResponse(data []byte, durationMs int64) *ProviderResult {
 		choice := resp.Choices[0]
 		result.Output = choice.Message.Content
 
-		// Extract tool calls.
 		for _, tc := range choice.Message.ToolCalls {
-			result.ToolCalls = append(result.ToolCalls, ToolCall{
+			result.ToolCalls = append(result.ToolCalls, provider.ToolCall{
 				ID:    tc.ID,
 				Name:  tc.Function.Name,
 				Input: json.RawMessage(tc.Function.Arguments),
 			})
 		}
 
-		// Map finish_reason to normalized stop reason.
-		result.StopReason = mapOpenAIFinishReason(choice.FinishReason)
+		result.StopReason = MapFinishReason(choice.FinishReason)
 	}
 
-	// Extract token usage and estimate cost if available.
 	if resp.Usage != nil {
 		result.TokensIn = resp.Usage.PromptTokens
 		result.TokensOut = resp.Usage.CompletionTokens
-		result.CostUSD = estimateOpenAICost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+		result.CostUSD = EstimateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	}
 
-	// OpenAI API doesn't report server-side latency separately; use wall-clock.
 	result.ProviderMs = durationMs
 
 	return result
 }
 
-// mapOpenAIFinishReason converts OpenAI finish_reason to the normalized stop reason
-// used by the agentic loop ("end_turn", "tool_use").
-func mapOpenAIFinishReason(reason string) string {
+// MapFinishReason converts OpenAI finish_reason to the normalized stop reason.
+func MapFinishReason(reason string) string {
 	switch reason {
 	case "tool_calls":
 		return "tool_use"
@@ -459,23 +427,19 @@ func mapOpenAIFinishReason(reason string) string {
 	case "content_filter":
 		return "content_filter"
 	default:
-		if reason != "" {
-			return reason
-		}
-		return ""
+		return reason
 	}
 }
 
-// estimateOpenAICost provides a rough cost estimate based on token counts.
+// EstimateCost provides a rough cost estimate based on token counts.
 // Uses approximate GPT-4o pricing as a default baseline.
-func estimateOpenAICost(promptTokens, completionTokens int) float64 {
-	// GPT-4o approximate: $2.50/M input, $10.00/M output
+func EstimateCost(promptTokens, completionTokens int) float64 {
 	inputCost := float64(promptTokens) * 2.50 / 1_000_000
 	outputCost := float64(completionTokens) * 10.00 / 1_000_000
 	return inputCost + outputCost
 }
 
-func truncateBytes(b []byte, maxLen int) string {
+func truncate(b []byte, maxLen int) string {
 	s := string(b)
 	if len(s) > maxLen {
 		return s[:maxLen]

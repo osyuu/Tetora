@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -131,14 +129,6 @@ func (r *providerRegistry) get(name string) (Provider, error) {
 
 // --- Provider Resolution ---
 
-// providerHasNativeSession returns true if the provider maintains its own
-// session state. For these providers, Tetora should NOT inject conversation
-// history as text — the provider already resumes the session natively.
-func providerHasNativeSession(providerName string) bool {
-	return providerName == "claude-code" || providerName == "codex" ||
-		strings.HasPrefix(providerName, "terminal-")
-}
-
 // resolveProviderName determines which provider to use for a task.
 // Chain: task.Provider → agent provider → config.DefaultProvider → "claude"
 func resolveProviderName(cfg *Config, task Task, agentName string) string {
@@ -154,124 +144,6 @@ func resolveProviderName(cfg *Config, task Task, agentName string) string {
 		return cfg.DefaultProvider
 	}
 	return "claude"
-}
-
-// --- Provider Initialization ---
-
-// initProviders creates provider instances from config.
-func initProviders(cfg *Config) *providerRegistry {
-	reg := newProviderRegistry()
-
-	for name, pc := range cfg.Providers {
-		switch pc.Type {
-		case "claude-cli":
-			path := pc.Path
-			if path == "" {
-				path = cfg.ClaudePath
-			}
-			if path == "" {
-				path = "claude"
-			}
-			reg.register(name, &ClaudeProvider{binaryPath: path, cfg: cfg})
-
-		case "openai-compatible":
-			reg.register(name, &OpenAIProvider{
-				name:         name,
-				baseURL:      pc.BaseURL,
-				apiKey:       pc.APIKey,
-				defaultModel: pc.Model,
-			})
-
-		case "claude-api":
-			// Deprecated in v3: claude-api provider removed. Use "claude-code" instead.
-			logWarn("provider type 'claude-api' is deprecated in v3, use 'claude-code' instead", "name", name)
-			path := pc.Path
-			if path == "" {
-				path = "/usr/local/bin/claude"
-			}
-			reg.register(name, &ClaudeProvider{binaryPath: path, cfg: cfg})
-
-		case "claude-code", "claude-tmux":
-			// Same as claude-cli but signals prompt_tier.go to skip injection
-			// (Claude Code reads project files natively).
-			// "claude-tmux" is a deprecated alias from v2.
-			if pc.Type == "claude-tmux" {
-				logWarn("provider type 'claude-tmux' is deprecated in v3, use 'claude-code' instead", "name", name)
-			}
-			path := pc.Path
-			if path == "" {
-				path = "/usr/local/bin/claude"
-			}
-			reg.register(name, &ClaudeProvider{binaryPath: path, cfg: cfg})
-
-		case "terminal-claude":
-			// Terminal provider: runs Claude Code in persistent tmux sessions.
-			path := pc.Path
-			if path == "" {
-				path = cfg.ClaudePath
-			}
-			if path == "" {
-				path = "/usr/local/bin/claude"
-			}
-			reg.register(name, &TerminalProvider{
-				binaryPath: path,
-				profile:    &claudeTmuxProfile{},
-				supervisor: newTmuxSupervisor(),
-				cfg:        cfg,
-			})
-
-		case "terminal-codex":
-			// Terminal provider: runs Codex CLI in persistent tmux sessions.
-			path := pc.Path
-			if path == "" {
-				path = "codex"
-			}
-			reg.register(name, &TerminalProvider{
-				binaryPath: path,
-				profile:    &codexTmuxProfile{},
-				supervisor: newTmuxSupervisor(),
-				cfg:        cfg,
-			})
-
-		case "codex-cli":
-			// Headless Codex provider: runs codex exec --json.
-			path := pc.Path
-			if path == "" {
-				path = "codex"
-			}
-			reg.register(name, &CodexProvider{binaryPath: path, cfg: cfg})
-
-		}
-	}
-
-	// Ensure "claude" provider always exists (backward compat).
-	if _, err := reg.get("claude"); err != nil {
-		path := cfg.ClaudePath
-		if path == "" {
-			path = "claude"
-		}
-		reg.register("claude", &ClaudeProvider{binaryPath: path, cfg: cfg})
-	}
-
-	// Ensure "claude-code" provider always exists (headless default).
-	// Same runtime as "claude" but the name signals prompt_tier.go to skip
-	// injection (Claude Code reads project files natively).
-	if _, err := reg.get("claude-code"); err != nil {
-		path := cfg.ClaudePath
-		if path == "" {
-			path = "/usr/local/bin/claude"
-		}
-		reg.register("claude-code", &ClaudeProvider{binaryPath: path, cfg: cfg})
-	}
-
-	// Auto-register "codex" if the binary is found on PATH.
-	if _, err := reg.get("codex"); err != nil {
-		if path, lookErr := exec.LookPath("codex"); lookErr == nil {
-			reg.register("codex", &CodexProvider{binaryPath: path, cfg: cfg})
-		}
-	}
-
-	return reg
 }
 
 // --- Execute Helper ---
@@ -304,26 +176,6 @@ func buildProviderCandidates(cfg *Config, task Task, agentName string) []string 
 	}
 
 	return candidates
-}
-
-// isTransientError checks whether an error message indicates a transient failure
-// that should count towards the circuit breaker threshold and trigger failover.
-func isTransientError(errMsg string) bool {
-	lower := strings.ToLower(errMsg)
-	transient := []string{
-		"timeout", "timed out", "deadline exceeded",
-		"connection refused", "connection reset",
-		"eof", "broken pipe",
-		"http 5", "status 5", // 5xx server errors
-		"temporarily unavailable", "service unavailable",
-		"too many requests", "rate limit",
-	}
-	for _, t := range transient {
-		if strings.Contains(lower, t) {
-			return true
-		}
-	}
-	return false
 }
 
 // buildProviderRequest constructs a ProviderRequest from task, config, and provider name.
@@ -463,6 +315,15 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 		IsError: true,
 		Error:   errMsg,
 	}
+}
+
+// truncateBytes converts a byte slice to string, capping at maxLen bytes.
+func truncateBytes(b []byte, maxLen int) string {
+	s := string(b)
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
 }
 
 // publishFailoverEvent sends a provider_failover SSE event if eventCh is available.

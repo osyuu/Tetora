@@ -1,4 +1,5 @@
-package main
+// Package codex implements the CodexProvider: executes tasks using the Codex CLI (codex exec --json).
+package codex
 
 import (
 	"bufio"
@@ -12,31 +13,41 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tetora/internal/provider"
 )
 
-// CodexProvider executes tasks using the Codex CLI (codex exec --json).
-type CodexProvider struct {
+var (
+	rePercent = regexp.MustCompile(`(\d+(?:\.\d+)?)%`)
+	reReset   = regexp.MustCompile(`resets?\s+(.+?)(?:\)|$)`)
+)
+
+func pctRegexp() *regexp.Regexp   { return rePercent }
+func resetRegexp() *regexp.Regexp { return reReset }
+
+// Provider executes tasks using the Codex CLI (codex exec --json).
+type Provider struct {
 	binaryPath string
-	cfg        *Config
 }
 
-func (p *CodexProvider) Name() string { return "codex" }
+// New creates a new Codex CLI provider.
+func New(binaryPath string) *Provider {
+	return &Provider{binaryPath: binaryPath}
+}
 
-func (p *CodexProvider) Execute(ctx context.Context, req ProviderRequest) (*ProviderResult, error) {
-	args := buildCodexArgs(req, req.EventCh != nil)
+func (p *Provider) Name() string { return "codex" }
+
+func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider.Result, error) {
+	args := BuildArgs(req, req.EventCh != nil)
 
 	cmd := exec.CommandContext(ctx, p.binaryPath, args...)
 	cmd.Dir = req.Workdir
 	cmd.Env = os.Environ()
 
-	// Codex exec takes prompt as positional arg, not stdin.
-	// The prompt is already included in args via buildCodexArgs.
-
 	if req.EventCh != nil {
 		return p.executeStreaming(ctx, cmd, req)
 	}
 
-	// Non-streaming mode.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -50,7 +61,7 @@ func (p *CodexProvider) Execute(ctx context.Context, req ProviderRequest) (*Prov
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 
-	pr := parseCodexOutput(stdout.Bytes(), stderr.Bytes(), exitCode)
+	pr := ParseOutput(stdout.Bytes(), stderr.Bytes(), exitCode)
 	pr.DurationMs = elapsed.Milliseconds()
 
 	if ctx.Err() == context.DeadlineExceeded {
@@ -68,7 +79,7 @@ func (p *CodexProvider) Execute(ctx context.Context, req ProviderRequest) (*Prov
 }
 
 // executeStreaming runs codex exec --json and parses JSONL output in real time.
-func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req ProviderRequest) (*ProviderResult, error) {
+func (p *Provider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req provider.Request) (*provider.Result, error) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -81,7 +92,7 @@ func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
-	var finalResult *ProviderResult
+	var finalResult *provider.Result
 	var outputParts []string
 
 	scanner := bufio.NewScanner(stdoutPipe)
@@ -92,12 +103,11 @@ func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req
 			continue
 		}
 
-		var ev codexEvent
+		var ev event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			// Non-JSON line — emit as raw chunk.
 			if req.EventCh != nil {
-				req.EventCh <- SSEEvent{
-					Type:      SSEOutputChunk,
+				req.EventCh <- provider.Event{
+					Type:      provider.EventOutputChunk,
 					TaskID:    req.SessionID,
 					SessionID: req.SessionID,
 					Data:      map[string]any{"chunk": string(line)},
@@ -112,8 +122,8 @@ func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req
 			if ev.Content != "" {
 				outputParts = append(outputParts, ev.Content)
 				if req.EventCh != nil {
-					req.EventCh <- SSEEvent{
-						Type:      SSEOutputChunk,
+					req.EventCh <- provider.Event{
+						Type:      provider.EventOutputChunk,
 						TaskID:    req.SessionID,
 						SessionID: req.SessionID,
 						Data: map[string]any{
@@ -127,8 +137,8 @@ func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req
 
 		case "exec_command_begin":
 			if req.EventCh != nil {
-				req.EventCh <- SSEEvent{
-					Type:      SSEToolCall,
+				req.EventCh <- provider.Event{
+					Type:      provider.EventToolCall,
 					TaskID:    req.SessionID,
 					SessionID: req.SessionID,
 					Data: map[string]any{
@@ -146,8 +156,8 @@ func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req
 				if len(output) > 500 {
 					output = output[:500] + "..."
 				}
-				req.EventCh <- SSEEvent{
-					Type:      SSEToolResult,
+				req.EventCh <- provider.Event{
+					Type:      provider.EventToolResult,
 					TaskID:    req.SessionID,
 					SessionID: req.SessionID,
 					Data: map[string]any{
@@ -160,19 +170,18 @@ func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req
 			}
 
 		case "turn.completed":
-			pr := &ProviderResult{
+			pr := &provider.Result{
 				Output: strings.Join(outputParts, ""),
 			}
 			if ev.Usage != nil {
 				pr.TokensIn = ev.Usage.InputTokens
 				pr.TokensOut = ev.Usage.OutputTokens
 			}
-			// Codex Pro is $200/month flat — no per-token cost.
-			pr.CostUSD = 0
+			pr.CostUSD = 0 // Codex Pro is flat-rate
 			finalResult = pr
 
 		case "turn.failed":
-			finalResult = &ProviderResult{
+			finalResult = &provider.Result{
 				Output:  strings.Join(outputParts, ""),
 				IsError: true,
 				Error:   ev.Error,
@@ -184,7 +193,7 @@ func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req
 	elapsed := time.Since(start)
 
 	if finalResult == nil {
-		finalResult = &ProviderResult{
+		finalResult = &provider.Result{
 			Output: strings.Join(outputParts, ""),
 		}
 		if len(stderr.Bytes()) > 0 {
@@ -215,25 +224,25 @@ func (p *CodexProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req
 
 // --- Codex JSONL Event Types ---
 
-type codexEvent struct {
-	Type     string      `json:"type"`
-	Content  string      `json:"content,omitempty"`
-	Command  string      `json:"command,omitempty"`
-	ExitCode *int        `json:"exit_code,omitempty"`
-	Output   string      `json:"output,omitempty"`
-	Usage    *codexUsage `json:"usage,omitempty"`
-	Error    string      `json:"error,omitempty"`
+type event struct {
+	Type     string  `json:"type"`
+	Content  string  `json:"content,omitempty"`
+	Command  string  `json:"command,omitempty"`
+	ExitCode *int    `json:"exit_code,omitempty"`
+	Output   string  `json:"output,omitempty"`
+	Usage    *usage  `json:"usage,omitempty"`
+	Error    string  `json:"error,omitempty"`
 }
 
-type codexUsage struct {
+type usage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 }
 
 // --- Arg Building ---
 
-// buildCodexArgs constructs the codex CLI argument list from a ProviderRequest.
-func buildCodexArgs(req ProviderRequest, streaming bool) []string {
+// BuildArgs constructs the codex CLI argument list from a Request.
+func BuildArgs(req provider.Request, streaming bool) []string {
 	args := []string{"exec"}
 
 	if streaming {
@@ -244,7 +253,6 @@ func buildCodexArgs(req ProviderRequest, streaming bool) []string {
 		args = append(args, "--model", req.Model)
 	}
 
-	// Permission mode mapping.
 	switch req.PermissionMode {
 	case "bypassPermissions":
 		args = append(args, "--full-auto")
@@ -268,13 +276,11 @@ func buildCodexArgs(req ProviderRequest, streaming bool) []string {
 
 	args = append(args, "--skip-git-repo-check")
 
-	// Session handling.
 	if req.Resume && req.SessionID != "" {
 		args = append(args, "resume", req.SessionID)
 	} else if req.Prompt != "" {
-		// Codex exec takes prompt as positional arg.
 		if len(req.Prompt) > 200*1024 {
-			logWarn("codex prompt exceeds 200KB, may cause issues", "len", len(req.Prompt))
+			// Log warning handled by caller if needed; just include it.
 		}
 		args = append(args, req.Prompt)
 	}
@@ -284,11 +290,10 @@ func buildCodexArgs(req ProviderRequest, streaming bool) []string {
 
 // --- Non-streaming Output Parsing ---
 
-// parseCodexOutput parses the collected output from codex exec --json.
-func parseCodexOutput(stdout, stderr []byte, exitCode int) *ProviderResult {
-	pr := &ProviderResult{}
+// ParseOutput parses the collected output from codex exec --json.
+func ParseOutput(stdout, stderr []byte, exitCode int) *provider.Result {
+	pr := &provider.Result{}
 
-	// Try to parse JSONL lines and find the final state.
 	var outputParts []string
 	lines := bytes.Split(stdout, []byte("\n"))
 	for _, line := range lines {
@@ -296,9 +301,8 @@ func parseCodexOutput(stdout, stderr []byte, exitCode int) *ProviderResult {
 		if len(line) == 0 {
 			continue
 		}
-		var ev codexEvent
+		var ev event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			// Not JSON — accumulate as raw output.
 			outputParts = append(outputParts, string(line))
 			continue
 		}
@@ -337,7 +341,8 @@ func parseCodexOutput(stdout, stderr []byte, exitCode int) *ProviderResult {
 
 // --- Codex Quota Status ---
 
-type codexQuota struct {
+// Quota holds codex usage quota information.
+type Quota struct {
 	HourlyPct  float64 `json:"hourlyPct"`
 	WeeklyPct  float64 `json:"weeklyPct"`
 	HourlyText string  `json:"hourlyText"`
@@ -346,19 +351,19 @@ type codexQuota struct {
 }
 
 var (
-	codexQuotaCache     *codexQuota
-	codexQuotaCacheTime time.Time
-	codexQuotaMu        sync.Mutex
+	quotaCache     *Quota
+	quotaCacheTime time.Time
+	quotaMu        sync.Mutex
 )
 
-// fetchCodexQuota runs `codex status` and parses the output for quota info.
+// FetchQuota runs `codex status` and parses the output for quota info.
 // Results are cached for 5 minutes.
-func fetchCodexQuota(binaryPath string) (*codexQuota, error) {
-	codexQuotaMu.Lock()
-	defer codexQuotaMu.Unlock()
+func FetchQuota(binaryPath string) (*Quota, error) {
+	quotaMu.Lock()
+	defer quotaMu.Unlock()
 
-	if codexQuotaCache != nil && time.Since(codexQuotaCacheTime) < 5*time.Minute {
-		return codexQuotaCache, nil
+	if quotaCache != nil && time.Since(quotaCacheTime) < 5*time.Minute {
+		return quotaCache, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -370,49 +375,45 @@ func fetchCodexQuota(binaryPath string) (*codexQuota, error) {
 		return nil, fmt.Errorf("codex status: %w", err)
 	}
 
-	q := parseCodexStatusOutput(string(out))
+	q := parseStatusOutput(string(out))
 	q.FetchedAt = time.Now().Format(time.RFC3339)
-	codexQuotaCache = q
-	codexQuotaCacheTime = time.Now()
+	quotaCache = q
+	quotaCacheTime = time.Now()
 	return q, nil
 }
 
-var (
-	// Match patterns like: "5h limit:  ████████████ 85% ..." or percentage patterns.
-	codexPctRe   = regexp.MustCompile(`(\d+(?:\.\d+)?)%`)
-	codexResetRe = regexp.MustCompile(`resets?\s+(.+?)(?:\)|$)`)
-)
-
-func parseCodexStatusOutput(output string) *codexQuota {
-	q := &codexQuota{}
+func parseStatusOutput(output string) *Quota {
+	q := &Quota{}
 	lines := strings.Split(output, "\n")
+
+	pctRe := pctRegexp()
+	resetRe := resetRegexp()
 
 	for i, line := range lines {
 		lower := strings.ToLower(line)
 
 		if strings.Contains(lower, "5h") || strings.Contains(lower, "hourly") || strings.Contains(lower, "5-hour") {
-			if m := codexPctRe.FindStringSubmatch(line); len(m) > 1 {
+			if m := pctRe.FindStringSubmatch(line); len(m) > 1 {
 				fmt.Sscanf(m[1], "%f", &q.HourlyPct)
 			}
-			// Check this line and the next for reset text.
 			searchText := line
 			if i+1 < len(lines) {
 				searchText += " " + lines[i+1]
 			}
-			if m := codexResetRe.FindStringSubmatch(searchText); len(m) > 1 {
+			if m := resetRe.FindStringSubmatch(searchText); len(m) > 1 {
 				q.HourlyText = "resets " + strings.TrimSpace(m[1])
 			}
 		}
 
 		if strings.Contains(lower, "weekly") || strings.Contains(lower, "week") {
-			if m := codexPctRe.FindStringSubmatch(line); len(m) > 1 {
+			if m := pctRe.FindStringSubmatch(line); len(m) > 1 {
 				fmt.Sscanf(m[1], "%f", &q.WeeklyPct)
 			}
 			searchText := line
 			if i+1 < len(lines) {
 				searchText += " " + lines[i+1]
 			}
-			if m := codexResetRe.FindStringSubmatch(searchText); len(m) > 1 {
+			if m := resetRe.FindStringSubmatch(searchText); len(m) > 1 {
 				q.WeeklyText = "resets " + strings.TrimSpace(m[1])
 			}
 		}

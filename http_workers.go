@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"tetora/internal/provider/codex"
 )
 
 func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
@@ -177,15 +179,8 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 
 		// Find the codex binary path from registry or default.
 		binaryPath := "codex"
-		if s.cfg.registry != nil {
-			if p, err := s.cfg.registry.get("codex"); err == nil {
-				if cp, ok := p.(*CodexProvider); ok {
-					binaryPath = cp.binaryPath
-				}
-			}
-		}
 
-		q, err := fetchCodexQuota(binaryPath)
+		q, err := codex.FetchQuota(binaryPath)
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

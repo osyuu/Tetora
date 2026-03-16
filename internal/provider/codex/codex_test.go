@@ -1,16 +1,18 @@
-package main
+package codex
 
 import (
 	"strings"
 	"testing"
+
+	"tetora/internal/provider"
 )
 
-func TestBuildCodexArgs_Basic(t *testing.T) {
-	req := ProviderRequest{
+func TestBuildArgs_Basic(t *testing.T) {
+	req := provider.Request{
 		Model:  "o4-mini",
 		Prompt: "hello",
 	}
-	args := buildCodexArgs(req, true)
+	args := BuildArgs(req, true)
 
 	if args[0] != "exec" {
 		t.Errorf("expected first arg 'exec', got %s", args[0])
@@ -27,13 +29,13 @@ func TestBuildCodexArgs_Basic(t *testing.T) {
 	}
 
 	// Non-streaming should NOT have --json
-	args2 := buildCodexArgs(req, false)
+	args2 := BuildArgs(req, false)
 	if containsArg(args2, "--json") {
 		t.Error("should not have --json when not streaming")
 	}
 }
 
-func TestBuildCodexArgs_PermissionModes(t *testing.T) {
+func TestBuildArgs_PermissionModes(t *testing.T) {
 	tests := []struct {
 		mode     string
 		expected string
@@ -43,24 +45,24 @@ func TestBuildCodexArgs_PermissionModes(t *testing.T) {
 		{"", "--sandbox"},
 	}
 	for _, tc := range tests {
-		req := ProviderRequest{
+		req := provider.Request{
 			PermissionMode: tc.mode,
 			Prompt:         "test",
 		}
-		args := buildCodexArgs(req, false)
+		args := BuildArgs(req, false)
 		if !containsArg(args, tc.expected) {
 			t.Errorf("mode %q: expected %s in args %v", tc.mode, tc.expected, args)
 		}
 	}
 }
 
-func TestBuildCodexArgs_Resume(t *testing.T) {
-	req := ProviderRequest{
+func TestBuildArgs_Resume(t *testing.T) {
+	req := provider.Request{
 		Resume:    true,
 		SessionID: "sess-123",
 		Model:     "o4-mini",
 	}
-	args := buildCodexArgs(req, false)
+	args := BuildArgs(req, false)
 	// Should end with: resume sess-123
 	if !containsArg(args, "resume") {
 		t.Error("expected 'resume' in args")
@@ -70,34 +72,34 @@ func TestBuildCodexArgs_Resume(t *testing.T) {
 	}
 }
 
-func TestBuildCodexArgs_Ephemeral(t *testing.T) {
+func TestBuildArgs_Ephemeral(t *testing.T) {
 	// PersistSession=false → --ephemeral
-	req := ProviderRequest{
+	req := provider.Request{
 		PersistSession: false,
 		Prompt:         "test",
 	}
-	args := buildCodexArgs(req, false)
+	args := BuildArgs(req, false)
 	if !containsArg(args, "--ephemeral") {
 		t.Errorf("expected --ephemeral, args: %v", args)
 	}
 
 	// PersistSession=true → no --ephemeral
-	req2 := ProviderRequest{
+	req2 := provider.Request{
 		PersistSession: true,
 		Prompt:         "test",
 	}
-	args2 := buildCodexArgs(req2, false)
+	args2 := BuildArgs(req2, false)
 	if containsArg(args2, "--ephemeral") {
 		t.Errorf("should not have --ephemeral when PersistSession, args: %v", args2)
 	}
 }
 
-func TestParseCodexEvent_AgentMessage(t *testing.T) {
+func TestParseOutput_AgentMessage(t *testing.T) {
 	jsonl := `{"type":"agent_message","content":"Hello world"}
 {"type":"agent_message","content":" more text"}
 {"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}`
 
-	pr := parseCodexOutput([]byte(jsonl), nil, 0)
+	pr := ParseOutput([]byte(jsonl), nil, 0)
 	if pr.IsError {
 		t.Fatalf("unexpected error: %s", pr.Error)
 	}
@@ -106,11 +108,11 @@ func TestParseCodexEvent_AgentMessage(t *testing.T) {
 	}
 }
 
-func TestParseCodexEvent_TurnCompleted(t *testing.T) {
+func TestParseOutput_TurnCompleted(t *testing.T) {
 	jsonl := `{"type":"agent_message","content":"Done"}
 {"type":"turn.completed","usage":{"input_tokens":1500,"output_tokens":800}}`
 
-	pr := parseCodexOutput([]byte(jsonl), nil, 0)
+	pr := ParseOutput([]byte(jsonl), nil, 0)
 	if pr.TokensIn != 1500 {
 		t.Errorf("expected TokensIn=1500, got %d", pr.TokensIn)
 	}
@@ -119,11 +121,11 @@ func TestParseCodexEvent_TurnCompleted(t *testing.T) {
 	}
 }
 
-func TestParseCodexEvent_TurnFailed(t *testing.T) {
+func TestParseOutput_TurnFailed(t *testing.T) {
 	jsonl := `{"type":"agent_message","content":"Trying..."}
 {"type":"turn.failed","error":"context cancelled"}`
 
-	pr := parseCodexOutput([]byte(jsonl), nil, 1)
+	pr := ParseOutput([]byte(jsonl), nil, 1)
 	if !pr.IsError {
 		t.Fatal("expected error")
 	}

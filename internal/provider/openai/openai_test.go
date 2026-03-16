@@ -1,4 +1,4 @@
-package main
+package openai
 
 import (
 	"context"
@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"tetora/internal/provider"
 )
 
 func TestOpenAIProvider_ImplementsToolCapableProvider(t *testing.T) {
-	var _ ToolCapableProvider = (*OpenAIProvider)(nil)
+	var _ provider.ToolCapableProvider = (*Provider)(nil)
 }
 
 func TestOpenAIProvider_ToolCallParsing_NonStreaming(t *testing.T) {
@@ -38,14 +40,9 @@ func TestOpenAIProvider_ToolCallParsing_NonStreaming(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test-openai",
-		baseURL:      srv.URL,
-		apiKey:       "test-key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test-openai", srv.URL, "test-key", "gpt-4o")
 
-	result, err := p.Execute(context.Background(), ProviderRequest{Prompt: "read /etc/hosts"})
+	result, err := p.Execute(context.Background(), provider.Request{Prompt: "read /etc/hosts"})
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
@@ -83,16 +80,16 @@ func TestOpenAIProvider_FinishReasonMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.openAIReason, func(t *testing.T) {
-			got := mapOpenAIFinishReason(tt.openAIReason)
+			got := MapFinishReason(tt.openAIReason)
 			if got != tt.wantStop {
-				t.Errorf("mapOpenAIFinishReason(%q) = %q, want %q", tt.openAIReason, got, tt.wantStop)
+				t.Errorf("MapFinishReason(%q) = %q, want %q", tt.openAIReason, got, tt.wantStop)
 			}
 		})
 	}
 }
 
 func TestOpenAIToolFormat(t *testing.T) {
-	tools := []ToolDef{
+	tools := []provider.ToolDef{
 		{
 			Name:        "read_file",
 			Description: "Read a file from disk",
@@ -105,11 +102,11 @@ func TestOpenAIToolFormat(t *testing.T) {
 		},
 	}
 
-	var converted []openAITool
+	var converted []tool
 	for _, t := range tools {
-		converted = append(converted, openAITool{
+		converted = append(converted, tool{
 			Type: "function",
-			Function: openAIFunction{
+			Function: function{
 				Name:        t.Name,
 				Description: t.Description,
 				Parameters:  t.InputSchema,
@@ -145,7 +142,7 @@ func TestOpenAIToolFormat(t *testing.T) {
 }
 
 func TestOpenAIProvider_MultiTurnMessages(t *testing.T) {
-	var capturedBody openAIRequest
+	var capturedBody request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&capturedBody)
 		w.Header().Set("Content-Type", "application/json")
@@ -160,30 +157,25 @@ func TestOpenAIProvider_MultiTurnMessages(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test-openai",
-		baseURL:      srv.URL,
-		apiKey:       "test-key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test-openai", srv.URL, "test-key", "gpt-4o")
 
 	// Build multi-turn messages (Claude format).
-	assistantContent, _ := json.Marshal([]ContentBlock{
+	assistantContent, _ := json.Marshal([]provider.ContentBlock{
 		{Type: "text", Text: "Let me check."},
 		{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"/etc/hosts"}`)},
 	})
-	userContent, _ := json.Marshal([]ContentBlock{
+	userContent, _ := json.Marshal([]provider.ContentBlock{
 		{Type: "tool_result", ToolUseID: "call_1", Content: "127.0.0.1 localhost"},
 	})
 
-	result, err := p.ExecuteWithTools(context.Background(), ProviderRequest{
+	result, err := p.ExecuteWithTools(context.Background(), provider.Request{
 		Prompt:       "read /etc/hosts",
 		SystemPrompt: "You are helpful.",
-		Messages: []Message{
+		Messages: []provider.Message{
 			{Role: "assistant", Content: assistantContent},
 			{Role: "user", Content: userContent},
 		},
-		Tools: []ToolDef{
+		Tools: []provider.ToolDef{
 			{
 				Name:        "read_file",
 				Description: "Read a file",
@@ -253,7 +245,7 @@ func TestOpenAIProvider_MultiTurnMessages(t *testing.T) {
 }
 
 func TestOpenAIProvider_MultipleToolResults(t *testing.T) {
-	var capturedBody openAIRequest
+	var capturedBody request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&capturedBody)
 		w.Header().Set("Content-Type", "application/json")
@@ -265,26 +257,21 @@ func TestOpenAIProvider_MultipleToolResults(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test",
-		baseURL:      srv.URL,
-		apiKey:       "key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test", srv.URL, "key", "gpt-4o")
 
 	// Two tool calls in one assistant message, two tool results in one user message.
-	assistantContent, _ := json.Marshal([]ContentBlock{
+	assistantContent, _ := json.Marshal([]provider.ContentBlock{
 		{Type: "tool_use", ID: "call_a", Name: "read_file", Input: json.RawMessage(`{"path":"/a"}`)},
 		{Type: "tool_use", ID: "call_b", Name: "read_file", Input: json.RawMessage(`{"path":"/b"}`)},
 	})
-	userContent, _ := json.Marshal([]ContentBlock{
+	userContent, _ := json.Marshal([]provider.ContentBlock{
 		{Type: "tool_result", ToolUseID: "call_a", Content: "content of a"},
 		{Type: "tool_result", ToolUseID: "call_b", Content: "content of b"},
 	})
 
-	_, err := p.ExecuteWithTools(context.Background(), ProviderRequest{
+	_, err := p.ExecuteWithTools(context.Background(), provider.Request{
 		Prompt: "read both",
-		Messages: []Message{
+		Messages: []provider.Message{
 			{Role: "assistant", Content: assistantContent},
 			{Role: "user", Content: userContent},
 		},
@@ -298,7 +285,7 @@ func TestOpenAIProvider_MultipleToolResults(t *testing.T) {
 		t.Fatalf("len(Messages) = %d, want 4", len(capturedBody.Messages))
 	}
 
-	// Messages[2] should be assistant with 2 tool calls.
+	// Messages[1] should be assistant with 2 tool calls.
 	if len(capturedBody.Messages[1].ToolCalls) != 2 {
 		t.Errorf("Messages[1].ToolCalls = %d, want 2", len(capturedBody.Messages[1].ToolCalls))
 	}
@@ -345,15 +332,10 @@ func TestOpenAIProvider_StreamingToolCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test",
-		baseURL:      srv.URL,
-		apiKey:       "key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test", srv.URL, "key", "gpt-4o")
 
-	eventCh := make(chan SSEEvent, 100)
-	result, err := p.Execute(context.Background(), ProviderRequest{
+	eventCh := make(chan provider.Event, 100)
+	result, err := p.Execute(context.Background(), provider.Request{
 		Prompt:  "list files",
 		EventCh: eventCh,
 	})
@@ -401,15 +383,10 @@ func TestOpenAIProvider_StreamingEndTurn(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test",
-		baseURL:      srv.URL,
-		apiKey:       "key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test", srv.URL, "key", "gpt-4o")
 
-	eventCh := make(chan SSEEvent, 100)
-	result, err := p.Execute(context.Background(), ProviderRequest{
+	eventCh := make(chan provider.Event, 100)
+	result, err := p.Execute(context.Background(), provider.Request{
 		Prompt:  "hello",
 		EventCh: eventCh,
 	})
@@ -425,7 +402,7 @@ func TestOpenAIProvider_StreamingEndTurn(t *testing.T) {
 }
 
 func TestOpenAIProvider_ToolsIncludedInRequest(t *testing.T) {
-	var capturedBody openAIRequest
+	var capturedBody request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&capturedBody)
 		w.Header().Set("Content-Type", "application/json")
@@ -437,16 +414,11 @@ func TestOpenAIProvider_ToolsIncludedInRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test",
-		baseURL:      srv.URL,
-		apiKey:       "key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test", srv.URL, "key", "gpt-4o")
 
-	_, err := p.ExecuteWithTools(context.Background(), ProviderRequest{
+	_, err := p.ExecuteWithTools(context.Background(), provider.Request{
 		Prompt: "test",
-		Tools: []ToolDef{
+		Tools: []provider.ToolDef{
 			{
 				Name:        "read_file",
 				Description: "Read a file from disk",
@@ -478,7 +450,7 @@ func TestOpenAIProvider_ToolsIncludedInRequest(t *testing.T) {
 }
 
 func TestOpenAIProvider_NoToolsNoToolsInRequest(t *testing.T) {
-	var capturedBody openAIRequest
+	var capturedBody request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&capturedBody)
 		w.Header().Set("Content-Type", "application/json")
@@ -489,14 +461,9 @@ func TestOpenAIProvider_NoToolsNoToolsInRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test",
-		baseURL:      srv.URL,
-		apiKey:       "key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test", srv.URL, "key", "gpt-4o")
 
-	_, err := p.Execute(context.Background(), ProviderRequest{Prompt: "hi"})
+	_, err := p.Execute(context.Background(), provider.Request{Prompt: "hi"})
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -506,13 +473,13 @@ func TestOpenAIProvider_NoToolsNoToolsInRequest(t *testing.T) {
 	}
 }
 
-func TestConvertToOpenAIMessages_AssistantWithToolCalls(t *testing.T) {
-	content, _ := json.Marshal([]ContentBlock{
+func TestConvertMessages_AssistantWithToolCalls(t *testing.T) {
+	content, _ := json.Marshal([]provider.ContentBlock{
 		{Type: "text", Text: "I will check."},
 		{Type: "tool_use", ID: "call_1", Name: "exec", Input: json.RawMessage(`{"cmd":"ls"}`)},
 	})
 
-	msgs := convertToOpenAIMessages(Message{Role: "assistant", Content: content})
+	msgs := convertMessages(provider.Message{Role: "assistant", Content: content})
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
 	}
@@ -533,13 +500,13 @@ func TestConvertToOpenAIMessages_AssistantWithToolCalls(t *testing.T) {
 	}
 }
 
-func TestConvertToOpenAIMessages_UserWithToolResults(t *testing.T) {
-	content, _ := json.Marshal([]ContentBlock{
+func TestConvertMessages_UserWithToolResults(t *testing.T) {
+	content, _ := json.Marshal([]provider.ContentBlock{
 		{Type: "tool_result", ToolUseID: "call_1", Content: "result 1"},
 		{Type: "tool_result", ToolUseID: "call_2", Content: "result 2"},
 	})
 
-	msgs := convertToOpenAIMessages(Message{Role: "user", Content: content})
+	msgs := convertMessages(provider.Message{Role: "user", Content: content})
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
 	}
@@ -560,9 +527,9 @@ func TestConvertToOpenAIMessages_UserWithToolResults(t *testing.T) {
 	}
 }
 
-func TestConvertToOpenAIMessages_PlainString(t *testing.T) {
+func TestConvertMessages_PlainString(t *testing.T) {
 	content, _ := json.Marshal("plain message")
-	msgs := convertToOpenAIMessages(Message{Role: "user", Content: content})
+	msgs := convertMessages(provider.Message{Role: "user", Content: content})
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
 	}
@@ -578,14 +545,9 @@ func TestOpenAIProvider_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test",
-		baseURL:      srv.URL,
-		apiKey:       "key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test", srv.URL, "key", "gpt-4o")
 
-	result, err := p.Execute(context.Background(), ProviderRequest{Prompt: "hello"})
+	result, err := p.Execute(context.Background(), provider.Request{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
@@ -622,15 +584,10 @@ func TestOpenAIProvider_MultipleToolCallsStreaming(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &OpenAIProvider{
-		name:         "test",
-		baseURL:      srv.URL,
-		apiKey:       "key",
-		defaultModel: "gpt-4o",
-	}
+	p := New("test", srv.URL, "key", "gpt-4o")
 
-	eventCh := make(chan SSEEvent, 100)
-	result, err := p.Execute(context.Background(), ProviderRequest{
+	eventCh := make(chan provider.Event, 100)
+	result, err := p.Execute(context.Background(), provider.Request{
 		Prompt:  "read both",
 		EventCh: eventCh,
 	})
@@ -658,5 +615,162 @@ func TestOpenAIProvider_MultipleToolCallsStreaming(t *testing.T) {
 	}
 	if string(result.ToolCalls[1].Input) != `{"path":"/b"}` {
 		t.Errorf("ToolCalls[1].Input = %q, want %q", string(result.ToolCalls[1].Input), `{"path":"/b"}`)
+	}
+}
+
+// --- ParseResponse tests ---
+
+func TestParseResponse_Success(t *testing.T) {
+	data := []byte(`{
+		"id": "chatcmpl-123",
+		"choices": [{"message": {"content": "Hello!"}, "finish_reason": "stop"}],
+		"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+	}`)
+	result := ParseResponse(data, 500)
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.Output != "Hello!" {
+		t.Errorf("expected Hello!, got %s", result.Output)
+	}
+	if result.SessionID != "chatcmpl-123" {
+		t.Errorf("expected chatcmpl-123, got %s", result.SessionID)
+	}
+	if result.DurationMs != 500 {
+		t.Errorf("expected 500ms, got %d", result.DurationMs)
+	}
+	if result.CostUSD <= 0 {
+		t.Error("expected positive cost estimate")
+	}
+	if result.StopReason != "end_turn" {
+		t.Errorf("expected StopReason=end_turn, got %s", result.StopReason)
+	}
+}
+
+func TestParseResponse_ToolCalls(t *testing.T) {
+	data := []byte(`{
+		"id": "chatcmpl-tc",
+		"choices": [{
+			"message": {
+				"content": "Checking.",
+				"tool_calls": [
+					{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"/tmp\"}"}}
+				]
+			},
+			"finish_reason": "tool_calls"
+		}],
+		"usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80}
+	}`)
+	result := ParseResponse(data, 200)
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.StopReason != "tool_use" {
+		t.Errorf("StopReason = %q, want tool_use", result.StopReason)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("len(ToolCalls) = %d, want 1", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].ID != "call_1" {
+		t.Errorf("ToolCalls[0].ID = %q, want call_1", result.ToolCalls[0].ID)
+	}
+	if result.ToolCalls[0].Name != "read_file" {
+		t.Errorf("ToolCalls[0].Name = %q, want read_file", result.ToolCalls[0].Name)
+	}
+}
+
+func TestParseResponse_APIError(t *testing.T) {
+	data := []byte(`{
+		"error": {"message": "rate limit exceeded", "type": "rate_limit"}
+	}`)
+	result := ParseResponse(data, 100)
+	if !result.IsError {
+		t.Fatal("expected error")
+	}
+	if result.Error != "rate limit exceeded" {
+		t.Errorf("expected rate limit exceeded, got %s", result.Error)
+	}
+}
+
+func TestParseResponse_InvalidJSON(t *testing.T) {
+	data := []byte(`not json`)
+	result := ParseResponse(data, 100)
+	if !result.IsError {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestParseResponse_NoChoices(t *testing.T) {
+	data := []byte(`{"id": "x", "choices": []}`)
+	result := ParseResponse(data, 100)
+	if result.IsError {
+		t.Fatal("should not error with empty choices")
+	}
+	if result.Output != "" {
+		t.Errorf("expected empty output, got %s", result.Output)
+	}
+}
+
+func TestParseResponse_NoUsage(t *testing.T) {
+	data := []byte(`{
+		"id": "x",
+		"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]
+	}`)
+	result := ParseResponse(data, 200)
+	if result.CostUSD != 0 {
+		t.Errorf("expected 0 cost without usage, got %f", result.CostUSD)
+	}
+}
+
+func TestParseResponse_TokensExtracted(t *testing.T) {
+	data := []byte(`{
+		"id": "chatcmpl-tok",
+		"choices": [{"message": {"content": "Hello!"}, "finish_reason": "stop"}],
+		"usage": {"prompt_tokens": 200, "completion_tokens": 50, "total_tokens": 250}
+	}`)
+	result := ParseResponse(data, 300)
+	if result.TokensIn != 200 {
+		t.Errorf("expected TokensIn=200, got %d", result.TokensIn)
+	}
+	if result.TokensOut != 50 {
+		t.Errorf("expected TokensOut=50, got %d", result.TokensOut)
+	}
+	if result.ProviderMs != 300 {
+		t.Errorf("expected ProviderMs=300, got %d", result.ProviderMs)
+	}
+}
+
+func TestParseResponse_NoUsageNoTokens(t *testing.T) {
+	data := []byte(`{
+		"id": "chatcmpl-x",
+		"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]
+	}`)
+	result := ParseResponse(data, 100)
+	if result.TokensIn != 0 {
+		t.Errorf("expected TokensIn=0, got %d", result.TokensIn)
+	}
+	if result.TokensOut != 0 {
+		t.Errorf("expected TokensOut=0, got %d", result.TokensOut)
+	}
+	if result.ProviderMs != 100 {
+		t.Errorf("expected ProviderMs=100, got %d", result.ProviderMs)
+	}
+}
+
+// --- EstimateCost tests ---
+
+func TestEstimateCost(t *testing.T) {
+	// 1000 input + 1000 output tokens
+	cost := EstimateCost(1000, 1000)
+	expected := 1000*2.50/1_000_000 + 1000*10.00/1_000_000
+	if cost != expected {
+		t.Errorf("expected %f, got %f", expected, cost)
+	}
+}
+
+func TestEstimateCost_Zero(t *testing.T) {
+	cost := EstimateCost(0, 0)
+	if cost != 0 {
+		t.Errorf("expected 0, got %f", cost)
 	}
 }
