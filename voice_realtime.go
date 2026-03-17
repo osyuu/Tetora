@@ -7,10 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/discord"
 	"tetora/internal/log"
 )
 
@@ -609,7 +608,7 @@ func (rs *realtimeSession) wsConnectWithAuth(rawURL, apiKey string) (*wsConn, er
 		return nil, fmt.Errorf("handshake failed: accept key mismatch")
 	}
 
-	return &wsConn{conn: conn, reader: reader}, nil
+	return discord.NewWsConn(conn, reader), nil
 }
 
 // --- WebSocket Upgrade (HTTP -> WebSocket) ---
@@ -653,12 +652,10 @@ func wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsConn, error) {
 		return nil, fmt.Errorf("flush upgrade response: %w", err)
 	}
 
-	return &wsConn{conn: conn, reader: bufrw.Reader}, nil
+	return discord.NewWsConn(conn, bufrw.Reader), nil
 }
 
-// Note: wsAcceptKey is defined in discord.go
-
-// --- WebSocket Frame Reading/Writing ---
+// --- WebSocket opcode constants ---
 
 const (
 	wsText   = 1
@@ -667,105 +664,6 @@ const (
 	wsPing   = 9
 	wsPong   = 10
 )
-
-func (ws *wsConn) ReadMessage() (opcode int, payload []byte, err error) {
-	// Read frame header (2 bytes minimum).
-	header := make([]byte, 2)
-	if _, err := io.ReadFull(ws.reader, header); err != nil {
-		return 0, nil, err
-	}
-
-	fin := (header[0] & 0x80) != 0
-	opcode = int(header[0] & 0x0F)
-	masked := (header[1] & 0x80) != 0
-	payloadLen := int64(header[1] & 0x7F)
-
-	// Read extended payload length.
-	if payloadLen == 126 {
-		lenBuf := make([]byte, 2)
-		if _, err := io.ReadFull(ws.reader, lenBuf); err != nil {
-			return 0, nil, err
-		}
-		payloadLen = int64(binary.BigEndian.Uint16(lenBuf))
-	} else if payloadLen == 127 {
-		lenBuf := make([]byte, 8)
-		if _, err := io.ReadFull(ws.reader, lenBuf); err != nil {
-			return 0, nil, err
-		}
-		payloadLen = int64(binary.BigEndian.Uint64(lenBuf))
-	}
-
-	// Read masking key if present.
-	var maskKey []byte
-	if masked {
-		maskKey = make([]byte, 4)
-		if _, err := io.ReadFull(ws.reader, maskKey); err != nil {
-			return 0, nil, err
-		}
-	}
-
-	// Read payload.
-	payload = make([]byte, payloadLen)
-	if _, err := io.ReadFull(ws.reader, payload); err != nil {
-		return 0, nil, err
-	}
-
-	// Unmask payload.
-	if masked {
-		for i := range payload {
-			payload[i] ^= maskKey[i%4]
-		}
-	}
-
-	_ = fin // ignore for now (assume single-frame messages)
-
-	// Handle control frames.
-	if opcode == wsClose {
-		return opcode, payload, io.EOF
-	}
-	if opcode == wsPing {
-		// Respond with pong.
-		ws.WriteMessage(wsPong, payload)
-		return ws.ReadMessage() // read next message
-	}
-
-	return opcode, payload, nil
-}
-
-func (ws *wsConn) WriteMessage(opcode int, payload []byte) error {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
-	// Build frame header.
-	header := []byte{0x80 | byte(opcode)} // FIN=1, opcode
-	payloadLen := len(payload)
-
-	if payloadLen < 126 {
-		header = append(header, byte(payloadLen))
-	} else if payloadLen <= 0xFFFF {
-		header = append(header, 126)
-		lenBuf := make([]byte, 2)
-		binary.BigEndian.PutUint16(lenBuf, uint16(payloadLen))
-		header = append(header, lenBuf...)
-	} else {
-		header = append(header, 127)
-		lenBuf := make([]byte, 8)
-		binary.BigEndian.PutUint64(lenBuf, uint64(payloadLen))
-		header = append(header, lenBuf...)
-	}
-
-	// Write header and payload.
-	if _, err := ws.conn.Write(header); err != nil {
-		return err
-	}
-	if _, err := ws.conn.Write(payload); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// Note: wsConn.Close is defined in discord.go
 
 // --- Utilities ---
 

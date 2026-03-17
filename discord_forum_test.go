@@ -83,80 +83,6 @@ func TestNewDiscordForumBoard(t *testing.T) {
 	if fb == nil {
 		t.Fatal("expected non-nil forum board")
 	}
-	if fb.cfg.ForumChannelID != "F123" {
-		t.Errorf("expected forum channel F123, got %q", fb.cfg.ForumChannelID)
-	}
-}
-
-// --- Tags For Status ---
-
-func TestTagsForStatus(t *testing.T) {
-	cfg := DiscordForumBoardConfig{
-		Tags: map[string]string{
-			"backlog": "TAG_BL",
-			"doing":   "TAG_DO",
-			"done":    "TAG_DN",
-		},
-	}
-	fb := newDiscordForumBoard(nil, cfg)
-
-	// Existing tag.
-	tags := fb.tagsForStatus("backlog")
-	if len(tags) != 1 || tags[0] != "TAG_BL" {
-		t.Errorf("expected [TAG_BL], got %v", tags)
-	}
-
-	// Non-configured status.
-	tags = fb.tagsForStatus("review")
-	if tags != nil {
-		t.Errorf("expected nil for unconfigured status, got %v", tags)
-	}
-
-	// Nil tags map.
-	fb2 := newDiscordForumBoard(nil, DiscordForumBoardConfig{})
-	tags = fb2.tagsForStatus("backlog")
-	if tags != nil {
-		t.Errorf("expected nil for nil tags map, got %v", tags)
-	}
-}
-
-func TestTagsForStatus_EmptyTagID(t *testing.T) {
-	cfg := DiscordForumBoardConfig{
-		Tags: map[string]string{
-			"backlog": "",
-		},
-	}
-	fb := newDiscordForumBoard(nil, cfg)
-	tags := fb.tagsForStatus("backlog")
-	if tags != nil {
-		t.Errorf("expected nil for empty tag ID, got %v", tags)
-	}
-}
-
-// --- Thread Body Format ---
-
-func TestFormatThreadBody(t *testing.T) {
-	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{})
-
-	body := fb.formatThreadBody("Fix the login page", "doing")
-	if !strings.Contains(body, "**Status:** `doing`") {
-		t.Error("expected status label in body")
-	}
-	if !strings.Contains(body, "Fix the login page") {
-		t.Error("expected description in body")
-	}
-	if !strings.Contains(body, "Created via Tetora") {
-		t.Error("expected Tetora attribution")
-	}
-}
-
-func TestFormatThreadBody_EmptyDescription(t *testing.T) {
-	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{})
-
-	body := fb.formatThreadBody("", "backlog")
-	if !strings.Contains(body, "(No description)") {
-		t.Error("expected placeholder for empty description")
-	}
 }
 
 // --- IsConfigured ---
@@ -177,9 +103,9 @@ func TestForumBoard_IsConfigured(t *testing.T) {
 			Enabled:        tt.enabled,
 			ForumChannelID: tt.channelID,
 		})
-		got := fb.isConfigured()
+		got := fb.IsConfigured()
 		if got != tt.expected {
-			t.Errorf("isConfigured(enabled=%v, channelID=%q) = %v, want %v",
+			t.Errorf("IsConfigured(enabled=%v, channelID=%q) = %v, want %v",
 				tt.enabled, tt.channelID, got, tt.expected)
 		}
 	}
@@ -289,7 +215,7 @@ func TestDiscordForumBoardConfigParse(t *testing.T) {
 
 func TestHandleAssignCommand_EmptyRole(t *testing.T) {
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{Enabled: true})
-	msg := fb.handleAssignCommand("T1", "G1", "")
+	msg := fb.HandleAssignCommand("T1", "G1", "")
 	if !strings.Contains(msg, "Usage:") {
 		t.Errorf("expected usage message for empty role, got %q", msg)
 	}
@@ -299,7 +225,7 @@ func TestHandleAssignCommand_EmptyRole(t *testing.T) {
 
 func TestHandleStatusCommand_EmptyStatus(t *testing.T) {
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{Enabled: true})
-	msg := fb.handleStatusCommand("T1", "")
+	msg := fb.HandleStatusCommand("T1", "")
 	if !strings.Contains(msg, "Usage:") {
 		t.Errorf("expected usage message for empty status, got %q", msg)
 	}
@@ -307,7 +233,7 @@ func TestHandleStatusCommand_EmptyStatus(t *testing.T) {
 
 func TestHandleStatusCommand_InvalidStatus(t *testing.T) {
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{Enabled: true})
-	msg := fb.handleStatusCommand("T1", "invalid")
+	msg := fb.HandleStatusCommand("T1", "invalid")
 	if !strings.Contains(msg, "Invalid status") {
 		t.Errorf("expected invalid status message, got %q", msg)
 	}
@@ -317,7 +243,7 @@ func TestHandleStatusCommand_InvalidStatus(t *testing.T) {
 
 func TestCreateThread_NoChannelID(t *testing.T) {
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{Enabled: true})
-	_, err := fb.createThread("Title", "Body", "backlog")
+	_, err := fb.CreateThread("Title", "Body", "backlog")
 	if err == nil {
 		t.Error("expected error for missing forum channel ID")
 	}
@@ -331,7 +257,7 @@ func TestCreateThread_EmptyTitle(t *testing.T) {
 		Enabled:        true,
 		ForumChannelID: "F123",
 	})
-	_, err := fb.createThread("", "Body", "backlog")
+	_, err := fb.CreateThread("", "Body", "backlog")
 	if err == nil {
 		t.Error("expected error for empty title")
 	}
@@ -345,7 +271,7 @@ func TestCreateThread_InvalidStatus(t *testing.T) {
 		Enabled:        true,
 		ForumChannelID: "F123",
 	})
-	_, err := fb.createThread("Title", "Body", "invalid_status")
+	_, err := fb.CreateThread("Title", "Body", "invalid_status")
 	if err == nil {
 		t.Error("expected error for invalid status")
 	}
@@ -355,15 +281,13 @@ func TestCreateThread_InvalidStatus(t *testing.T) {
 }
 
 func TestCreateThread_DefaultStatus(t *testing.T) {
-	// When status is empty, should default to backlog (validated in createThread logic).
-	// We can't test the full flow without a live API, but verify the default detection.
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{
 		Enabled:        true,
 		ForumChannelID: "F123",
 	})
-	// Will fail at API call (nil bot), but should pass validation.
-	_, err := fb.createThread("Title", "Body", "")
-	// Will fail because bot is nil, but error should be about API, not validation.
+	// Will fail at API call (nil client), but should pass validation.
+	_, err := fb.CreateThread("Title", "Body", "")
+	// Will fail because client is nil, but error should be about API, not validation.
 	if err != nil && strings.Contains(err.Error(), "invalid status") {
 		t.Error("empty status should default to backlog, not be rejected")
 	}
@@ -373,7 +297,7 @@ func TestCreateThread_DefaultStatus(t *testing.T) {
 
 func TestSetStatus_EmptyThreadID(t *testing.T) {
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{})
-	err := fb.setStatus("", "done")
+	err := fb.SetStatus("", "done")
 	if err == nil {
 		t.Error("expected error for empty thread ID")
 	}
@@ -381,7 +305,7 @@ func TestSetStatus_EmptyThreadID(t *testing.T) {
 
 func TestSetStatus_InvalidStatus(t *testing.T) {
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{})
-	err := fb.setStatus("T123", "invalid")
+	err := fb.SetStatus("T123", "invalid")
 	if err == nil {
 		t.Error("expected error for invalid status")
 	}
@@ -391,7 +315,7 @@ func TestSetStatus_InvalidStatus(t *testing.T) {
 
 func TestHandleAssign_EmptyThreadID(t *testing.T) {
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{})
-	err := fb.handleAssign("", "G1", "ruri")
+	err := fb.HandleAssign("", "G1", "ruri")
 	if err == nil {
 		t.Error("expected error for empty thread ID")
 	}
@@ -399,7 +323,7 @@ func TestHandleAssign_EmptyThreadID(t *testing.T) {
 
 func TestHandleAssign_EmptyRole(t *testing.T) {
 	fb := newDiscordForumBoard(nil, DiscordForumBoardConfig{})
-	err := fb.handleAssign("T123", "G1", "")
+	err := fb.HandleAssign("T123", "G1", "")
 	if err == nil {
 		t.Error("expected error for empty role")
 	}

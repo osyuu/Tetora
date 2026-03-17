@@ -243,7 +243,7 @@ func (db *DiscordBot) handleEvent(payload gatewayPayload) {
 
 			// P14.5: Auto-join voice channels if configured
 			if db.cfg.Discord.Voice.Enabled && len(db.cfg.Discord.Voice.AutoJoin) > 0 {
-				go db.voice.autoJoinChannels()
+				go db.voice.AutoJoinChannels()
 			}
 		}
 	case "MESSAGE_CREATE":
@@ -265,13 +265,13 @@ func (db *DiscordBot) handleEvent(payload gatewayPayload) {
 		// P14.5: Handle voice state updates
 		var vsu voiceStateUpdateData
 		if json.Unmarshal(payload.D, &vsu) == nil {
-			db.voice.handleVoiceStateUpdate(vsu)
+			db.voice.HandleVoiceStateUpdate(vsu)
 		}
 	case "VOICE_SERVER_UPDATE":
 		// P14.5: Handle voice server updates
 		var vsuData voiceServerUpdateData
 		if json.Unmarshal(payload.D, &vsuData) == nil {
-			db.voice.handleVoiceServerUpdate(vsuData)
+			db.voice.HandleVoiceServerUpdate(vsuData)
 		}
 	case "INTERACTION_CREATE":
 		// Handle button clicks and component interactions via Gateway.
@@ -377,16 +377,16 @@ func (db *DiscordBot) handleMessage(msg discordMessage) {
 	}
 
 	// P14.4: Forum board commands (/assign, /status) — available in any context.
-	if db.forumBoard != nil && db.forumBoard.isConfigured() {
+	if db.forumBoard != nil && db.forumBoard.IsConfigured() {
 		if strings.HasPrefix(text, "/assign") {
 			args := strings.TrimPrefix(text, "/assign")
-			reply := db.forumBoard.handleAssignCommand(msg.ChannelID, msg.GuildID, args)
+			reply := db.forumBoard.HandleAssignCommand(msg.ChannelID, msg.GuildID, args)
 			db.sendMessage(msg.ChannelID, reply)
 			return
 		}
 		if strings.HasPrefix(text, "/status") {
 			args := strings.TrimPrefix(text, "/status")
-			reply := db.forumBoard.handleStatusCommand(msg.ChannelID, args)
+			reply := db.forumBoard.HandleStatusCommand(msg.ChannelID, args)
 			db.sendMessage(msg.ChannelID, reply)
 			return
 		}

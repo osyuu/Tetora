@@ -4,8 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +13,7 @@ import (
 	"time"
 
 	"tetora/internal/audit"
+	"tetora/internal/discord"
 	"tetora/internal/log"
 	"tetora/internal/trace"
 )
@@ -82,172 +81,30 @@ func (s *discordInteractionState) cleanupLoop() {
 	}
 }
 
-// --- Component Builders ---
+// --- Component Builder Aliases (canonical implementations in internal/discord) ---
 
-// discordActionRow creates an action row containing components.
-func discordActionRow(components ...discordComponent) discordComponent {
-	return discordComponent{
-		Type:       componentTypeActionRow,
-		Components: components,
-	}
-}
+var (
+	discordActionRow      = discord.ActionRow
+	discordButton         = discord.Button
+	discordLinkButton     = discord.LinkButton
+	discordSelectMenu     = discord.SelectMenu
+	discordMultiSelectMenu = discord.MultiSelectMenu
+	discordUserSelect     = discord.UserSelect
+	discordRoleSelect     = discord.RoleSelect
+	discordChannelSelect  = discord.ChannelSelect
+	discordTextInput      = discord.TextInput
+	discordParagraphInput = discord.ParagraphInput
+	discordBuildModal     = discord.BuildModal
+	discordApprovalButtons  = discord.ApprovalButtons
+	discordAgentSelectMenu  = discord.AgentSelectMenu
+)
 
-// discordButton creates a button component.
-func discordButton(customID, label string, style int) discordComponent {
-	c := discordComponent{
-		Type:     componentTypeButton,
-		CustomID: customID,
-		Label:    label,
-		Style:    style,
-	}
-	// Link buttons don't use custom_id, they use url.
-	if style == buttonStyleLink {
-		c.URL = customID
-		c.CustomID = ""
-	}
-	return c
-}
-
-// discordLinkButton creates a link button with a URL.
-func discordLinkButton(url, label string) discordComponent {
-	return discordComponent{
-		Type:  componentTypeButton,
-		Label: label,
-		Style: buttonStyleLink,
-		URL:   url,
-	}
-}
-
-// discordSelectMenu creates a string select menu.
-func discordSelectMenu(customID, placeholder string, options []discordSelectOption) discordComponent {
-	return discordComponent{
-		Type:        componentTypeStringSelect,
-		CustomID:    customID,
-		Placeholder: placeholder,
-		Options:     options,
-	}
-}
-
-// discordMultiSelectMenu creates a string select menu with multi-select enabled.
-func discordMultiSelectMenu(customID, placeholder string, options []discordSelectOption, maxValues int) discordComponent {
-	minV := 0
-	maxV := maxValues
-	return discordComponent{
-		Type:        componentTypeStringSelect,
-		CustomID:    customID,
-		Placeholder: placeholder,
-		Options:     options,
-		MinValues:   &minV,
-		MaxValues:   &maxV,
-	}
-}
-
-// discordUserSelect creates a user select menu.
-func discordUserSelect(customID, placeholder string) discordComponent {
-	return discordComponent{
-		Type:        componentTypeUserSelect,
-		CustomID:    customID,
-		Placeholder: placeholder,
-	}
-}
-
-// discordRoleSelect creates a role select menu.
-func discordRoleSelect(customID, placeholder string) discordComponent {
-	return discordComponent{
-		Type:        componentTypeRoleSelect,
-		CustomID:    customID,
-		Placeholder: placeholder,
-	}
-}
-
-// discordChannelSelect creates a channel select menu.
-func discordChannelSelect(customID, placeholder string) discordComponent {
-	return discordComponent{
-		Type:        componentTypeChannelSelect,
-		CustomID:    customID,
-		Placeholder: placeholder,
-	}
-}
-
-// discordTextInput creates a text input for use in modals.
-func discordTextInput(customID, label string, required bool) discordComponent {
-	return discordComponent{
-		Type:     componentTypeTextInput,
-		CustomID: customID,
-		Label:    label,
-		Style:    textInputStyleShort,
-		Required: required,
-	}
-}
-
-// discordParagraphInput creates a paragraph (multi-line) text input for modals.
-func discordParagraphInput(customID, label string, required bool) discordComponent {
-	return discordComponent{
-		Type:     componentTypeTextInput,
-		CustomID: customID,
-		Label:    label,
-		Style:    textInputStyleParagraph,
-		Required: required,
-	}
-}
-
-// discordBuildModal creates a modal interaction response.
-func discordBuildModal(customID, title string, components ...discordComponent) discordInteractionResponse {
-	// Wrap text inputs in action rows if they aren't already.
-	rows := make([]discordComponent, 0, len(components))
-	for _, c := range components {
-		if c.Type == componentTypeActionRow {
-			rows = append(rows, c)
-		} else {
-			rows = append(rows, discordActionRow(c))
-		}
-	}
-	return discordInteractionResponse{
-		Type: interactionResponseModal,
-		Data: &discordInteractionResponseData{
-			CustomID:   customID,
-			Title:      title,
-			Components: rows,
-		},
-	}
-}
-
-// --- Ed25519 Signature Verification ---
-
-// verifyDiscordSignature verifies a Discord interaction webhook signature.
-// Discord sends X-Signature-Ed25519 (hex-encoded signature) and X-Signature-Timestamp headers.
-// The signed message is timestamp + body.
-func verifyDiscordSignature(publicKeyHex, signature, timestamp string, body []byte) bool {
-	pubKeyBytes, err := hex.DecodeString(publicKeyHex)
-	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
-		return false
-	}
-
-	sigBytes, err := hex.DecodeString(signature)
-	if err != nil || len(sigBytes) != ed25519.SignatureSize {
-		return false
-	}
-
-	msg := []byte(timestamp + string(body))
-	return ed25519.Verify(ed25519.PublicKey(pubKeyBytes), msg, sigBytes)
-}
-
-// runCallbackWithTimeout runs a Discord interaction callback with a 30-second timeout guard.
-// The callback itself is not cancelled — this only logs if it exceeds the timeout.
-func runCallbackWithTimeout(cb func(discordInteractionData), data discordInteractionData) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		cb(data)
-	}()
-	go func() {
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			log.Warn("discord callback exceeded 30s timeout", "customID", data.CustomID)
-		}
-	}()
-}
+var (
+	verifyDiscordSignature = discord.VerifySignature
+	interactionUserID      = discord.InteractionUserID
+	extractModalValues     = discord.ExtractModalValues
+	runCallbackWithTimeout = discord.RunCallbackWithTimeout
+)
 
 // --- Interaction Handler ---
 
@@ -558,34 +415,8 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 
 // --- Helpers ---
 
-// interactionUserID extracts the user ID from an interaction (guild or DM).
-func interactionUserID(i *discordInteraction) string {
-	if i.Member != nil {
-		return i.Member.User.ID
-	}
-	if i.User != nil {
-		return i.User.ID
-	}
-	return ""
-}
-
-// extractModalValues extracts field values from modal submit components.
-// Modal components are action rows containing text inputs.
-func extractModalValues(components []discordComponent) map[string]string {
-	values := make(map[string]string)
-	for _, row := range components {
-		if row.Type == componentTypeActionRow {
-			for _, field := range row.Components {
-				if field.CustomID != "" {
-					values[field.CustomID] = field.Value
-				}
-			}
-		}
-	}
-	return values
-}
-
 // sliceContainsStr checks if a string slice contains a value.
+// Also exported as discord.ContainsStr in internal/discord.
 func sliceContainsStr(slice []string, val string) bool {
 	for _, s := range slice {
 		if s == val {
@@ -593,29 +424,4 @@ func sliceContainsStr(slice []string, val string) bool {
 		}
 	}
 	return false
-}
-
-// --- Convenience: Task Approval Components ---
-
-// discordApprovalButtons creates approve/reject buttons for a task.
-func discordApprovalButtons(taskID string) []discordComponent {
-	return []discordComponent{
-		discordActionRow(
-			discordButton("approve:"+taskID, "Approve", buttonStyleSuccess),
-			discordButton("reject:"+taskID, "Reject", buttonStyleDanger),
-		),
-	}
-}
-
-// discordAgentSelectMenu creates a select menu for choosing an agent.
-func discordAgentSelectMenu(agents []string) []discordComponent {
-	options := make([]discordSelectOption, len(agents))
-	for i, a := range agents {
-		options[i] = discordSelectOption{Label: a, Value: a}
-	}
-	return []discordComponent{
-		discordActionRow(
-			discordSelectMenu("agent_select", "Select an agent...", options),
-		),
-	}
 }

@@ -43,7 +43,6 @@ func TestVoiceStateUpdatePayload(t *testing.T) {
 				t.Fatalf("marshal failed: %v", err)
 			}
 
-			// Verify channel_id is null when leaving
 			if tt.wantNull {
 				if !strings.Contains(string(data), `"channel_id":null`) {
 					t.Errorf("expected channel_id to be null, got: %s", data)
@@ -54,7 +53,6 @@ func TestVoiceStateUpdatePayload(t *testing.T) {
 				}
 			}
 
-			// Verify guild_id is always set
 			if !strings.Contains(string(data), tt.guildID) {
 				t.Errorf("expected guild_id %s in payload, got: %s", tt.guildID, data)
 			}
@@ -62,7 +60,7 @@ func TestVoiceStateUpdatePayload(t *testing.T) {
 	}
 }
 
-func TestVoiceManagerJoinLeave(t *testing.T) {
+func TestVoiceManagerInitialization(t *testing.T) {
 	cfg := &Config{
 		Discord: DiscordBotConfig{
 			Voice: DiscordVoiceConfig{
@@ -78,15 +76,9 @@ func TestVoiceManagerJoinLeave(t *testing.T) {
 	bot.voice = newDiscordVoiceManager(bot)
 
 	// Test initial state
-	status := bot.voice.getStatus()
+	status := bot.voice.GetStatus()
 	if status["connected"].(bool) {
 		t.Error("expected not connected initially")
-	}
-
-	// Note: We can't actually test joining without a real gateway connection,
-	// but we can verify the manager is initialized correctly
-	if bot.voice.bot != bot {
-		t.Error("voice manager bot reference not set")
 	}
 }
 

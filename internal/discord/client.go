@@ -93,6 +93,41 @@ func (c *Client) Request(method, path string, payload any) ([]byte, error) {
 	return respBody, nil
 }
 
+// RequestRaw sends a Discord API request and returns status code + body.
+// Unlike Request, it does not return an error for non-2xx status codes.
+func (c *Client) RequestRaw(method, path string, payload any) (int, []byte) {
+	if c == nil || c.HTTPClient == nil {
+		return 0, nil
+	}
+	var bodyStr string
+	if payload != nil {
+		b, _ := json.Marshal(payload)
+		bodyStr = string(b)
+	}
+	reqBody := strings.NewReader(bodyStr)
+	req, err := http.NewRequest(method, APIBase+path, reqBody)
+	if err != nil {
+		log.Error("discord api request error", "method", method, "path", path, "error", err)
+		return 0, nil
+	}
+	if bodyStr != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bot "+c.Token)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		log.Error("discord api send failed", "method", method, "path", path, "error", err)
+		return 0, nil
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if resp.StatusCode >= 400 {
+		log.Warn("discord api error", "method", method, "path", path,
+			"status", resp.StatusCode, "body", string(respBody))
+	}
+	return resp.StatusCode, respBody
+}
+
 // --- Message Helpers ---
 
 // SendMessage sends a text message to a channel.

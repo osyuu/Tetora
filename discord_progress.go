@@ -1,20 +1,13 @@
 package main
 
 // discord_progress.go — progress updater loop (needs root SSE types).
-// The ProgressBuilder rendering logic is in internal/discord/progress.go.
+// Type alias + constructor in wire_discord.go.
 
 import (
 	"time"
 
-	"tetora/internal/discord"
 	"tetora/internal/log"
 )
-
-type discordProgressBuilder = discord.ProgressBuilder
-
-func newDiscordProgressBuilder() *discordProgressBuilder {
-	return discord.NewProgressBuilder()
-}
 
 // runDiscordProgressUpdater subscribes to task SSE events and updates a Discord progress message.
 func (db *DiscordBot) runDiscordProgressUpdater(
