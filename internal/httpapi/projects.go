@@ -1,63 +1,52 @@
-package main
+package httpapi
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"tetora/internal/log"
+	"tetora/internal/audit"
+	"tetora/internal/httputil"
 )
 
-func (s *Server) registerProjectRoutes(mux *http.ServeMux) {
-	cfg := s.cfg
+// ProjectsDeps holds dependencies for projects HTTP handlers.
+type ProjectsDeps struct {
+	ListProjects     func(status string) (any, error)
+	GetProject       func(id string) (any, error)
+	CreateProject    func(raw json.RawMessage) (any, error) // returns created project
+	UpdateProject    func(id string, raw json.RawMessage) (any, error)
+	DeleteProject    func(id string) error
+	ScanWorkspace    func() (any, string, error) // returns (entries, sourceFile, error)
+	GetProjectStats  func(id string) (any, error)
+	TaskBoardEnabled bool
+	HistoryDB        func() string
+}
 
-	// Initialize projects table.
-	if err := initProjectsDB(cfg.HistoryDB); err != nil {
-		log.Warn("init projects db failed", "error", err)
-	}
-
-	// GET /api/projects        → list projects
-	// POST /api/projects       → create project
+// RegisterProjectRoutes registers project CRUD and directory browser API routes.
+func RegisterProjectRoutes(mux *http.ServeMux, d ProjectsDeps) {
 	mux.HandleFunc("/api/projects", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
 		case http.MethodGet:
 			status := r.URL.Query().Get("status")
-			projects, err := listProjects(cfg.HistoryDB, status)
+			projects, err := d.ListProjects(status)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
 			}
-			if projects == nil {
-				projects = []Project{}
-			}
-			json.NewEncoder(w).Encode(map[string]any{"projects": projects, "count": len(projects)})
+			json.NewEncoder(w).Encode(projects)
 
 		case http.MethodPost:
-			var p Project
-			if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			var raw json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
 				return
 			}
-			if p.Name == "" {
-				http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
-				return
-			}
-			if p.ID == "" {
-				p.ID = generateProjectID()
-			}
-			now := time.Now().UTC().Format(time.RFC3339)
-			p.CreatedAt = now
-			p.UpdatedAt = now
-			if p.Status == "" {
-				p.Status = "active"
-			}
-			if err := createProject(cfg.HistoryDB, p); err != nil {
+			project, err := d.CreateProject(raw)
+			if err != nil {
 				code := http.StatusInternalServerError
 				if strings.Contains(err.Error(), "UNIQUE constraint") {
 					code = http.StatusConflict
@@ -65,35 +54,29 @@ func (s *Server) registerProjectRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), code)
 				return
 			}
-			auditLog(cfg.HistoryDB, "project.create", "http",
-				fmt.Sprintf("id=%s name=%s", p.ID, p.Name), clientIP(r))
+			audit.Log(d.HistoryDB(), "project.create", "http", "created", httputil.ClientIP(r))
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(p)
+			json.NewEncoder(w).Encode(project)
 
 		default:
 			http.Error(w, `{"error":"GET or POST only"}`, http.StatusMethodNotAllowed)
 		}
 	})
 
-	// GET /api/projects/scan-workspace — parse PROJECTS.md from workspace for import suggestions.
 	mux.HandleFunc("/api/projects/scan-workspace", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		projectsFile := filepath.Join(cfg.WorkspaceDir, "projects", "PROJECTS.md")
-		entries, err := parseProjectsMD(projectsFile)
+		entries, source, err := d.ScanWorkspace()
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"entries": entries, "source": projectsFile})
+		json.NewEncoder(w).Encode(map[string]any{"entries": entries, "source": source})
 	})
 
-	// GET    /api/projects/:id  → get project
-	// PUT    /api/projects/:id  → update project
-	// DELETE /api/projects/:id  → delete project
 	mux.HandleFunc("/api/projects/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -104,23 +87,21 @@ func (s *Server) registerProjectRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		// Handle /api/projects/{id}/stats sub-route.
 		if parts := strings.SplitN(subPath, "/", 2); len(parts) == 2 && parts[1] == "stats" {
 			if r.Method != http.MethodGet {
 				http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 				return
 			}
-			if cfg.TaskBoard.Enabled {
-				tb := newTaskBoardEngine(cfg.HistoryDB, cfg.TaskBoard, cfg.Webhooks)
-				stats, err := tb.GetProjectStats(parts[0])
-				if err != nil {
-					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
-					return
-				}
-				json.NewEncoder(w).Encode(stats)
-			} else {
+			if !d.TaskBoardEnabled {
 				http.Error(w, `{"error":"task board not enabled"}`, http.StatusServiceUnavailable)
+				return
 			}
+			stats, err := d.GetProjectStats(parts[0])
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(stats)
 			return
 		}
 
@@ -128,7 +109,7 @@ func (s *Server) registerProjectRoutes(mux *http.ServeMux) {
 
 		switch r.Method {
 		case http.MethodGet:
-			p, err := getProject(cfg.HistoryDB, id)
+			p, err := d.GetProject(id)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
@@ -140,53 +121,35 @@ func (s *Server) registerProjectRoutes(mux *http.ServeMux) {
 			json.NewEncoder(w).Encode(p)
 
 		case http.MethodPut:
-			var p Project
-			if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			var raw json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
 				return
 			}
-			// Ensure ID matches path.
-			p.ID = id
-			existing, err := getProject(cfg.HistoryDB, id)
+			updated, err := d.UpdateProject(id, raw)
 			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				code := http.StatusInternalServerError
+				if strings.Contains(err.Error(), "not found") {
+					code = http.StatusNotFound
+				}
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), code)
 				return
 			}
-			if existing == nil {
-				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-				return
-			}
-			// Preserve created_at from existing.
-			p.CreatedAt = existing.CreatedAt
-			if err := updateProject(cfg.HistoryDB, p); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
-				return
-			}
-			auditLog(cfg.HistoryDB, "project.update", "http",
-				fmt.Sprintf("id=%s", id), clientIP(r))
-			updated, _ := getProject(cfg.HistoryDB, id)
-			if updated == nil {
-				json.NewEncoder(w).Encode(p)
-			} else {
-				json.NewEncoder(w).Encode(updated)
-			}
+			audit.Log(d.HistoryDB(), "project.update", "http",
+				fmt.Sprintf("id=%s", id), httputil.ClientIP(r))
+			json.NewEncoder(w).Encode(updated)
 
 		case http.MethodDelete:
-			existing, err := getProject(cfg.HistoryDB, id)
-			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			if err := d.DeleteProject(id); err != nil {
+				code := http.StatusInternalServerError
+				if strings.Contains(err.Error(), "not found") {
+					code = http.StatusNotFound
+				}
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), code)
 				return
 			}
-			if existing == nil {
-				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-				return
-			}
-			if err := deleteProject(cfg.HistoryDB, id); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
-				return
-			}
-			auditLog(cfg.HistoryDB, "project.delete", "http",
-				fmt.Sprintf("id=%s", id), clientIP(r))
+			audit.Log(d.HistoryDB(), "project.delete", "http",
+				fmt.Sprintf("id=%s", id), httputil.ClientIP(r))
 			w.Write([]byte(`{"status":"deleted"}`))
 
 		default:
@@ -207,7 +170,6 @@ func (s *Server) registerProjectRoutes(mux *http.ServeMux) {
 			home, _ := os.UserHomeDir()
 			dirPath = home
 		}
-		// Expand ~ prefix.
 		if strings.HasPrefix(dirPath, "~/") {
 			home, _ := os.UserHomeDir()
 			dirPath = filepath.Join(home, dirPath[2:])
@@ -232,7 +194,6 @@ func (s *Server) registerProjectRoutes(mux *http.ServeMux) {
 				continue
 			}
 			name := e.Name()
-			// Skip hidden directories.
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
@@ -249,11 +210,4 @@ func (s *Server) registerProjectRoutes(mux *http.ServeMux) {
 			"dirs":   dirs,
 		})
 	})
-}
-
-// generateProjectID creates a random short ID for a new project.
-func generateProjectID() string {
-	b := make([]byte, 6)
-	rand.Read(b)
-	return fmt.Sprintf("proj_%x", b)
 }

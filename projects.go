@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"strings"
@@ -244,6 +245,13 @@ func parseProjectsMD(path string) ([]WorkspaceProjectEntry, error) {
 		}
 	}
 	return entries, nil
+}
+
+// generateProjectID creates a random short ID for a new project.
+func generateProjectID() string {
+	b := make([]byte, 6)
+	rand.Read(b)
+	return fmt.Sprintf("proj_%x", b)
 }
 
 // rowToProject converts a DB row to a Project struct.

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -527,7 +528,19 @@ func startHTTPServer(s *Server) *http.Server {
 	httpapi.RegisterHistoryRoutes(mux, func() string { return s.Cfg().HistoryDB })
 	s.registerStatsRoutes(mux)
 	s.registerAgentRoutes(mux)
-	s.registerMemoryRoutes(mux)
+	httpapi.RegisterMemoryRoutes(mux, httpapi.MemoryDeps{
+		ListMCPConfigs:  func() any { return listMCPConfigs(cfg) },
+		GetMCPConfig:    func(name string) (json.RawMessage, error) { return getMCPConfig(cfg, name) },
+		SetMCPConfig:    func(configPath, name string, raw json.RawMessage) error { return setMCPConfig(cfg, configPath, name, raw) },
+		DeleteMCPConfig: func(configPath, name string) error { return deleteMCPConfig(cfg, configPath, name) },
+		TestMCPConfig:   testMCPConfig,
+		ListMemory:      func(role string) (any, error) { return listMemory(cfg, role) },
+		GetMemory:       func(role, key string) (string, error) { return getMemory(cfg, role, key) },
+		SetMemory:       func(agent, key, value string) error { return setMemory(cfg, agent, key, value) },
+		DeleteMemory:    func(role, key string) error { return deleteMemory(cfg, role, key) },
+		FindConfigPath:  findConfigPath,
+		HistoryDB:       func() string { return s.Cfg().HistoryDB },
+	})
 	s.registerSessionRoutes(mux)
 	s.registerToolRoutes(mux)
 	httpapi.RegisterVoiceRoutes(mux, httpapi.VoiceDeps{
@@ -644,7 +657,82 @@ func startHTTPServer(s *Server) *http.Server {
 	httpapi.RegisterFamilyRoutes(mux, s.app.Family, func() string { return s.Cfg().HistoryDB })
 	httpapi.RegisterContactsRoutes(mux, s.app.Contacts, func() string { return s.Cfg().HistoryDB })
 	httpapi.RegisterHabitsRoutes(mux, s.app.Habits)
-	s.registerProjectRoutes(mux)
+	httpapi.RegisterProjectRoutes(mux, httpapi.ProjectsDeps{
+		ListProjects: func(status string) (any, error) {
+			projects, err := listProjects(cfg.HistoryDB, status)
+			if err != nil {
+				return nil, err
+			}
+			if projects == nil {
+				projects = []Project{}
+			}
+			return map[string]any{"projects": projects, "count": len(projects)}, nil
+		},
+		GetProject: func(id string) (any, error) { return getProject(cfg.HistoryDB, id) },
+		CreateProject: func(raw json.RawMessage) (any, error) {
+			var p Project
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, err
+			}
+			if p.Name == "" {
+				return nil, fmt.Errorf("name is required")
+			}
+			if p.ID == "" {
+				p.ID = generateProjectID()
+			}
+			now := time.Now().UTC().Format(time.RFC3339)
+			p.CreatedAt = now
+			p.UpdatedAt = now
+			if p.Status == "" {
+				p.Status = "active"
+			}
+			return p, createProject(cfg.HistoryDB, p)
+		},
+		UpdateProject: func(id string, raw json.RawMessage) (any, error) {
+			var p Project
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, err
+			}
+			p.ID = id
+			existing, err := getProject(cfg.HistoryDB, id)
+			if err != nil {
+				return nil, err
+			}
+			if existing == nil {
+				return nil, fmt.Errorf("not found")
+			}
+			p.CreatedAt = existing.CreatedAt
+			if err := updateProject(cfg.HistoryDB, p); err != nil {
+				return nil, err
+			}
+			updated, _ := getProject(cfg.HistoryDB, id)
+			if updated != nil {
+				return updated, nil
+			}
+			return p, nil
+		},
+		DeleteProject: func(id string) error {
+			existing, err := getProject(cfg.HistoryDB, id)
+			if err != nil {
+				return err
+			}
+			if existing == nil {
+				return fmt.Errorf("not found")
+			}
+			return deleteProject(cfg.HistoryDB, id)
+		},
+		ScanWorkspace: func() (any, string, error) {
+			projectsFile := filepath.Join(cfg.WorkspaceDir, "projects", "PROJECTS.md")
+			entries, err := parseProjectsMD(projectsFile)
+			return entries, projectsFile, err
+		},
+		GetProjectStats: func(id string) (any, error) {
+			tb := newTaskBoardEngine(cfg.HistoryDB, cfg.TaskBoard, cfg.Webhooks)
+			return tb.GetProjectStats(id)
+		},
+		TaskBoardEnabled: cfg.TaskBoard.Enabled,
+		HistoryDB:        func() string { return s.Cfg().HistoryDB },
+	})
 	s.registerWSEventsRoutes(mux)
 	httpapi.RegisterDiscordRoutes(mux, httpapi.DiscordDeps{
 		GetNotifications: func() []httpapi.NotifChannel {
@@ -664,7 +752,111 @@ func startHTTPServer(s *Server) *http.Server {
 		FindSession:       func(dbPath, chKey string) (any, error) { return findChannelSession(dbPath, chKey) },
 		HistoryDB:         func() string { return s.Cfg().HistoryDB },
 	})
-	s.registerWorkersRoutes(mux)
+	httpapi.RegisterWorkersRoutes(mux, httpapi.WorkersDeps{
+		ListWorkers: func() any {
+			type workerInfo struct {
+				SessionId    string  `json:"sessionId"`
+				Name         string  `json:"name"`
+				State        string  `json:"state"`
+				Workdir      string  `json:"workdir"`
+				Uptime       string  `json:"uptime"`
+				ToolCount    int     `json:"toolCount"`
+				LastTool     string  `json:"lastTool,omitempty"`
+				Source       string  `json:"source"`
+				Agent        string  `json:"agent,omitempty"`
+				TaskName     string  `json:"taskName,omitempty"`
+				TaskID       string  `json:"taskId,omitempty"`
+				JobID        string  `json:"jobId,omitempty"`
+				CostUSD      float64 `json:"costUsd,omitempty"`
+				InputTokens  int     `json:"inputTokens,omitempty"`
+				OutputTokens int     `json:"outputTokens,omitempty"`
+				ContextPct   int     `json:"contextPct,omitempty"`
+				Model        string  `json:"model,omitempty"`
+			}
+			var out []workerInfo
+			if s.hookReceiver != nil {
+				for _, hw := range s.hookReceiver.ListHookWorkers() {
+					if hw.State == "done" && time.Since(hw.LastSeen) > 2*time.Minute {
+						continue
+					}
+					sessionShort := hw.SessionID
+					if len(sessionShort) > 12 {
+						sessionShort = sessionShort[:12]
+					}
+					wi := workerInfo{
+						SessionId: sessionShort, Name: "hook-" + sessionShort,
+						State: hw.State, Workdir: hw.Cwd,
+						Uptime: time.Since(hw.FirstSeen).Round(time.Second).String(),
+						ToolCount: hw.ToolCount, LastTool: hw.LastTool, Source: "manual",
+						CostUSD: hw.CostUSD, InputTokens: hw.InputTokens,
+						OutputTokens: hw.OutputTokens, ContextPct: hw.ContextPct, Model: hw.Model,
+					}
+					if o := hw.Origin; o != nil {
+						wi.Source = o.Source; wi.Agent = o.Agent; wi.TaskName = o.TaskName
+						wi.TaskID = o.TaskID; wi.JobID = o.JobID
+						if o.TaskName != "" { wi.Name = o.TaskName }
+					}
+					out = append(out, wi)
+				}
+			}
+			if out == nil { out = []workerInfo{} }
+			return map[string]any{"workers": out, "count": len(out)}
+		},
+		FindWorkerEvents: func(idPrefix string) any {
+			if s.hookReceiver == nil {
+				return nil
+			}
+			worker, events := s.hookReceiver.FindHookWorkerByPrefix(idPrefix)
+			if worker == nil {
+				return nil
+			}
+			resp := map[string]any{
+				"sessionId": idPrefix,
+				"state": worker.State, "workdir": worker.Cwd,
+				"toolCount": worker.ToolCount, "lastTool": worker.LastTool,
+				"uptime": time.Since(worker.FirstSeen).Round(time.Second).String(),
+				"costUsd": worker.CostUSD, "inputTokens": worker.InputTokens,
+				"outputTokens": worker.OutputTokens, "contextPct": worker.ContextPct,
+				"model": worker.Model, "events": events,
+			}
+			if o := worker.Origin; o != nil {
+				resp["source"] = o.Source; resp["agent"] = o.Agent
+				resp["taskName"] = o.TaskName; resp["taskId"] = o.TaskID; resp["jobId"] = o.JobID
+			} else {
+				resp["source"] = "manual"
+			}
+			return resp
+		},
+		ListAgentInfos: func() any {
+			type agentInfo struct {
+				Name     string `json:"name"`
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			}
+			agents := make([]agentInfo, 0, len(cfg.Agents))
+			for name, rc := range cfg.Agents {
+				p := rc.Provider
+				if p == "" { p = cfg.DefaultProvider }
+				if p == "" { p = "claude" }
+				agents = append(agents, agentInfo{Name: name, Provider: p, Model: rc.Model})
+			}
+			return map[string]any{"agents": agents}
+		},
+		GetDiscordShowProgress: func() bool {
+			return s.cfg.Discord.ShowProgress == nil || *s.cfg.Discord.ShowProgress
+		},
+		SetDiscordShowProgress: func(val bool) {
+			s.cfg.Discord.ShowProgress = &val
+			configPath := findConfigPath()
+			if configPath != "" {
+				updateConfigField(configPath, func(raw map[string]any) {
+					disc, _ := raw["discord"].(map[string]any)
+					if disc == nil { disc = map[string]any{}; raw["discord"] = disc }
+					disc["showProgress"] = val
+				})
+			}
+		},
+	})
 	s.registerHookRoutes(mux)
 	s.registerPlanReviewRoutes(mux)
 	registerDocsRoutesVia(mux)
