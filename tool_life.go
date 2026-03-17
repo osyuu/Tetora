@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"tetora/internal/automation/briefing"
+	"tetora/internal/db"
+	"tetora/internal/life/reminder"
 	"tetora/internal/log"
 	"tetora/internal/nlp"
 	"tetora/internal/tool"
@@ -1659,4 +1662,219 @@ func toolQuickCapture(ctx context.Context, cfg *Config, input json.RawMessage) (
 	}
 	b, _ := json.Marshal(out)
 	return string(b), nil
+}
+
+// --- P24.7: Morning Briefing & Evening Wrap ---
+
+var globalBriefingService *briefing.Service
+
+// newBriefingService constructs a briefing.Service from Config + globals.
+func newBriefingService(cfg *Config) *briefing.Service {
+	deps := briefing.Deps{
+		Query:  db.Query,
+		Escape: db.Escape,
+	}
+	if globalSchedulingService != nil {
+		svc := globalSchedulingService
+		deps.ViewSchedule = func(dateStr string, days int) ([]briefing.ScheduleDay, error) {
+			schedules, err := svc.ViewSchedule(dateStr, days)
+			if err != nil {
+				return nil, err
+			}
+			result := make([]briefing.ScheduleDay, len(schedules))
+			for i, s := range schedules {
+				events := make([]briefing.ScheduleEvent, len(s.Events))
+				for j, ev := range s.Events {
+					events[j] = briefing.ScheduleEvent{
+						Start: ev.Start,
+						Title: ev.Title,
+					}
+				}
+				result[i] = briefing.ScheduleDay{Events: events}
+			}
+			return result, nil
+		}
+	}
+	if globalContactsService != nil {
+		svc := globalContactsService
+		deps.GetUpcomingEvents = func(days int) ([]map[string]any, error) {
+			return svc.GetUpcomingEvents(days)
+		}
+	}
+	deps.TasksAvailable = globalTaskManager != nil
+	deps.HabitsAvailable = globalHabitsService != nil
+	deps.GoalsAvailable = globalGoalsService != nil
+	deps.FinanceAvailable = globalFinanceService != nil
+	return briefing.New(cfg.HistoryDB, deps)
+}
+
+// --- Briefing Tool Handlers ---
+
+func toolBriefingMorning(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Briefing == nil {
+		return "", fmt.Errorf("briefing service not initialized")
+	}
+	var args struct {
+		Date string `json:"date"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	date := time.Now()
+	if args.Date != "" {
+		parsed, err := time.Parse("2006-01-02", args.Date)
+		if err != nil {
+			return "", fmt.Errorf("invalid date format (expected YYYY-MM-DD): %w", err)
+		}
+		date = parsed
+	}
+	br, err := app.Briefing.GenerateMorning(date)
+	if err != nil {
+		return "", err
+	}
+	return briefing.FormatBriefing(br), nil
+}
+
+func toolBriefingEvening(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Briefing == nil {
+		return "", fmt.Errorf("briefing service not initialized")
+	}
+	var args struct {
+		Date string `json:"date"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	date := time.Now()
+	if args.Date != "" {
+		parsed, err := time.Parse("2006-01-02", args.Date)
+		if err != nil {
+			return "", fmt.Errorf("invalid date format (expected YYYY-MM-DD): %w", err)
+		}
+		date = parsed
+	}
+	br, err := app.Briefing.GenerateEvening(date)
+	if err != nil {
+		return "", err
+	}
+	return briefing.FormatBriefing(br), nil
+}
+
+// --- P19.3: Smart Reminders ---
+
+// nextCronTime computes the next occurrence of a cron expression after the given time.
+// Reuses parseCronExpr and nextRunAfter from cron.go.
+func nextCronTime(expr string, after time.Time) time.Time {
+	parsed, err := parseCronExpr(expr)
+	if err != nil {
+		log.Warn("reminder bad cron expr", "expr", expr, "error", err)
+		return time.Time{}
+	}
+	return nextRunAfter(parsed, time.UTC, after)
+}
+
+// parseNaturalTime delegates to internal reminder package.
+func parseNaturalTime(input string) (time.Time, error) {
+	return reminder.ParseNaturalTime(input)
+}
+
+// --- Tool Handlers for Reminders ---
+
+// Global reminder engine reference (set in main.go).
+var globalReminderEngine *ReminderEngine
+
+func toolReminderSet(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	var args struct {
+		Text      string `json:"text"`
+		Time      string `json:"time"`
+		Recurring string `json:"recurring"`
+		Channel   string `json:"channel"`
+		UserID    string `json:"user_id"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("parse input: %w", err)
+	}
+	if args.Text == "" {
+		return "", fmt.Errorf("text is required")
+	}
+	if args.Time == "" {
+		return "", fmt.Errorf("time is required")
+	}
+
+	if app == nil || app.Reminder == nil {
+		return "", fmt.Errorf("reminder engine not initialized (enable reminders in config)")
+	}
+
+	dueAt, err := parseNaturalTime(args.Time)
+	if err != nil {
+		return "", fmt.Errorf("parse time %q: %w", args.Time, err)
+	}
+
+	// Validate recurring expression if provided.
+	if args.Recurring != "" {
+		if _, err := parseCronExpr(args.Recurring); err != nil {
+			return "", fmt.Errorf("invalid recurring cron expression %q: %w", args.Recurring, err)
+		}
+	}
+
+	rem, err := app.Reminder.Add(args.Text, dueAt, args.Recurring, args.Channel, args.UserID)
+	if err != nil {
+		return "", err
+	}
+
+	out, _ := json.Marshal(rem)
+	return string(out), nil
+}
+
+func toolReminderList(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	var args struct {
+		UserID string `json:"user_id"`
+	}
+	json.Unmarshal(input, &args)
+
+	if app == nil || app.Reminder == nil {
+		return "", fmt.Errorf("reminder engine not initialized")
+	}
+
+	reminders, err := app.Reminder.List(args.UserID)
+	if err != nil {
+		return "", err
+	}
+	if reminders == nil {
+		reminders = []Reminder{}
+	}
+
+	out, _ := json.Marshal(map[string]any{
+		"reminders": reminders,
+		"count":     len(reminders),
+	})
+	return string(out), nil
+}
+
+func toolReminderCancel(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	var args struct {
+		ID     string `json:"id"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("parse input: %w", err)
+	}
+	if args.ID == "" {
+		return "", fmt.Errorf("id is required")
+	}
+
+	if app == nil || app.Reminder == nil {
+		return "", fmt.Errorf("reminder engine not initialized")
+	}
+
+	if err := app.Reminder.Cancel(args.ID, args.UserID); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf(`{"ok":true,"id":"%s","status":"cancelled"}`, args.ID), nil
 }
