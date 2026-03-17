@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"tetora/internal/cli"
+	"tetora/internal/history"
 )
 
 func skipIfNoSQLite(t *testing.T) {
@@ -173,8 +174,8 @@ func TestInitMemoryDBFromCLI(t *testing.T) {
 	dbPath := filepath.Join(dir, "history.db")
 
 	// Create history db first (as main.go would).
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("history.InitDB: %v", err)
 	}
 
 	// initMemoryDB is now a no-op (filesystem-based memory).

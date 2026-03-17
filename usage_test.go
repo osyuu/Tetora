@@ -5,20 +5,20 @@ import (
 	"testing"
 	"time"
 
-
 	"tetora/internal/db"
+	"tetora/internal/history"
 )
 
 func TestQueryUsageSummary(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
 	// Insert test data for today.
 	now := time.Now()
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID:     "u1",
 		Name:      "test1",
 		Source:    "test",
@@ -31,7 +31,7 @@ func TestQueryUsageSummary(t *testing.T) {
 		TokensOut: 500,
 		Agent:      "ruri",
 	})
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID:     "u2",
 		Name:      "test2",
 		Source:    "test",
@@ -80,24 +80,24 @@ func TestQueryUsageSummaryEmptyDB(t *testing.T) {
 func TestQueryUsageByModel(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
 	now := time.Now()
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID: "m1", Name: "test1", Source: "test",
 		StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339),
 		Status: "success", CostUSD: 0.30, Model: "opus",
 		TokensIn: 1000, TokensOut: 500,
 	})
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID: "m2", Name: "test2", Source: "test",
 		StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339),
 		Status: "success", CostUSD: 0.10, Model: "sonnet",
 		TokensIn: 2000, TokensOut: 800,
 	})
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID: "m3", Name: "test3", Source: "test",
 		StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339),
 		Status: "success", CostUSD: 0.10, Model: "opus",
@@ -131,18 +131,18 @@ func TestQueryUsageByModel(t *testing.T) {
 func TestQueryUsageByRole(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
 	now := time.Now()
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID: "r1", Name: "test1", Source: "test",
 		StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339),
 		Status: "success", CostUSD: 0.20, Model: "sonnet",
 		TokensIn: 1000, TokensOut: 500, Agent: "ruri",
 	})
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID: "r2", Name: "test2", Source: "test",
 		StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339),
 		Status: "success", CostUSD: 0.05, Model: "sonnet",
@@ -167,7 +167,7 @@ func TestQueryUsageByRole(t *testing.T) {
 func TestQueryExpensiveSessions(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := initSessionDB(dbPath); err != nil {
@@ -209,20 +209,20 @@ func TestQueryExpensiveSessions(t *testing.T) {
 func TestQueryCostTrend(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
 	now := time.Now()
 	yesterday := now.AddDate(0, 0, -1)
 
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID: "t1", Name: "test1", Source: "test",
 		StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339),
 		Status: "success", CostUSD: 0.05, Model: "sonnet",
 		TokensIn: 1000, TokensOut: 500,
 	})
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID: "t2", Name: "test2", Source: "test",
 		StartedAt: yesterday.Format(time.RFC3339), FinishedAt: yesterday.Format(time.RFC3339),
 		Status: "success", CostUSD: 0.10, Model: "opus",

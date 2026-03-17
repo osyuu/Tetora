@@ -11,6 +11,7 @@ import (
 
 	"tetora/internal/audit"
 	"tetora/internal/discord"
+	"tetora/internal/history"
 	"tetora/internal/log"
 	"tetora/internal/trace"
 	"tetora/internal/upload"
@@ -554,7 +555,7 @@ func (db *DiscordBot) cmdCost(msg discordMessage) {
 		db.sendMessage(msg.ChannelID, "History DB not configured.")
 		return
 	}
-	stats, err := queryCostStats(dbPath)
+	stats, err := history.QueryCostStats(dbPath)
 	if err != nil {
 		db.sendMessage(msg.ChannelID, fmt.Sprintf("Error: %v", err))
 		return
@@ -1179,7 +1180,7 @@ func (db *DiscordBot) sendRouteResponse(channelID string, route *RouteResult, re
 	}
 
 	// Query today's cumulative token usage (this task already recorded before this call).
-	todayIn, todayOut := todayTotalTokens(db.cfg.HistoryDB)
+	todayIn, todayOut := history.TodayTotalTokens(db.cfg.HistoryDB)
 
 	// Send metadata as a small embed at the end, as a reply to the original message.
 	db.sendEmbedReply(channelID, replyMsgID, discordEmbed{
@@ -1194,5 +1195,105 @@ func (db *DiscordBot) sendRouteResponse(channelID string, route *RouteResult, re
 		Footer:    &discordEmbedFooter{Text: fmt.Sprintf("Task: %s", task.ID[:8])},
 		Timestamp: time.Now().Format(time.RFC3339),
 	})
+}
+
+// --- Voice (from discord_voice.go) ---
+
+// Type aliases.
+type discordVoiceManager = discord.VoiceManager
+type voiceStateUpdatePayload = discord.VoiceStateUpdatePayload
+type voiceServerUpdateData = discord.VoiceServerUpdateData
+type voiceStateUpdateData = discord.VoiceStateUpdateData
+
+// Constant aliases.
+const (
+	opVoiceStateUpdate     = discord.OpVoiceStateUpdate
+	opVoiceServerUpdate    = discord.OpVoiceServerUpdate
+	intentGuildVoiceStates = discord.IntentGuildVoiceStates
+)
+
+// newDiscordVoiceManager creates a VoiceManager wired to the bot's deps.
+func newDiscordVoiceManager(bot *DiscordBot) *discordVoiceManager {
+	deps := discord.VoiceDeps{
+		SendGateway: func(payload discord.GatewayPayload) error {
+			return bot.sendToGateway(gatewayPayload(payload))
+		},
+	}
+
+	if bot != nil {
+		deps.BotUserID = bot.botUserID
+		if bot.cfg != nil {
+			deps.VoiceEnabled = bot.cfg.Discord.Voice.Enabled
+			deps.AutoJoin = bot.cfg.Discord.Voice.AutoJoin
+			deps.TTS = bot.cfg.Discord.Voice.TTS
+		}
+	}
+
+	return discord.NewVoiceManager(deps)
+}
+
+// handleVoiceCommand processes /vc commands.
+func (db *DiscordBot) handleVoiceCommand(msg discordMessage, args []string) {
+	if !db.cfg.Discord.Voice.Enabled {
+		db.sendMessage(msg.ChannelID, "Voice channel support is not enabled.")
+		return
+	}
+
+	if len(args) == 0 {
+		db.sendMessage(msg.ChannelID, "Usage: `/vc <join|leave|status> [channel_id]`")
+		return
+	}
+
+	subCmd := args[0]
+
+	switch subCmd {
+	case "join":
+		if len(args) < 2 {
+			db.sendMessage(msg.ChannelID, "Usage: `/vc join <channel_id>`")
+			return
+		}
+		channelID := args[1]
+		guildID := msg.GuildID
+
+		if guildID == "" {
+			db.sendMessage(msg.ChannelID, "Voice channels are only available in guilds.")
+			return
+		}
+
+		if err := db.voice.JoinVoiceChannel(guildID, channelID); err != nil {
+			db.sendMessage(msg.ChannelID, fmt.Sprintf("Failed to join voice channel: %v", err))
+		} else {
+			db.sendMessage(msg.ChannelID, fmt.Sprintf("Joining voice channel <#%s>...", channelID))
+		}
+
+	case "leave":
+		if err := db.voice.LeaveVoiceChannel(); err != nil {
+			db.sendMessage(msg.ChannelID, fmt.Sprintf("Failed to leave voice channel: %v", err))
+		} else {
+			db.sendMessage(msg.ChannelID, "Leaving voice channel...")
+		}
+
+	case "status":
+		status := db.voice.GetStatus()
+		connected := status["connected"].(bool)
+		if connected {
+			db.sendMessage(msg.ChannelID,
+				fmt.Sprintf("Connected to voice channel <#%s> in guild %s",
+					status["channelId"], status["guildId"]))
+		} else {
+			db.sendMessage(msg.ChannelID, "Not connected to any voice channel.")
+		}
+
+	default:
+		db.sendMessage(msg.ChannelID, "Unknown subcommand. Use: `join`, `leave`, or `status`")
+	}
+}
+
+// sendToGateway sends a payload to the active gateway websocket.
+func (db *DiscordBot) sendToGateway(payload gatewayPayload) error {
+	if db.gatewayConn == nil {
+		return fmt.Errorf("no active gateway connection")
+	}
+	return db.gatewayConn.WriteJSON(payload)
 }
 

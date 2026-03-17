@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"tetora/internal/db"
+	"tetora/internal/history"
 	"tetora/internal/sla"
 )
 
@@ -42,8 +43,8 @@ func setupSLATestDB(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "sla_test.db")
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("history.InitDB: %v", err)
 	}
 	sla.InitSLADB(dbPath)
 	return dbPath
@@ -63,16 +64,16 @@ func insertTestRun(t *testing.T, dbPath, role, status, startedAt, finishedAt str
 		SessionID:  newUUID(),
 		Agent:       role,
 	}
-	if err := insertJobRun(dbPath, run); err != nil {
-		t.Fatalf("insertJobRun: %v", err)
+	if err := history.InsertRun(dbPath, run); err != nil {
+		t.Fatalf("history.InsertRun: %v", err)
 	}
 }
 
 func TestInitSLADB(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "init_sla.db")
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("history.InitDB: %v", err)
 	}
 	sla.InitSLADB(dbPath)
 
@@ -457,7 +458,7 @@ func TestJobRunRoleField(t *testing.T) {
 	recordHistory(dbPath, task.ID, task.Name, "test", "翡翠", task, result,
 		"2026-02-22T00:00:00Z", "2026-02-22T00:01:00Z", "")
 
-	runs, err := queryHistory(dbPath, "role-test", 1)
+	runs, err := history.Query(dbPath, "role-test", 1)
 	if err != nil {
 		t.Fatalf("queryHistory: %v", err)
 	}

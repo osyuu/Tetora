@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tetora/internal/audit"
+	"tetora/internal/history"
 	"tetora/internal/log"
 	"tetora/internal/messaging"
 	"tetora/internal/trace"
@@ -221,7 +222,7 @@ func (r *messagingRuntime) AuditLog(action, source, target, ip string) {
 }
 
 func (r *messagingRuntime) QueryCostStats() (today, week, month float64) {
-	stats, err := queryCostStats(r.cfg.HistoryDB)
+	stats, err := history.QueryCostStats(r.cfg.HistoryDB)
 	if err != nil {
 		return 0, 0, 0
 	}

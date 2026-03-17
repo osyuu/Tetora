@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"tetora/internal/history"
 )
 
 // helper: create a temp history DB and populate with test data.
@@ -12,8 +14,8 @@ func setupMetricsTestDB(t *testing.T) string {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test_metrics.db")
 
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("history.InitDB: %v", err)
 	}
 
 	// Insert test records spanning multiple days and statuses.
@@ -25,8 +27,8 @@ func setupMetricsTestDB(t *testing.T) string {
 		{JobID: "j5", Name: "task-e", Source: "cron", StartedAt: "2026-02-22T08:00:00Z", FinishedAt: "2026-02-22T08:00:15Z", Status: "success", CostUSD: 0.03, Model: "opus", TokensIn: 300, TokensOut: 150},
 	}
 	for _, run := range runs {
-		if err := insertJobRun(dbPath, run); err != nil {
-			t.Fatalf("insertJobRun: %v", err)
+		if err := history.InsertRun(dbPath, run); err != nil {
+			t.Fatalf("history.InsertRun: %v", err)
 		}
 	}
 	return dbPath
@@ -35,10 +37,10 @@ func setupMetricsTestDB(t *testing.T) string {
 func TestQueryMetrics_EmptyDB(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "empty.db")
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("history.InitDB: %v", err)
 	}
-	m, err := queryMetrics(dbPath, 30)
+	m, err := history.QueryMetrics(dbPath, 30)
 	if err != nil {
 		t.Fatalf("queryMetrics: %v", err)
 	}
@@ -52,7 +54,7 @@ func TestQueryMetrics_EmptyDB(t *testing.T) {
 
 func TestQueryMetrics_WithData(t *testing.T) {
 	dbPath := setupMetricsTestDB(t)
-	m, err := queryMetrics(dbPath, 30)
+	m, err := history.QueryMetrics(dbPath, 30)
 	if err != nil {
 		t.Fatalf("queryMetrics: %v", err)
 	}
@@ -79,7 +81,7 @@ func TestQueryMetrics_WithData(t *testing.T) {
 }
 
 func TestQueryMetrics_EmptyPath(t *testing.T) {
-	m, err := queryMetrics("", 30)
+	m, err := history.QueryMetrics("", 30)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +92,7 @@ func TestQueryMetrics_EmptyPath(t *testing.T) {
 
 func TestQueryDailyMetrics_WithData(t *testing.T) {
 	dbPath := setupMetricsTestDB(t)
-	daily, err := queryDailyMetrics(dbPath, 30)
+	daily, err := history.QueryDailyMetrics(dbPath, 30)
 	if err != nil {
 		t.Fatalf("queryDailyMetrics: %v", err)
 	}
@@ -117,10 +119,10 @@ func TestQueryDailyMetrics_WithData(t *testing.T) {
 func TestQueryDailyMetrics_EmptyDB(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "empty.db")
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("history.InitDB: %v", err)
 	}
-	daily, err := queryDailyMetrics(dbPath, 7)
+	daily, err := history.QueryDailyMetrics(dbPath, 7)
 	if err != nil {
 		t.Fatalf("queryDailyMetrics: %v", err)
 	}
@@ -130,7 +132,7 @@ func TestQueryDailyMetrics_EmptyDB(t *testing.T) {
 }
 
 func TestQueryDailyMetrics_EmptyPath(t *testing.T) {
-	daily, err := queryDailyMetrics("", 7)
+	daily, err := history.QueryDailyMetrics("", 7)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +143,7 @@ func TestQueryDailyMetrics_EmptyPath(t *testing.T) {
 
 func TestQueryProviderMetrics_WithData(t *testing.T) {
 	dbPath := setupMetricsTestDB(t)
-	pm, err := queryProviderMetrics(dbPath, 30)
+	pm, err := history.QueryProviderMetrics(dbPath, 30)
 	if err != nil {
 		t.Fatalf("queryProviderMetrics: %v", err)
 	}
@@ -183,10 +185,10 @@ func TestQueryProviderMetrics_WithData(t *testing.T) {
 func TestQueryProviderMetrics_EmptyDB(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "empty.db")
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("history.InitDB: %v", err)
 	}
-	pm, err := queryProviderMetrics(dbPath, 30)
+	pm, err := history.QueryProviderMetrics(dbPath, 30)
 	if err != nil {
 		t.Fatalf("queryProviderMetrics: %v", err)
 	}
@@ -196,7 +198,7 @@ func TestQueryProviderMetrics_EmptyDB(t *testing.T) {
 }
 
 func TestQueryProviderMetrics_EmptyPath(t *testing.T) {
-	pm, err := queryProviderMetrics("", 30)
+	pm, err := history.QueryProviderMetrics("", 30)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -210,13 +212,13 @@ func TestInitHistoryDB_TokenMigrations(t *testing.T) {
 	dbPath := filepath.Join(dir, "migrate.db")
 
 	// First init creates base table.
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("first initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("first history.InitDB: %v", err)
 	}
 
 	// Second init should succeed (idempotent migrations).
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("second initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("second history.InitDB: %v", err)
 	}
 
 	// Verify we can insert a row with token data.
@@ -230,14 +232,14 @@ func TestInitHistoryDB_TokenMigrations(t *testing.T) {
 		TokensIn:   999,
 		TokensOut:  444,
 	}
-	if err := insertJobRun(dbPath, run); err != nil {
-		t.Fatalf("insertJobRun after migration: %v", err)
+	if err := history.InsertRun(dbPath, run); err != nil {
+		t.Fatalf("history.InsertRun after migration: %v", err)
 	}
 
 	// Query it back.
-	runs, err := queryHistory(dbPath, "test-migrate", 1)
+	runs, err := history.Query(dbPath, "test-migrate", 1)
 	if err != nil {
-		t.Fatalf("queryHistory: %v", err)
+		t.Fatalf("history.Query: %v", err)
 	}
 	if len(runs) != 1 {
 		t.Fatalf("expected 1 run, got %d", len(runs))
@@ -253,8 +255,8 @@ func TestInitHistoryDB_TokenMigrations(t *testing.T) {
 func TestRecordHistory_IncludesTokens(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "record.db")
-	if err := initHistoryDB(dbPath); err != nil {
-		t.Fatalf("initHistoryDB: %v", err)
+	if err := history.InitDB(dbPath); err != nil {
+		t.Fatalf("history.InitDB: %v", err)
 	}
 
 	task := Task{ID: "rec-tok", Name: "token-task"}
@@ -270,9 +272,9 @@ func TestRecordHistory_IncludesTokens(t *testing.T) {
 	recordHistory(dbPath, task.ID, task.Name, "test", "", task, result,
 		"2026-02-22T00:00:00Z", "2026-02-22T00:01:00Z", "")
 
-	runs, err := queryHistory(dbPath, "rec-tok", 1)
+	runs, err := history.Query(dbPath, "rec-tok", 1)
 	if err != nil {
-		t.Fatalf("queryHistory: %v", err)
+		t.Fatalf("history.Query: %v", err)
 	}
 	if len(runs) != 1 {
 		t.Fatalf("expected 1 run, got %d", len(runs))
@@ -288,7 +290,7 @@ func TestRecordHistory_IncludesTokens(t *testing.T) {
 // TestMetricsResult_ZeroDays verifies default behavior with zero days.
 func TestQueryMetrics_ZeroDays(t *testing.T) {
 	dbPath := setupMetricsTestDB(t)
-	m, err := queryMetrics(dbPath, 0)
+	m, err := history.QueryMetrics(dbPath, 0)
 	if err != nil {
 		t.Fatalf("queryMetrics: %v", err)
 	}

@@ -8,8 +8,9 @@ import (
 	"time"
 
 
-	"tetora/internal/log"
 	"tetora/internal/db"
+	"tetora/internal/history"
+	"tetora/internal/log"
 )
 
 // buildReviewDigest assembles a structured markdown digest of recent activity
@@ -254,7 +255,7 @@ func queryReviewJobRuns(dbPath, cutoff string, limit int) []JobRun {
 
 	var runs []JobRun
 	for _, row := range rows {
-		runs = append(runs, jobRunFromRow(row))
+		runs = append(runs, history.RunFromRow(row))
 	}
 	return runs
 }

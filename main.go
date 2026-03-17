@@ -13,12 +13,13 @@ import (
 
 	"tetora/internal/audit"
 	"tetora/internal/cli"
-	"tetora/internal/log"
 	"tetora/internal/completion"
-	"tetora/internal/messaging/groupchat"
 	"tetora/internal/db"
-	"tetora/internal/sla"
+	"tetora/internal/history"
 	"tetora/internal/knowledge"
+	"tetora/internal/log"
+	"tetora/internal/messaging/groupchat"
+	"tetora/internal/sla"
 	"tetora/internal/storage"
 	"tetora/internal/upload"
 	"strings"
@@ -39,6 +40,7 @@ import (
 	"tetora/internal/scheduling"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
+	"tetora/internal/version"
 )
 
 // metricsGlobal is the global metrics registry.
@@ -324,7 +326,7 @@ func main() {
 
 		// Init history DB.
 		if cfg.HistoryDB != "" {
-			if err := initHistoryDB(cfg.HistoryDB); err != nil {
+			if err := history.InitDB(cfg.HistoryDB); err != nil {
 				log.Warn("init history db failed", "error", err)
 				degradedServices = append(degradedServices, "historyDB")
 			} else {
@@ -353,7 +355,7 @@ func main() {
 				}
 
 				// Cleanup records using retention config.
-				if err := cleanupHistory(cfg.HistoryDB, retentionDays(cfg.Retention.History, 90)); err != nil {
+				if err := history.Cleanup(cfg.HistoryDB, retentionDays(cfg.Retention.History, 90)); err != nil {
 					log.Warn("cleanup history failed", "error", err)
 				}
 			}
@@ -384,7 +386,7 @@ func main() {
 			// Init trust events table.
 			initTrustDB(cfg.HistoryDB)
 			// Init config versioning table.
-			if err := initVersionDB(cfg.HistoryDB); err != nil {
+			if err := version.InitDB(cfg.HistoryDB); err != nil {
 				log.Warn("init config_versions failed", "error", err)
 			}
 			// Init agent communication table.

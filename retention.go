@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"tetora/internal/audit"
-	"tetora/internal/log"
 	"tetora/internal/db"
+	"tetora/internal/history"
+	"tetora/internal/log"
 	"tetora/internal/upload"
+	"tetora/internal/version"
 )
 
 // --- Retention Config ---
@@ -326,7 +328,7 @@ func runRetention(cfg *Config) []RetentionResult {
 	if dbPath != "" {
 		// job_runs
 		days := retentionDays(cfg.Retention.History, 90)
-		if err := cleanupHistory(dbPath, days); err != nil {
+		if err := history.Cleanup(dbPath, days); err != nil {
 			results = append(results, RetentionResult{Table: "job_runs", Error: err.Error()})
 		} else {
 			results = append(results, RetentionResult{Table: "job_runs", Deleted: -1}) // existing func doesn't return count
@@ -395,7 +397,7 @@ func runRetention(cfg *Config) []RetentionResult {
 
 		// config_versions
 		days = retentionDays(cfg.Retention.Versions, 180)
-		cleanupVersions(dbPath, days)
+		version.Cleanup(dbPath, days)
 		results = append(results, RetentionResult{Table: "config_versions", Deleted: -1})
 	}
 
@@ -517,7 +519,7 @@ func exportData(cfg *Config) ([]byte, error) {
 	}
 
 	// History
-	if runs, err := queryHistory(dbPath, "", 10000); err == nil {
+	if runs, err := history.Query(dbPath, "", 10000); err == nil {
 		export.History = runs
 	}
 

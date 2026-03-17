@@ -4,6 +4,7 @@ package main
 // All tool types and registry logic live in internal/tools/registry.go.
 
 import (
+	"context"
 	"encoding/json"
 
 	"tetora/internal/provider"
@@ -164,4 +165,82 @@ func registerAdminTools(r *ToolRegistry, cfg *Config, enabled func(string) bool)
 			Builtin: true,
 		})
 	}
+}
+
+// --- Memory Tool Compatibility Wrappers (merged from tool_memory.go) ---
+// Registration moved to internal/tools/memory.go.
+// Wrappers below are used by tests that call handlers directly.
+
+var memoryDepsForTest = tools.MemoryDeps{
+	GetMemory: getMemory,
+	SetMemory: func(cfg *Config, role, key, value string) error {
+		return setMemory(cfg, role, key, value)
+	},
+	DeleteMemory: deleteMemory,
+	SearchMemory: func(cfg *Config, role, query string) ([]tools.MemoryEntry, error) {
+		entries, err := searchMemoryFS(cfg, role, query)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]tools.MemoryEntry, len(entries))
+		for i, e := range entries {
+			result[i] = tools.MemoryEntry{Key: e.Key, Value: e.Value}
+		}
+		return result, nil
+	},
+}
+
+func toolMemorySearch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	h := tools.MakeMemorySearchHandler(memoryDepsForTest)
+	return h(ctx, cfg, input)
+}
+
+func toolMemoryGet(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	h := tools.MakeMemoryGetHandler(memoryDepsForTest)
+	return h(ctx, cfg, input)
+}
+
+func toolKnowledgeSearch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	h := tools.MakeKnowledgeSearchHandler()
+	return h(ctx, cfg, input)
+}
+
+// --- ImageGen Compatibility Aliases (merged from tool_imagegen.go) ---
+// Handler implementations are in internal/tools/imagegen.go.
+
+// Type alias for backwards compat (used by App struct, tests).
+type imageGenLimiter = tools.ImageGenLimiter
+
+// globalImageGenLimiter is the default limiter instance.
+var globalImageGenLimiter = &tools.ImageGenLimiter{}
+
+// estimateImageCost forwards to tools.EstimateImageCost for test compat.
+var estimateImageCost = tools.EstimateImageCost
+
+// imageGenBaseURL forwards to tools.ImageGenBaseURL for test overrides.
+var imageGenBaseURL = tools.ImageGenBaseURL
+
+// toolImageGenerate wraps internal/tools image handler for test compat.
+func toolImageGenerate(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	// Set the shared base URL before calling.
+	tools.ImageGenBaseURL = imageGenBaseURL
+	deps := tools.ImageGenDeps{
+		GetLimiter: func(ctx context.Context) *tools.ImageGenLimiter {
+			return globalImageGenLimiter
+		},
+	}
+	handler := tools.MakeImageGenerateHandler(deps)
+	return handler(ctx, cfg, input)
+}
+
+// toolImageGenerateStatus wraps internal/tools status handler for test compat.
+func toolImageGenerateStatus(ctx context.Context, cfg *Config, _ json.RawMessage) (string, error) {
+	tools.ImageGenBaseURL = imageGenBaseURL
+	deps := tools.ImageGenDeps{
+		GetLimiter: func(ctx context.Context) *tools.ImageGenLimiter {
+			return globalImageGenLimiter
+		},
+	}
+	handler := tools.MakeImageGenerateStatusHandler(deps)
+	return handler(ctx, cfg, nil)
 }

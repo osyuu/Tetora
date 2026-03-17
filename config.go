@@ -17,6 +17,7 @@ import (
 	"tetora/internal/config"
 	"tetora/internal/log"
 	"tetora/internal/migrate"
+	"tetora/internal/version"
 )
 
 // --- Type aliases pointing to internal/config ---
@@ -538,7 +539,7 @@ func updateConfigMCPs(configPath, mcpName string, mcpConfig json.RawMessage) err
 	}
 	// Auto-snapshot config version after MCP change.
 	if cfg := config.LoadForVersioning(configPath); cfg != nil {
-		snapshotConfig(cfg.HistoryDB, configPath, "cli", fmt.Sprintf("mcp %s", mcpName))
+		version.SnapshotConfig(cfg.HistoryDB, configPath, "cli", fmt.Sprintf("mcp %s", mcpName))
 	}
 	return nil
 }

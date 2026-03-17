@@ -15,6 +15,7 @@ import (
 	"tetora/internal/backup"
 	"tetora/internal/log"
 	"tetora/internal/db"
+	"tetora/internal/version"
 )
 
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
@@ -328,7 +329,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 					limit = n
 				}
 			}
-			versions, err := queryVersions(cfg.HistoryDB, "config", "config.json", limit)
+			versions, err := version.QueryVersions(cfg.HistoryDB, "config", "config.json", limit)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
@@ -344,7 +345,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			}
 			json.NewDecoder(r.Body).Decode(&req)
 			configPath := filepath.Join(cfg.BaseDir, "config.json")
-			if err := snapshotConfig(cfg.HistoryDB, configPath, "api", req.Reason); err != nil {
+			if err := version.SnapshotConfig(cfg.HistoryDB, configPath, "api", req.Reason); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
 			}
@@ -365,7 +366,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 		// GET /config/versions/{id} — show version detail
 		if r.Method == http.MethodGet && !strings.Contains(path, "/") {
-			ver, err := queryVersionByID(cfg.HistoryDB, path)
+			ver, err := version.QueryByID(cfg.HistoryDB, path)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
 				return
@@ -378,7 +379,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		if r.Method == http.MethodPost && strings.HasSuffix(path, "/restore") {
 			versionID := strings.TrimSuffix(path, "/restore")
 			configPath := filepath.Join(cfg.BaseDir, "config.json")
-			if _, err := restoreConfigVersion(cfg.HistoryDB, configPath, versionID); err != nil {
+			if _, err := version.RestoreConfig(cfg.HistoryDB, configPath, versionID); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 				return
 			}
@@ -393,7 +394,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				http.Error(w, `{"error":"use GET /config/versions/{id}/diff/{id2}"}`, http.StatusBadRequest)
 				return
 			}
-			result, err := versionDiffDetail(cfg.HistoryDB, parts[0], parts[1])
+			result, err := version.DiffDetail(cfg.HistoryDB, parts[0], parts[1])
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
 				return
@@ -425,7 +426,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		}
 		if entityType == "" {
 			// List all versioned entities.
-			entities, err := queryAllVersionedEntities(cfg.HistoryDB)
+			entities, err := version.QueryAllEntities(cfg.HistoryDB)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
@@ -436,7 +437,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			json.NewEncoder(w).Encode(entities)
 			return
 		}
-		versions, err := queryVersions(cfg.HistoryDB, entityType, entityName, limit)
+		versions, err := version.QueryVersions(cfg.HistoryDB, entityType, entityName, limit)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return

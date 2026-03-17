@@ -11,7 +11,12 @@ import (
 	"time"
 
 	"tetora/internal/log"
+	"tetora/internal/version"
 )
+
+// ConfigVersion is an alias for version.Version so that existing callers in
+// the root package continue to compile without modification.
+type ConfigVersion = version.Version
 
 //go:embed examples/templates/*.json
 var templateFS embed.FS
@@ -163,7 +168,7 @@ func saveWorkflow(cfg *Config, w *Workflow) error {
 		return err
 	}
 	// Auto-snapshot workflow version.
-	snapshotWorkflow(cfg.HistoryDB, w.Name, string(data), "system", "")
+	version.SnapshotWorkflow(cfg.HistoryDB, w.Name, string(data), "system", "")
 	return nil
 }
 
@@ -172,7 +177,7 @@ func deleteWorkflow(cfg *Config, name string) error {
 	path := filepath.Join(workflowDir(cfg), name+".json")
 	// Snapshot before deletion.
 	if data, err := os.ReadFile(path); err == nil {
-		snapshotWorkflow(cfg.HistoryDB, name, string(data), "system", "pre-delete")
+		version.SnapshotWorkflow(cfg.HistoryDB, name, string(data), "system", "pre-delete")
 	}
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
@@ -755,4 +760,40 @@ func buildStepTask(s *WorkflowStep, wCtx *WorkflowContext, workflowName string) 
 		PermissionMode: resolveTemplate(s.PermissionMode, wCtx),
 		Source:         "workflow:" + workflowName,
 	}
+}
+
+// restoreWorkflowVersion restores a workflow to a saved version.
+// Kept in the root package because it depends on root types: Workflow, Config,
+// loadWorkflowByName, and saveWorkflow.
+func restoreWorkflowVersion(dbPath string, cfg *Config, versionID string) error {
+	ver, err := version.QueryByID(dbPath, versionID)
+	if err != nil {
+		return err
+	}
+	if ver.EntityType != "workflow" {
+		return fmt.Errorf("version %q is a %s, not a workflow", versionID, ver.EntityType)
+	}
+
+	// Validate the stored content.
+	var wf Workflow
+	if err := json.Unmarshal([]byte(ver.ContentJSON), &wf); err != nil {
+		return fmt.Errorf("stored version has invalid workflow JSON: %w", err)
+	}
+
+	// Read current workflow for backup snapshot (if it exists).
+	existing, err := loadWorkflowByName(cfg, ver.EntityName)
+	if err == nil && existing != nil {
+		data, _ := json.MarshalIndent(existing, "", "  ")
+		version.SnapshotEntity(dbPath, "workflow", ver.EntityName, string(data), "system", fmt.Sprintf("pre-rollback to %s", versionID))
+	}
+
+	// Save the restored workflow.
+	if err := saveWorkflow(cfg, &wf); err != nil {
+		return fmt.Errorf("write restored workflow: %w", err)
+	}
+
+	// Snapshot the restored state.
+	version.SnapshotEntity(dbPath, "workflow", ver.EntityName, ver.ContentJSON, "system", fmt.Sprintf("rollback to %s", versionID))
+
+	return nil
 }

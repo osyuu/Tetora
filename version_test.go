@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"tetora/internal/cli"
+	"tetora/internal/version"
 )
 
 // setupVersionTestDB is a helper used by tests that exercise root-level wrappers
@@ -15,8 +16,8 @@ func setupVersionTestDB(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	if err := initVersionDB(dbPath); err != nil {
-		t.Fatalf("initVersionDB: %v", err)
+	if err := version.InitDB(dbPath); err != nil {
+		t.Fatalf("version.InitDB: %v", err)
 	}
 	return dbPath
 }
@@ -42,7 +43,7 @@ func TestHandleWorkflowVersionSubcommands(t *testing.T) {
 func TestRestoreWorkflowVersion(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	initVersionDB(dbPath)
+	version.InitDB(dbPath)
 
 	cfg := &Config{
 		BaseDir:   dir,
@@ -57,7 +58,7 @@ func TestRestoreWorkflowVersion(t *testing.T) {
 	saveWorkflow(cfg, wf1)
 
 	// Get v1 ID.
-	versions, _ := queryVersions(dbPath, "workflow", "test-wf", 10)
+	versions, _ := version.QueryVersions(dbPath, "workflow", "test-wf", 10)
 	if len(versions) == 0 {
 		t.Fatal("no workflow versions")
 	}
@@ -90,15 +91,15 @@ func TestRestoreWorkflowVersion(t *testing.T) {
 func TestRestoreConfigVersionInvalidType(t *testing.T) {
 	dbPath := setupVersionTestDB(t)
 
-	snapshotEntity(dbPath, "workflow", "my-wf", `{"name":"my-wf"}`, "test", "")
-	versions, _ := queryVersions(dbPath, "workflow", "my-wf", 10)
+	version.SnapshotEntity(dbPath, "workflow", "my-wf", `{"name":"my-wf"}`, "test", "")
+	versions, _ := version.QueryVersions(dbPath, "workflow", "my-wf", 10)
 	vid := versions[0].VersionID
 
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	os.WriteFile(configPath, []byte(`{}`), 0o644)
 
-	_, err := restoreConfigVersion(dbPath, configPath, vid)
+	_, err := version.RestoreConfig(dbPath, configPath, vid)
 	if err == nil {
 		t.Error("expected error for wrong entity type")
 	}
@@ -108,15 +109,15 @@ func TestRestoreConfigVersionInvalidType(t *testing.T) {
 }
 
 // TestSnapshotEntityEmptyDB verifies the empty-dbPath short-circuit through
-// the root wrappers (snapshotConfig, snapshotWorkflow, snapshotPrompt).
+// the internal version package (snapshotConfig, snapshotWorkflow, snapshotPrompt).
 func TestSnapshotEntityEmptyDB(t *testing.T) {
-	if err := snapshotConfig("", "/nonexistent/config.json", "test", ""); err != nil {
+	if err := version.SnapshotConfig("", "/nonexistent/config.json", "test", ""); err != nil {
 		t.Errorf("expected nil error for empty dbPath, got %v", err)
 	}
-	if err := snapshotWorkflow("", "wf", "{}", "test", ""); err != nil {
+	if err := version.SnapshotWorkflow("", "wf", "{}", "test", ""); err != nil {
 		t.Errorf("expected nil error for empty dbPath, got %v", err)
 	}
-	if err := snapshotPrompt("", "prompt", "hello", "test", ""); err != nil {
+	if err := version.SnapshotPrompt("", "prompt", "hello", "test", ""); err != nil {
 		t.Errorf("expected nil error for empty dbPath, got %v", err)
 	}
 }

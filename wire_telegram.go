@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tetora/internal/db"
+	"tetora/internal/history"
 	"tetora/internal/messaging"
 	"tetora/internal/upload"
 	tgbot "tetora/internal/messaging/telegram"
@@ -339,7 +340,7 @@ func searchMemoryDir(dir, keyword string) string {
 // --- Cost Stats ---
 
 func (r *telegramRuntime) GetCostStats() (today, week, month float64) {
-	stats, err := queryCostStats(r.cfg.HistoryDB)
+	stats, err := history.QueryCostStats(r.cfg.HistoryDB)
 	if err != nil {
 		return 0, 0, 0
 	}
@@ -347,7 +348,7 @@ func (r *telegramRuntime) GetCostStats() (today, week, month float64) {
 }
 
 func (r *telegramRuntime) GetCostByJob() map[string]float64 {
-	result, err := queryCostByJobID(r.cfg.HistoryDB)
+	result, err := history.QueryCostByJobID(r.cfg.HistoryDB)
 	if err != nil {
 		return nil
 	}

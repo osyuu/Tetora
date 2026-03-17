@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tetora/internal/cost"
+	"tetora/internal/history"
 )
 
 func TestResolveDowngradeModel(t *testing.T) {
@@ -70,13 +71,13 @@ func TestCheckBudgetWithDB(t *testing.T) {
 	// Create temp DB.
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
 	// Insert some cost data for today.
 	now := time.Now()
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID:     "test1",
 		Name:      "test",
 		Source:    "test",
@@ -86,7 +87,7 @@ func TestCheckBudgetWithDB(t *testing.T) {
 		CostUSD:   5.0,
 		Agent:      "翡翠",
 	})
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID:     "test2",
 		Name:      "test2",
 		Source:    "test",
@@ -168,12 +169,12 @@ func TestCheckBudgetWithDB(t *testing.T) {
 func TestCheckBudgetAutoDowngrade(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
 	now := time.Now()
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID:     "test1",
 		Name:      "test",
 		Source:    "test",
@@ -209,12 +210,12 @@ func TestCheckBudgetAutoDowngrade(t *testing.T) {
 func TestQuerySpend(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
 	now := time.Now()
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID:     "t1",
 		Name:      "test",
 		Source:    "test",
@@ -224,7 +225,7 @@ func TestQuerySpend(t *testing.T) {
 		CostUSD:   2.5,
 		Agent:      "翡翠",
 	})
-	insertJobRun(dbPath, JobRun{
+	history.InsertRun(dbPath, JobRun{
 		JobID:     "t2",
 		Name:      "test2",
 		Source:    "test",
@@ -309,7 +310,7 @@ func TestSetBudgetPaused(t *testing.T) {
 func TestQueryBudgetStatus(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -341,7 +342,7 @@ func TestQueryBudgetStatus(t *testing.T) {
 func TestFormatBudgetSummary(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
-	if err := initHistoryDB(dbPath); err != nil {
+	if err := history.InitDB(dbPath); err != nil {
 		t.Fatal(err)
 	}
 
