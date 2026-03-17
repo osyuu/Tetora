@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -10,7 +10,22 @@ import (
 	"text/tabwriter"
 )
 
-func cmdQuick(args []string, cfg *Config) {
+type quickAction struct {
+	Name     string `json:"name"`
+	Label    string `json:"label"`
+	Agent    string `json:"agent"`
+	Shortcut string `json:"shortcut"`
+}
+
+type taskResult struct {
+	Status     string  `json:"status"`
+	Output     string  `json:"output"`
+	Error      string  `json:"error"`
+	DurationMs int     `json:"duration_ms"`
+	CostUSD    float64 `json:"cost_usd"`
+}
+
+func CmdQuick(args []string, listenAddr, apiToken string) {
 	if len(args) == 0 {
 		fmt.Println("Usage: tetora quick <list|run|search> [args...]")
 		fmt.Println()
@@ -30,21 +45,21 @@ func cmdQuick(args []string, cfg *Config) {
 	cmd := args[0]
 	switch cmd {
 	case "list":
-		quickList(cfg)
+		quickList(listenAddr, apiToken)
 	case "run":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Error: run requires action name")
 			fmt.Fprintln(os.Stderr, "Usage: tetora quick run <name> [params]")
 			os.Exit(1)
 		}
-		quickRun(cfg, args[1], args[2:])
+		quickRun(listenAddr, apiToken, args[1], args[2:])
 	case "search":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Error: search requires query")
 			fmt.Fprintln(os.Stderr, "Usage: tetora quick search <query>")
 			os.Exit(1)
 		}
-		quickSearch(cfg, args[1])
+		quickSearch(listenAddr, apiToken, args[1])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		fmt.Fprintln(os.Stderr, "Use: tetora quick <list|run|search>")
@@ -52,15 +67,15 @@ func cmdQuick(args []string, cfg *Config) {
 	}
 }
 
-func quickList(cfg *Config) {
-	url := fmt.Sprintf("http://%s/api/quick/list", cfg.ListenAddr)
-	resp, err := httpGet(url, cfg.APIToken)
+func quickList(listenAddr, apiToken string) {
+	url := fmt.Sprintf("http://%s/api/quick/list", listenAddr)
+	resp, err := httpGet(url, apiToken)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	var actions []QuickAction
+	var actions []quickAction
 	if err := json.Unmarshal(resp, &actions); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -87,7 +102,7 @@ func quickList(cfg *Config) {
 	w.Flush()
 }
 
-func quickRun(cfg *Config, name string, paramArgs []string) {
+func quickRun(listenAddr, apiToken, name string, paramArgs []string) {
 	// Parse params from args: key=value format.
 	params := make(map[string]any)
 	for _, arg := range paramArgs {
@@ -116,14 +131,14 @@ func quickRun(cfg *Config, name string, paramArgs []string) {
 		os.Exit(1)
 	}
 
-	url := fmt.Sprintf("http://%s/api/quick/run", cfg.ListenAddr)
-	resp, err := httpPost(url, cfg.APIToken, body)
+	url := fmt.Sprintf("http://%s/api/quick/run", listenAddr)
+	resp, err := httpPost(url, apiToken, body)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	var result TaskResult
+	var result taskResult
 	if err := json.Unmarshal(resp, &result); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -138,15 +153,15 @@ func quickRun(cfg *Config, name string, paramArgs []string) {
 	fmt.Printf("Cost: $%.4f\n", result.CostUSD)
 }
 
-func quickSearch(cfg *Config, query string) {
-	url := fmt.Sprintf("http://%s/api/quick/search?q=%s", cfg.ListenAddr, query)
-	resp, err := httpGet(url, cfg.APIToken)
+func quickSearch(listenAddr, apiToken, query string) {
+	url := fmt.Sprintf("http://%s/api/quick/search?q=%s", listenAddr, query)
+	resp, err := httpGet(url, apiToken)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	var actions []QuickAction
+	var actions []quickAction
 	if err := json.Unmarshal(resp, &actions); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

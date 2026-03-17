@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -19,8 +19,14 @@ import (
 const setupWebPort = "7474"
 const setupWebAddr = "127.0.0.1:" + setupWebPort
 
-// cmdSetup handles: tetora setup --web
-func cmdSetup(args []string) {
+// SetupWebDeps holds callbacks that resolve root-package dependencies.
+type SetupWebDeps struct {
+	// SeedDefaultJobsJSON returns the marshalled default jobs JSON to write to jobs.json.
+	SeedDefaultJobsJSON func() ([]byte, error)
+}
+
+// CmdSetup handles: tetora setup --web
+func CmdSetup(args []string, deps SetupWebDeps) {
 	webMode := false
 	for _, a := range args {
 		if a == "--web" || a == "-web" {
@@ -32,12 +38,12 @@ func cmdSetup(args []string) {
 		fmt.Fprintln(os.Stderr, "  --web   Launch browser-based setup wizard on localhost:7474")
 		os.Exit(1)
 	}
-	runSetupWebServer()
+	runSetupWebServer(deps)
 }
 
 // runSetupWebServer starts a temporary HTTP server for the setup wizard,
 // opens the browser, serves requests until setup completes, then shuts down.
-func runSetupWebServer() {
+func runSetupWebServer(deps SetupWebDeps) {
 	// Check if port is already in use.
 	if ln, err := net.Listen("tcp", setupWebAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: port %s is already in use. Is Tetora already running a setup wizard?\n", setupWebPort)
@@ -56,7 +62,7 @@ func runSetupWebServer() {
 	})
 	mux.HandleFunc("/api/setup/detect", handleSetupDetect)
 	mux.HandleFunc("/api/setup/save", func(w http.ResponseWriter, r *http.Request) {
-		handleSetupSave(w, r, doneCh)
+		handleSetupSave(w, r, doneCh, deps)
 	})
 
 	srv := &http.Server{
@@ -69,7 +75,7 @@ func runSetupWebServer() {
 
 	go func() {
 		time.Sleep(300 * time.Millisecond)
-		openBrowser("http://localhost:" + setupWebPort)
+		openSetupBrowser("http://localhost:" + setupWebPort)
 	}()
 
 	go func() {
@@ -96,14 +102,14 @@ func runSetupWebServer() {
 // handleSetupDetect returns auto-detected values for the wizard.
 func handleSetupDetect(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	claudePath := detectClaude()
+	claudePath := DetectClaude()
 	json.NewEncoder(w).Encode(map[string]string{
 		"claudePath": claudePath,
 	})
 }
 
 // handleSetupSave writes config.json from the wizard form submission.
-func handleSetupSave(w http.ResponseWriter, r *http.Request, doneCh chan struct{}) {
+func handleSetupSave(w http.ResponseWriter, r *http.Request, doneCh chan struct{}, deps SetupWebDeps) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method != http.MethodPost {
@@ -117,7 +123,7 @@ func handleSetupSave(w http.ResponseWriter, r *http.Request, doneCh chan struct{
 		return
 	}
 
-	if err := writeSetupConfig(req); err != nil {
+	if err := writeSetupConfig(req, deps); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -161,7 +167,7 @@ type setupSaveRequest struct {
 	DefaultModel   string `json:"defaultModel"`
 }
 
-func writeSetupConfig(req setupSaveRequest) error {
+func writeSetupConfig(req setupSaveRequest, deps SetupWebDeps) error {
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".tetora")
 	configPath := filepath.Join(configDir, "config.json")
@@ -193,7 +199,7 @@ func writeSetupConfig(req setupSaveRequest) error {
 		"defaultBudget":         2.0,
 		"defaultPermissionMode": "acceptEdits",
 		"defaultWorkdir":        defaultWorkdir,
-		"listenAddr":            randomListenAddr(),
+		"listenAddr":            RandomListenAddr(),
 		"jobsFile":              "jobs.json",
 		"apiToken":              apiToken,
 		"log":                   true,
@@ -282,16 +288,17 @@ func writeSetupConfig(req setupSaveRequest) error {
 	// Create jobs.json with default jobs if not exists.
 	jobsPath := filepath.Join(configDir, "jobs.json")
 	if _, err := os.Stat(jobsPath); os.IsNotExist(err) {
-		jf := JobsFile{Jobs: seedDefaultJobs()}
-		jobsData, _ := json.MarshalIndent(jf, "", "  ")
-		os.WriteFile(jobsPath, append(jobsData, '\n'), 0o644)
+		jobsData, err := deps.SeedDefaultJobsJSON()
+		if err == nil {
+			os.WriteFile(jobsPath, append(jobsData, '\n'), 0o644)
+		}
 	}
 
 	return nil
 }
 
-// openBrowser opens the URL in the default system browser.
-func openBrowser(url string) {
+// openSetupBrowser opens the URL in the default system browser.
+func openSetupBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

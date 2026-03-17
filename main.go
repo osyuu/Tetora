@@ -35,10 +35,14 @@ import (
 	teamsbot "tetora/internal/messaging/teams"
 	tgbot "tetora/internal/messaging/telegram"
 	"tetora/internal/messaging/whatsapp"
+	"tetora/internal/metrics"
 	"tetora/internal/scheduling"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
 )
+
+// metricsGlobal is the global metrics registry.
+var metricsGlobal *metrics.Registry
 
 // initLogger creates the global logger from config.
 func initLogger(cfg LoggingConfig, baseDir string) {
@@ -171,16 +175,32 @@ func main() {
 
 		// --- Commands staying in root (deeply coupled) ---
 		case "init":
-			cmdInit()
+			cli.CmdInit(cli.InitDeps{
+				SeedDefaultJobsJSON: func() ([]byte, error) {
+					return json.MarshalIndent(JobsFile{Jobs: seedDefaultJobs()}, "", "  ")
+				},
+				GenerateMCPBridge: func(baseDir, listenAddr, apiToken string) error {
+					return generateMCPBridgeConfig(&Config{BaseDir: baseDir, ListenAddr: listenAddr, APIToken: apiToken})
+				},
+				InstallHooks: installHooks,
+			})
+			return
+		case "setup":
+			cli.CmdSetup(os.Args[2:], cli.SetupWebDeps{
+				SeedDefaultJobsJSON: func() ([]byte, error) {
+					return json.MarshalIndent(JobsFile{Jobs: seedDefaultJobs()}, "", "  ")
+				},
+			})
 			return
 		case "workflow":
 			cmdWorkflow(os.Args[2:])
 			return
 		case "quick":
-			cmdQuick(os.Args[2:], loadConfig(""))
+			qcfg := loadConfig("")
+			cli.CmdQuick(os.Args[2:], qcfg.ListenAddr, qcfg.APIToken)
 			return
 		case "pairing":
-			cmdPairing(os.Args[2:])
+			cli.CmdPairing(os.Args[2:])
 			return
 		case "mcp-server":
 			cmdMCPServer()
@@ -850,7 +870,17 @@ func main() {
 		}
 
 		// Initialize metrics registry.
-		initMetrics()
+		metricsGlobal = metrics.NewRegistry()
+		metricsGlobal.RegisterCounter("tetora_dispatch_total", "Total dispatches", []string{"role", "status"})
+		metricsGlobal.RegisterHistogram("tetora_dispatch_duration_seconds", "Dispatch latency", []string{"role"}, metrics.DefaultBuckets)
+		metricsGlobal.RegisterCounter("tetora_dispatch_cost_usd", "Total cost in USD", []string{"role"})
+		metricsGlobal.RegisterCounter("tetora_provider_requests_total", "Provider API calls", []string{"provider", "status"})
+		metricsGlobal.RegisterHistogram("tetora_provider_latency_seconds", "Provider response time", []string{"provider"}, metrics.DefaultBuckets)
+		metricsGlobal.RegisterCounter("tetora_provider_tokens_total", "Token usage", []string{"provider", "direction"})
+		metricsGlobal.RegisterGauge("tetora_circuit_state", "Circuit breaker state (0=closed,1=open,2=half-open)", []string{"provider"})
+		metricsGlobal.RegisterGauge("tetora_session_active", "Active session count", []string{"role"})
+		metricsGlobal.RegisterGauge("tetora_queue_depth", "Offline queue depth", nil)
+		metricsGlobal.RegisterCounter("tetora_cron_runs_total", "Cron job executions", []string{"status"})
 
 		// Initialize WhatsApp bot.
 		var whatsappBot *whatsapp.Bot

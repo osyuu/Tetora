@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"tetora/internal/cli"
+	"tetora/internal/config"
 )
 
 // chatTurn represents a single turn in the onboarding conversation.
@@ -23,9 +23,9 @@ type chatTurn struct {
 // Matches ```markdown or ``` blocks whose first content line starts with "# ".
 var soulBlockRe = regexp.MustCompile("(?s)```(?:markdown)?\\s*\\n(# .+?)\\n```")
 
-// runKiraraOnboarding guides first-time users through creating their first agent
+// RunKiraraOnboarding guides first-time users through creating their first agent
 // via a multi-turn conversation with kirara (the onboarding agent).
-func runKiraraOnboarding(scanner *bufio.Scanner, configPath, configDir, claudePath, lang string) {
+func RunKiraraOnboarding(scanner *bufio.Scanner, configPath, configDir, claudePath, lang string) {
 	// Locate kirara's SOUL.md.
 	agentsDir := filepath.Join(configDir, "workspace", "agents")
 	soulPath := filepath.Join(agentsDir, "kirara", "SOUL.md")
@@ -274,7 +274,7 @@ func writeOnboardingAgent(scanner *bufio.Scanner, configPath, configDir, soulCon
 	}
 
 	// Update config.json.
-	rc := AgentConfig{
+	rc := config.AgentConfig{
 		SoulFile:       "SOUL.md",
 		Model:          model,
 		Description:    desc,
@@ -287,7 +287,7 @@ func writeOnboardingAgent(scanner *bufio.Scanner, configPath, configDir, soulCon
 		fmt.Printf("  Error updating config: %v\n", err)
 		return true
 	}
-	if err := cli.UpdateConfigAgents(configPath, roleKey, rcJSON); err != nil {
+	if err := UpdateConfigAgents(configPath, roleKey, rcJSON); err != nil {
 		fmt.Printf("  Error updating config: %v\n", err)
 		return true
 	}

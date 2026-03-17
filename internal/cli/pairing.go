@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"encoding/json"
@@ -6,9 +6,28 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
-func cmdPairing(args []string) {
+// pairingRequest mirrors the daemon's PairingRequest for CLI display.
+type pairingRequest struct {
+	Code      string    `json:"code"`
+	Channel   string    `json:"channel"`
+	UserID    string    `json:"userId"`
+	Username  string    `json:"username"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// jsonStr safely extracts a string value from an any map value.
+func jsonStr(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// CmdPairing implements `tetora pairing <list|approve|reject|revoked|revoke>`.
+func CmdPairing(args []string) {
 	if len(args) == 0 {
 		args = []string{"list"}
 	}
@@ -43,12 +62,10 @@ func cmdPairing(args []string) {
 }
 
 func cmdPairingList() {
-	cfg := loadConfig("")
-	initLogger(cfg.Logging, cfg.BaseDir)
+	cfg := LoadCLIConfig(FindConfigPath())
+	api := cfg.NewAPIClient()
 
-	// Call daemon API.
-	api := newAPIClient(cfg)
-	resp, err := api.get("/api/pairing/pending")
+	resp, err := api.Get("/api/pairing/pending")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to connect to daemon: %v\n", err)
 		os.Exit(1)
@@ -63,7 +80,7 @@ func cmdPairingList() {
 
 	body, _ := io.ReadAll(resp.Body)
 	var result struct {
-		Pending []PairingRequest `json:"pending"`
+		Pending []pairingRequest `json:"pending"`
 		Count   int              `json:"count"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -87,13 +104,11 @@ func cmdPairingList() {
 }
 
 func cmdPairingApprove(code string) {
-	cfg := loadConfig("")
-	initLogger(cfg.Logging, cfg.BaseDir)
+	cfg := LoadCLIConfig(FindConfigPath())
+	api := cfg.NewAPIClient()
 
-	// Call daemon API.
-	api := newAPIClient(cfg)
 	payload := fmt.Sprintf(`{"code":"%s"}`, code)
-	resp, err := api.post("/api/pairing/approve", payload)
+	resp, err := api.Post("/api/pairing/approve", payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to connect to daemon: %v\n", err)
 		os.Exit(1)
@@ -128,13 +143,11 @@ func cmdPairingApprove(code string) {
 }
 
 func cmdPairingReject(code string) {
-	cfg := loadConfig("")
-	initLogger(cfg.Logging, cfg.BaseDir)
+	cfg := LoadCLIConfig(FindConfigPath())
+	api := cfg.NewAPIClient()
 
-	// Call daemon API.
-	api := newAPIClient(cfg)
 	payload := fmt.Sprintf(`{"code":"%s"}`, code)
-	resp, err := api.post("/api/pairing/reject", payload)
+	resp, err := api.Post("/api/pairing/reject", payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to connect to daemon: %v\n", err)
 		os.Exit(1)
@@ -159,12 +172,10 @@ func cmdPairingReject(code string) {
 }
 
 func cmdPairingApproved() {
-	cfg := loadConfig("")
-	initLogger(cfg.Logging, cfg.BaseDir)
+	cfg := LoadCLIConfig(FindConfigPath())
+	api := cfg.NewAPIClient()
 
-	// Call daemon API.
-	api := newAPIClient(cfg)
-	resp, err := api.get("/api/pairing/approved")
+	resp, err := api.Get("/api/pairing/approved")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to connect to daemon: %v\n", err)
 		os.Exit(1)
@@ -205,13 +216,11 @@ func cmdPairingApproved() {
 }
 
 func cmdPairingRevoke(channel, userID string) {
-	cfg := loadConfig("")
-	initLogger(cfg.Logging, cfg.BaseDir)
+	cfg := LoadCLIConfig(FindConfigPath())
+	api := cfg.NewAPIClient()
 
-	// Call daemon API.
-	api := newAPIClient(cfg)
 	payload := fmt.Sprintf(`{"channel":"%s","userId":"%s"}`, channel, userID)
-	resp, err := api.post("/api/pairing/revoke", payload)
+	resp, err := api.Post("/api/pairing/revoke", payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to connect to daemon: %v\n", err)
 		os.Exit(1)

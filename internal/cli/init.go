@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -6,34 +6,25 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"tetora/internal/cli"
+	"tetora/internal/config"
 	"tetora/internal/i18n"
 )
 
-// randomListenAddr picks a random available port on 127.0.0.1 and returns the
-// listen address (e.g. "127.0.0.1:52341"). Called once during init so the port
-// is written to config and stays stable across restarts.
-func randomListenAddr() string {
-	return randomListenPort("127.0.0.1")
-}
-
-// randomListenPort picks a random available port on the given host and returns
-// the full listen address string (e.g. "0.0.0.0:52341").
-func randomListenPort(host string) string {
-	l, err := net.Listen("tcp", host+":0")
-	if err != nil {
-		return host + ":8991"
-	}
-	addr := l.Addr().String()
-	l.Close()
-	return addr
+// InitDeps holds the root-package callbacks that CmdInit needs to invoke.
+// This avoids importing root package from internal/cli.
+type InitDeps struct {
+	// SeedDefaultJobsJSON returns the JSON bytes for jobs.json (already marshalled).
+	SeedDefaultJobsJSON func() ([]byte, error)
+	// GenerateMCPBridge writes the MCP bridge config for the given parameters.
+	GenerateMCPBridge func(baseDir, listenAddr, apiToken string) error
+	// InstallHooks installs Claude Code hooks for the given listen address.
+	InstallHooks func(listenAddr string) error
 }
 
 // --- Interactive menu helpers ---
@@ -167,7 +158,8 @@ func interactiveChoose(options []string, defaultIdx int) int {
 	}
 }
 
-func cmdInit() {
+// CmdInit is the `tetora init` interactive setup wizard.
+func CmdInit(deps InitDeps) {
 	skipOnboarding := false
 	for _, arg := range os.Args[2:] {
 		if arg == "--skip-onboarding" {
@@ -202,11 +194,11 @@ func cmdInit() {
 			fmt.Printf("    %s%d. %s\n", marker, i+1, o)
 		}
 		s := prompt(label, fmt.Sprintf("%d", defaultIdx+1))
-		n, _ := strconv.Atoi(s)
-		if n < 1 || n > len(options) {
+		nv, _ := strconv.Atoi(s)
+		if nv < 1 || nv > len(options) {
 			return defaultIdx
 		}
-		return n - 1
+		return nv - 1
 	}
 
 	// --- Language selection ---
@@ -327,7 +319,7 @@ func cmdInit() {
 		fmt.Printf("  %s\n", L.ClaudeCLIHint4)
 		fmt.Printf("  %s\033[0m\n", L.ClaudeCLIHint5)
 		fmt.Println()
-		detected := detectClaude()
+		detected := DetectClaude()
 		claudePath = prompt(L.ClaudeCLIPathPrompt, detected)
 		defaultModel = prompt(L.DefaultModelPrompt, "sonnet")
 	case 1: // Claude API
@@ -387,7 +379,7 @@ func cmdInit() {
 	}, 0) == 1 {
 		listenHost = "0.0.0.0"
 	}
-	listenAddr := randomListenPort(listenHost)
+	listenAddr := RandomListenPort(listenHost)
 
 	// Default task timeout.
 	fmt.Println()
@@ -529,9 +521,11 @@ func cmdInit() {
 	// Create jobs.json with default jobs if not exists.
 	jobsPath := filepath.Join(configDir, "jobs.json")
 	if _, err := os.Stat(jobsPath); os.IsNotExist(err) {
-		jf := JobsFile{Jobs: seedDefaultJobs()}
-		jobsData, _ := json.MarshalIndent(jf, "", "  ")
-		os.WriteFile(jobsPath, append(jobsData, '\n'), 0o644)
+		if deps.SeedDefaultJobsJSON != nil {
+			if jobsData, err := deps.SeedDefaultJobsJSON(); err == nil {
+				os.WriteFile(jobsPath, append(jobsData, '\n'), 0o644)
+			}
+		}
 	}
 
 	fmt.Printf("\nConfig written: %s\n", configPath)
@@ -549,15 +543,15 @@ func cmdInit() {
 		// Archetype selection.
 		fmt.Println()
 		fmt.Printf("  %s\n", L.ArchetypeTitle)
-		for i, a := range builtinArchetypes {
+		for i, a := range BuiltinArchetypes {
 			fmt.Printf("    %d. %-12s %s\n", i+1, a.Name, a.Description)
 		}
-		fmt.Printf("    %d. %-12s %s\n", len(builtinArchetypes)+1, "blank", L.ArchetypeBlank)
-		archChoice := prompt(fmt.Sprintf(L.ArchetypeChoosePrompt, len(builtinArchetypes)+1), fmt.Sprintf("%d", len(builtinArchetypes)+1))
+		fmt.Printf("    %d. %-12s %s\n", len(BuiltinArchetypes)+1, "blank", L.ArchetypeBlank)
+		archChoice := prompt(fmt.Sprintf(L.ArchetypeChoosePrompt, len(BuiltinArchetypes)+1), fmt.Sprintf("%d", len(BuiltinArchetypes)+1))
 
 		var archetype *AgentArchetype
-		if n, err := strconv.Atoi(archChoice); err == nil && n >= 1 && n <= len(builtinArchetypes) {
-			archetype = &builtinArchetypes[n-1]
+		if nv, err := strconv.Atoi(archChoice); err == nil && nv >= 1 && nv <= len(BuiltinArchetypes) {
+			archetype = &BuiltinArchetypes[nv-1]
 		}
 
 		archModel := defaultModel
@@ -592,15 +586,15 @@ func cmdInit() {
 		soulDst := filepath.Join(agentDir, "SOUL.md")
 		if archetype != nil {
 			if _, err := os.Stat(soulDst); os.IsNotExist(err) {
-				content := generateSoulContent(archetype, agentName)
+				content := GenerateSoulContent(archetype, agentName)
 				os.WriteFile(soulDst, []byte(content), 0o644)
 				fmt.Printf("  Created soul file: %s\n", soulDst)
 			}
 		} else {
 			customPath := prompt(L.SoulFilePrompt, "")
 			if customPath != "" {
-				if data, err := os.ReadFile(customPath); err == nil {
-					os.WriteFile(soulDst, data, 0o644)
+				if soulData, err := os.ReadFile(customPath); err == nil {
+					os.WriteFile(soulDst, soulData, 0o644)
 					fmt.Printf("  Copied soul file to: %s\n", soulDst)
 				} else {
 					fmt.Printf("  Cannot read %s, creating template instead\n", customPath)
@@ -609,7 +603,7 @@ func cmdInit() {
 			}
 			if customPath == "" {
 				if _, err := os.Stat(soulDst); os.IsNotExist(err) {
-					content := generateSoulContent(&AgentArchetype{SoulTemplate: `# {{.RoleName}} — Soul File
+					content := GenerateSoulContent(&AgentArchetype{SoulTemplate: `# {{.RoleName}} — Soul File
 
 ## Identity
 You are {{.RoleName}}, a specialized AI agent in the Tetora orchestration system.
@@ -636,7 +630,7 @@ You are {{.RoleName}}, a specialized AI agent in the Tetora orchestration system
 		}
 
 		// Add agent to config.
-		rc := AgentConfig{
+		rc := config.AgentConfig{
 			SoulFile:       "SOUL.md",
 			Model:          roleModel,
 			Description:    roleDesc,
@@ -647,7 +641,7 @@ You are {{.RoleName}}, a specialized AI agent in the Tetora orchestration system
 			fmt.Fprintf(os.Stderr, "  "+L.RoleError+"\n", err)
 			return ""
 		}
-		if err := cli.UpdateConfigAgents(configPath, agentName, rcJSON); err != nil {
+		if err := UpdateConfigAgents(configPath, agentName, rcJSON); err != nil {
 			fmt.Fprintf(os.Stderr, "  "+L.RoleError+"\n", err)
 			return ""
 		}
@@ -674,7 +668,7 @@ You are {{.RoleName}}, a specialized AI agent in the Tetora orchestration system
 		scanner.Scan()
 		if strings.ToLower(strings.TrimSpace(scanner.Text())) != "n" {
 			initDefaultAgent = name
-			updateConfigField(configPath, func(raw map[string]any) {
+			MutateConfig(configPath, func(raw map[string]any) {
 				raw["defaultAgent"] = name
 			})
 			fmt.Printf("  "+L.DefaultAgentSet+"\n", name)
@@ -714,7 +708,7 @@ You are {{.RoleName}}, a specialized AI agent in the Tetora orchestration system
 				if coordinator == "" {
 					coordinator = createdAgents[0]
 				}
-				updateConfigField(configPath, func(raw map[string]any) {
+				MutateConfig(configPath, func(raw map[string]any) {
 					sd, _ := raw["smartDispatch"].(map[string]any)
 					if sd == nil {
 						sd = map[string]any{}
@@ -735,7 +729,7 @@ afterRole:
 	fmt.Printf("  %s ", L.ServiceInstallPrompt)
 	scanner.Scan()
 	if strings.ToLower(strings.TrimSpace(scanner.Text())) == "y" {
-		cli.ServiceInstall()
+		ServiceInstall()
 	}
 
 	// --- Optional: Install Claude Code hooks ---
@@ -743,14 +737,17 @@ afterRole:
 	fmt.Printf("  Install Claude Code hooks for real-time monitoring? (y/N) ")
 	scanner.Scan()
 	if strings.ToLower(strings.TrimSpace(scanner.Text())) == "y" {
-		if err := installHooks(listenAddr); err != nil {
-			fmt.Printf("  Warning: %v\n", err)
+		if deps.InstallHooks != nil {
+			if err := deps.InstallHooks(listenAddr); err != nil {
+				fmt.Printf("  Warning: %v\n", err)
+			}
 		}
-		initCfg := &Config{ListenAddr: listenAddr, BaseDir: configDir}
-		if err := generateMCPBridgeConfig(initCfg); err != nil {
-			fmt.Printf("  Warning: MCP bridge config: %v\n", err)
-		} else {
-			fmt.Printf("  MCP bridge config: %s/mcp/bridge.json\n", configDir)
+		if deps.GenerateMCPBridge != nil {
+			if err := deps.GenerateMCPBridge(configDir, listenAddr, apiToken); err != nil {
+				fmt.Printf("  Warning: MCP bridge config: %v\n", err)
+			} else {
+				fmt.Printf("  MCP bridge config: %s/mcp/bridge.json\n", configDir)
+			}
 		}
 	}
 
@@ -769,37 +766,29 @@ afterRole:
 	// Use claudePath if set (claude-code provider), otherwise try to detect claude binary.
 	effectiveClaude := claudePath
 	if effectiveClaude == "" {
-		effectiveClaude = detectClaude()
+		effectiveClaude = DetectClaude()
 	}
 	if isFirstTime && !skipOnboarding && effectiveClaude != "" {
 		fmt.Println()
-		runKiraraOnboarding(scanner, configPath, configDir, effectiveClaude, selectedLang)
+		RunKiraraOnboarding(scanner, configPath, configDir, effectiveClaude, selectedLang)
 	}
 }
 
 // enableSmartDispatch sets smartDispatch.enabled=true in the config file.
 func enableSmartDispatch(configPath string) {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return
-	}
-	var raw map[string]any
-	if json.Unmarshal(data, &raw) != nil {
-		return
-	}
-	sd, _ := raw["smartDispatch"].(map[string]any)
-	if sd == nil {
-		sd = map[string]any{}
-	}
-	sd["enabled"] = true
-	raw["smartDispatch"] = sd
-	out, _ := json.MarshalIndent(raw, "", "  ")
-	os.WriteFile(configPath, append(out, '\n'), 0o644)
+	MutateConfig(configPath, func(raw map[string]any) {
+		sd, _ := raw["smartDispatch"].(map[string]any)
+		if sd == nil {
+			sd = map[string]any{}
+		}
+		sd["enabled"] = true
+		raw["smartDispatch"] = sd
+	})
 }
 
 // updateConfigDiscordRoutes adds a channelID→role route to the discord config.
 func updateConfigDiscordRoutes(configPath, channelID, role string) {
-	updateConfigField(configPath, func(raw map[string]any) {
+	MutateConfig(configPath, func(raw map[string]any) {
 		discord, _ := raw["discord"].(map[string]any)
 		if discord == nil {
 			return
@@ -822,21 +811,4 @@ func updateConfigDiscordRoutes(configPath, channelID, role string) {
 		}
 		raw["discord"] = discord
 	})
-}
-
-func detectClaude() string {
-	// Prefer Homebrew path, then npm, then PATH lookup.
-	home, _ := os.UserHomeDir()
-	for _, p := range []string{
-		"/usr/local/bin/claude",
-		filepath.Join(home, ".local", "bin", "claude"),
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if path, err := exec.LookPath("claude"); err == nil {
-		return path
-	}
-	return "/usr/local/bin/claude"
 }
