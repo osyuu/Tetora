@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tetora/internal/cli"
 	"tetora/internal/knowledge"
 )
 
@@ -234,9 +235,9 @@ func TestFormatSizeKnowledge(t *testing.T) {
 		{1572864, "1.5 MB"},
 	}
 	for _, tc := range tests {
-		got := formatSize(tc.bytes)
+		got := cli.FormatSize(tc.bytes)
 		if got != tc.want {
-			t.Errorf("formatSize(%d) = %q, want %q", tc.bytes, got, tc.want)
+			t.Errorf("FormatSize(%d) = %q, want %q", tc.bytes, got, tc.want)
 		}
 	}
 }

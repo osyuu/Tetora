@@ -1090,7 +1090,12 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 					}
 				}
 			} else {
-				channels := discordGetWebhookChannels(ce.cfg)
+				var channels []NotificationChannel
+			for _, ch := range ce.cfg.Notifications {
+				if ch.Type == "discord" {
+					channels = append(channels, ch)
+				}
+			}
 				for _, ch := range channels {
 					if ch.Name == channelName {
 						if err := cronDiscordSendWebhook(ch.WebhookURL, msg); err != nil {

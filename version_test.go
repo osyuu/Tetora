@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"tetora/internal/cli"
 )
 
 // setupVersionTestDB is a helper used by tests that exercise root-level wrappers
@@ -23,13 +25,13 @@ func setupVersionTestDB(t *testing.T) string {
 // function that depends on root types (Config, etc.).
 func TestHandleConfigVersionSubcommands(t *testing.T) {
 	// Just test that unknown actions return false.
-	if handleConfigVersionSubcommands("unknown-action", nil) {
+	if cli.HandleConfigVersionSubcommands("unknown-action", nil) {
 		t.Error("unknown action should return false")
 	}
 }
 
 func TestHandleWorkflowVersionSubcommands(t *testing.T) {
-	if handleWorkflowVersionSubcommands("unknown-action", nil) {
+	if cli.HandleWorkflowVersionSubcommands("unknown-action", nil) {
 		t.Error("unknown action should return false")
 	}
 }

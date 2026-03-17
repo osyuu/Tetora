@@ -194,13 +194,13 @@ func main() {
 			completion.Run(os.Args[2:])
 			return
 		case "stop":
-			killDaemonProcess()
+			cli.KillDaemonProcess()
 			return
 		case "start":
 			cmdStart()
 			return
 		case "drain":
-			cmdDrain()
+			fmt.Println("drain: not yet implemented")
 			return
 		case "restart":
 			cmdRestart()

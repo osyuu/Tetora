@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"tetora/internal/cli"
 )
 
 var tetoraVersion = "dev"
@@ -331,7 +333,7 @@ func cmdUpgrade(args []string) {
 	plist := filepath.Join(home, "Library", "LaunchAgents", "com.tetora.daemon.plist")
 	if _, err := os.Stat(plist); err == nil {
 		fmt.Println("Restarting service (launchd)...")
-		if err := restartLaunchd(plist); err != nil {
+		if err := cli.RestartLaunchd(plist); err != nil {
 			fmt.Fprintf(os.Stderr, "Restart failed: %v\n", err)
 			fmt.Println("Start manually with: tetora serve")
 			return
@@ -354,11 +356,11 @@ func cmdUpgrade(args []string) {
 // and starts a new one in the background. Returns true if restart succeeded.
 func restartDaemonProcess(binaryPath string) bool {
 	// Check if there's a running daemon to restart.
-	if len(findDaemonPIDs()) == 0 {
+	if len(cli.FindDaemonPIDs()) == 0 {
 		return false
 	}
 
-	if !killDaemonProcess() {
+	if !cli.KillDaemonProcess() {
 		fmt.Fprintf(os.Stderr, "ERROR: could not stop old daemon, aborting restart\n")
 		return true // old daemon exists but we couldn't kill it
 	}
@@ -423,7 +425,7 @@ func cmdRestart() {
 	plist := filepath.Join(home, "Library", "LaunchAgents", "com.tetora.daemon.plist")
 	if _, err := os.Stat(plist); err == nil {
 		fmt.Println("Restarting service (launchd)...")
-		if err := restartLaunchd(plist); err != nil {
+		if err := cli.RestartLaunchd(plist); err != nil {
 			fmt.Fprintf(os.Stderr, "Restart failed: %v\n", err)
 			fmt.Println("Start manually with: tetora serve")
 			return

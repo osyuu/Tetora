@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"tetora/internal/cli"
 )
 
 // chatTurn represents a single turn in the onboarding conversation.
@@ -280,7 +282,12 @@ func writeOnboardingAgent(scanner *bufio.Scanner, configPath, configDir, soulCon
 		Provider:       provider,
 		ToolProfile:    "standard",
 	}
-	if err := updateConfigAgents(configPath, roleKey, &rc); err != nil {
+	rcJSON, err := json.Marshal(&rc)
+	if err != nil {
+		fmt.Printf("  Error updating config: %v\n", err)
+		return true
+	}
+	if err := cli.UpdateConfigAgents(configPath, roleKey, rcJSON); err != nil {
 		fmt.Printf("  Error updating config: %v\n", err)
 		return true
 	}

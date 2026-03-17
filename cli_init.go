@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"tetora/internal/cli"
 	"tetora/internal/i18n"
 )
 
@@ -641,7 +642,12 @@ You are {{.RoleName}}, a specialized AI agent in the Tetora orchestration system
 			Description:    roleDesc,
 			PermissionMode: rolePerm,
 		}
-		if err := updateConfigAgents(configPath, agentName, &rc); err != nil {
+		rcJSON, err := json.Marshal(&rc)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  "+L.RoleError+"\n", err)
+			return ""
+		}
+		if err := cli.UpdateConfigAgents(configPath, agentName, rcJSON); err != nil {
 			fmt.Fprintf(os.Stderr, "  "+L.RoleError+"\n", err)
 			return ""
 		}
@@ -729,7 +735,7 @@ afterRole:
 	fmt.Printf("  %s ", L.ServiceInstallPrompt)
 	scanner.Scan()
 	if strings.ToLower(strings.TrimSpace(scanner.Text())) == "y" {
-		serviceInstall()
+		cli.ServiceInstall()
 	}
 
 	// --- Optional: Install Claude Code hooks ---

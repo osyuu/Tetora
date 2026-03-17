@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"tetora/internal/cli"
 )
 
 func skipIfNoSQLite(t *testing.T) {
@@ -154,12 +156,12 @@ func TestParseRoleFlag(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		role, rest := parseRoleFlag(tc.args)
+		role, rest := cli.ParseRoleFlag(tc.args)
 		if role != tc.wantRole {
-			t.Errorf("parseRoleFlag(%v) role = %q, want %q", tc.args, role, tc.wantRole)
+			t.Errorf("cli.ParseRoleFlag(%v) role = %q, want %q", tc.args, role, tc.wantRole)
 		}
 		if len(rest) != len(tc.wantRest) {
-			t.Errorf("parseRoleFlag(%v) rest len = %d, want %d", tc.args, len(rest), len(tc.wantRest))
+			t.Errorf("cli.ParseRoleFlag(%v) rest len = %d, want %d", tc.args, len(rest), len(tc.wantRest))
 		}
 	}
 }

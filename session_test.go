@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -692,9 +693,9 @@ func TestJoinStrings(t *testing.T) {
 		{[]string{"x", "y", "z"}, ", ", "x, y, z"},
 	}
 	for _, tc := range tests {
-		got := joinStrings(tc.input, tc.sep)
+		got := strings.Join(tc.input, tc.sep)
 		if got != tc.want {
-			t.Errorf("joinStrings(%v, %q) = %q, want %q", tc.input, tc.sep, got, tc.want)
+			t.Errorf("strings.Join(%v, %q) = %q, want %q", tc.input, tc.sep, got, tc.want)
 		}
 	}
 }

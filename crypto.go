@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"tetora/internal/crypto"
@@ -145,7 +146,7 @@ func cmdMigrateEncrypt() {
 			}
 			if len(updates) > 0 {
 				sql := fmt.Sprintf("UPDATE contacts SET %s WHERE id = '%s'",
-					joinStrings(updates, ", "), escapeSQLite(id))
+					strings.Join(updates, ", "), escapeSQLite(id))
 				queryDB(dbPath, sql)
 				contactCount++
 			}

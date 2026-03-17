@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"tetora/internal/cli"
 )
 
 func (s *Server) registerAgentCfgRoutes(mux *http.ServeMux) {
@@ -116,7 +118,12 @@ func (s *Server) registerAgentCfgRoutes(mux *http.ServeMux) {
 			}
 
 			configPath := findConfigPath()
-			if err := updateConfigAgents(configPath, body.Name, &rc); err != nil {
+			rcJSON, err := json.Marshal(&rc)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"marshal config: %v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			if err := cli.UpdateConfigAgents(configPath, body.Name, rcJSON); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"save config: %v"}`, err), http.StatusInternalServerError)
 				return
 			}
@@ -207,7 +214,12 @@ func (s *Server) registerAgentCfgRoutes(mux *http.ServeMux) {
 			}
 
 			configPath := findConfigPath()
-			if err := updateConfigAgents(configPath, name, &rc); err != nil {
+			rcJSON, err := json.Marshal(&rc)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"marshal config: %v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			if err := cli.UpdateConfigAgents(configPath, name, rcJSON); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"save: %v"}`, err), http.StatusInternalServerError)
 				return
 			}
@@ -231,7 +243,7 @@ func (s *Server) registerAgentCfgRoutes(mux *http.ServeMux) {
 				}
 			}
 			configPath := findConfigPath()
-			if err := updateConfigAgents(configPath, name, nil); err != nil {
+			if err := cli.UpdateConfigAgents(configPath, name, nil); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"save: %v"}`, err), http.StatusInternalServerError)
 				return
 			}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"tetora/internal/cli"
 )
 
 func cmdWorkflow(args []string) {
@@ -32,7 +34,7 @@ func cmdWorkflow(args []string) {
 		return
 	}
 	// Try version-related subcommands first.
-	if handleWorkflowVersionSubcommands(args[0], args[1:]) {
+	if cli.HandleWorkflowVersionSubcommands(args[0], args[1:]) {
 		return
 	}
 	switch args[0] {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/cli"
 	"tetora/internal/config"
 	"tetora/internal/migrate"
 )
@@ -733,4 +734,21 @@ func tryLoadConfigForVersioning(configPath string) *Config {
 		cfg.HistoryDB = filepath.Join(cfg.BaseDir, cfg.HistoryDB)
 	}
 	return &cfg
+}
+
+// updateAgentModel updates an agent's model in config and returns the old model.
+func updateAgentModel(cfg *Config, agentName, model string) (string, error) {
+	ac, ok := cfg.Agents[agentName]
+	if !ok {
+		return "", fmt.Errorf("agent %q not found", agentName)
+	}
+	old := ac.Model
+	ac.Model = model
+	cfg.Agents[agentName] = ac
+	configPath := findConfigPath()
+	agentJSON, err := json.Marshal(&ac)
+	if err != nil {
+		return "", err
+	}
+	return old, cli.UpdateConfigAgents(configPath, agentName, agentJSON)
 }

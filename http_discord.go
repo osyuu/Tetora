@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -193,4 +194,89 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
+}
+
+// discordGetWebhookChannels returns Discord notification channels from config.
+func discordGetWebhookChannels(cfg *Config) []NotificationChannel {
+	var out []NotificationChannel
+	for _, ch := range cfg.Notifications {
+		if ch.Type == "discord" {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
+// discordValidChannelName validates a Discord notification channel name.
+func discordValidChannelName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// discordUpdateNotificationsConfig adds or updates a Discord notification channel in config.
+func discordUpdateNotificationsConfig(configPath, name string, ch *NotificationChannel) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	var channels []NotificationChannel
+	if notifRaw, ok := raw["notifications"]; ok {
+		_ = json.Unmarshal(notifRaw, &channels)
+	}
+
+	if ch == nil {
+		filtered := channels[:0]
+		for _, c := range channels {
+			if c.Name != name {
+				filtered = append(filtered, c)
+			}
+		}
+		channels = filtered
+	} else {
+		found := false
+		for i, c := range channels {
+			if c.Name == name {
+				channels[i] = *ch
+				found = true
+				break
+			}
+		}
+		if !found {
+			channels = append(channels, *ch)
+		}
+	}
+
+	b, _ := json.Marshal(channels)
+	raw["notifications"] = b
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, append(out, '\n'), 0o644)
+}
+
+// discordSendTestWebhook sends a test message to a Discord webhook URL.
+func discordSendTestWebhook(webhookURL, channelName string) error {
+	payload := fmt.Sprintf(`{"content":"🔔 Test notification from Tetora — channel: %s"}`, channelName)
+	resp, err := http.Post(webhookURL, "application/json", strings.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("Discord returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
