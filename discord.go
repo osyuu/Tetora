@@ -1009,7 +1009,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 			if strings.TrimSpace(output) == "" {
 				// Session mode: result.Output is empty but progressBuilder may have accumulated content
 				if progressBuilder != nil {
-					if text := progressBuilder.getText(); strings.TrimSpace(text) != "" {
+					if text := progressBuilder.GetText(); strings.TrimSpace(text) != "" {
 						output = strings.TrimSpace(text)
 					}
 				}
