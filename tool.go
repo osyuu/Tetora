@@ -42,11 +42,11 @@ func registerBuiltins(r *ToolRegistry, cfg *Config) {
 		e, ok := cfg.Tools.Builtin[name]
 		return !ok || e
 	}
-	registerCoreTools(r, cfg, enabled)
+	tools.RegisterCoreTools(r, cfg, enabled, buildCoreDeps())
 	tools.RegisterMemoryTools(r, cfg, enabled, buildMemoryDeps())
-	registerLifeTools(r, cfg, enabled)
-	registerIntegrationTools(r, cfg, enabled)
-	registerDailyTools(r, cfg, enabled)
+	tools.RegisterLifeTools(r, cfg, enabled, buildLifeDeps())
+	tools.RegisterIntegrationTools(r, cfg, enabled, buildIntegrationDeps(cfg))
+	tools.RegisterDailyTools(r, cfg, enabled, buildDailyDeps(cfg))
 	registerAdminTools(r, cfg, enabled)
 	tools.RegisterTaskboardTools(r, cfg, enabled, buildTaskboardDeps(cfg))
 	tools.RegisterImageGenTools(r, cfg, enabled, buildImageGenDeps())
