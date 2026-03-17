@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"time"
 
+	"tetora/internal/circuit"
 	"tetora/internal/log"
 	"tetora/internal/provider"
 	"tetora/internal/tmux"
@@ -340,7 +341,7 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 	var lastErr string
 	for i, providerName := range candidates {
 		if cfg.Runtime.CircuitRegistry != nil {
-			cb := cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(providerName)
+			cb := cfg.Runtime.CircuitRegistry.(*circuit.Registry).Get(providerName)
 			if !cb.Allow() {
 				log.DebugCtx(ctx, "circuit open, skipping provider", "provider", providerName)
 				if i == 0 && len(candidates) > 1 {
@@ -369,7 +370,7 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 		if errMsg != "" {
 			if provider.IsTransientError(errMsg) {
 				if cfg.Runtime.CircuitRegistry != nil {
-					cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(providerName).RecordFailure()
+					cfg.Runtime.CircuitRegistry.(*circuit.Registry).Get(providerName).RecordFailure()
 				}
 				log.WarnCtx(ctx, "provider transient error", "provider", providerName, "error", errMsg)
 				lastErr = fmt.Sprintf("provider %s: %s", providerName, errMsg)
@@ -392,7 +393,7 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 
 		if errMsg == "" {
 			if cfg.Runtime.CircuitRegistry != nil {
-				cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(providerName).RecordSuccess()
+				cfg.Runtime.CircuitRegistry.(*circuit.Registry).Get(providerName).RecordSuccess()
 			}
 			if result == nil {
 				result = &provider.Result{}

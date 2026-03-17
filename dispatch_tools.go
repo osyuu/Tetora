@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"tetora/internal/classify"
 	"tetora/internal/log"
 	"tetora/internal/provider"
 
@@ -75,7 +76,7 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 		allowed = resolveAllowedTools(cfg, task.Agent)
 	}
 	// Apply complexity-based tool filtering.
-	complexity := classifyComplexity(task.Prompt, task.Source)
+	complexity := classify.Classify(task.Prompt, task.Source)
 	complexityProfile := ToolsForComplexity(complexity)
 	if complexityProfile != "full" && complexityProfile != "none" {
 		profileAllowed := ToolsForProfile(complexityProfile)

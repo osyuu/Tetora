@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/circuit"
 	"tetora/internal/cli"
 	"tetora/internal/config"
 	"tetora/internal/log"
@@ -360,7 +361,12 @@ func tryLoadConfig(path string) (*Config, error) {
 	cfg.Runtime.ProviderRegistry = initProviders(&cfg)
 
 	// Initialize circuit breaker registry.
-	cfg.Runtime.CircuitRegistry = newCircuitRegistry(cfg.CircuitBreaker)
+	cfg.Runtime.CircuitRegistry = circuit.NewRegistry(circuit.Config{
+		Enabled:          cfg.CircuitBreaker.Enabled,
+		FailThreshold:    cfg.CircuitBreaker.FailThreshold,
+		SuccessThreshold: cfg.CircuitBreaker.SuccessThreshold,
+		OpenTimeout:      cfg.CircuitBreaker.OpenTimeout,
+	})
 
 	return &cfg, nil
 }

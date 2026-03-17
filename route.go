@@ -11,6 +11,7 @@ import (
 
 	dtypes "tetora/internal/dispatch"
 	"tetora/internal/log"
+	"tetora/internal/webhook"
 )
 
 // --- Smart Dispatch Types (aliases to internal/dispatch) ---
@@ -420,7 +421,7 @@ func smartDispatch(ctx context.Context, cfg *Config, prompt string, source strin
 			route.Agent, route.Method, route.Confidence, attempts, truncate(prompt, 100)), "")
 
 	// Webhook notifications.
-	sendWebhooks(cfg, result.Status, WebhookPayload{
+	sendWebhooks(cfg, result.Status, webhook.Payload{
 		JobID:    task.ID,
 		Name:     task.Name,
 		Source:   task.Source,

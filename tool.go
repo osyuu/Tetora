@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 
+	"tetora/internal/classify"
 	"tetora/internal/provider"
 )
 
@@ -148,11 +149,11 @@ func ToolsForProfile(profile string) map[string]bool {
 }
 
 // ToolsForComplexity returns the tool profile name appropriate for the given request complexity.
-func ToolsForComplexity(c RequestComplexity) string {
+func ToolsForComplexity(c classify.Complexity) string {
 	switch c {
-	case ComplexitySimple:
+	case classify.Simple:
 		return "none"
-	case ComplexityStandard:
+	case classify.Standard:
 		return "standard"
 	default:
 		return "full"

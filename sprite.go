@@ -2,6 +2,8 @@ package main
 
 import (
 	"strings"
+
+	"tetora/internal/classify"
 	"tetora/internal/sprite"
 )
 
@@ -39,14 +41,13 @@ func newAgentSpriteTracker() *agentSpriteTracker                     { return sp
 // --- State Resolution ---
 
 // isChatSource returns true if the task source indicates a chat conversation.
-// Uses chatSources map from classify.go.
 func isChatSource(source string) bool {
 	s := strings.ToLower(source)
 	// Source may include channel suffix like "discord:12345".
 	if i := strings.IndexByte(s, ':'); i > 0 {
 		s = s[:i]
 	}
-	return chatSources[s]
+	return classify.ChatSources[s]
 }
 
 // resolveAgentSprite determines the sprite state from dispatch/task context.

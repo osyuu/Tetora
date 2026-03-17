@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"tetora/internal/classify"
 	"tetora/internal/knowledge"
 )
 
@@ -17,7 +18,7 @@ import (
 //	Simple:   soul (truncated 4KB) only — no reflection, style, citation, rules, knowledge
 //	Standard: full soul + 1 reflection + citation + rules index + knowledge index
 //	Complex:  full soul + 3 reflections + citation + writing style + full rules + full knowledge
-func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity RequestComplexity) {
+func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity classify.Complexity) {
 	// --- Provider type check ---
 	// If the provider is "claude-code", only inject soul prompt and skip everything else.
 	// Claude Code reads project files (CLAUDE.md, workspace) natively — double injection causes confusion.
@@ -44,7 +45,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 		}
 		if soulPrompt != "" {
 			switch complexity {
-			case ComplexitySimple:
+			case classify.Simple:
 				task.SystemPrompt = truncateToChars(soulPrompt, 4000)
 			default:
 				task.SystemPrompt = truncateToChars(soulPrompt, cfg.PromptBudget.SoulMaxOrDefault())
@@ -115,7 +116,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 
 	// --- 5. Knowledge dir ---
 	// Simple: skip. Standard/Complex: inject if exists and < 50KB.
-	if complexity != ComplexitySimple {
+	if complexity != classify.Simple {
 		if cfg.KnowledgeDir != "" && knowledge.HasFiles(cfg.KnowledgeDir) && estimateDirSize(cfg.KnowledgeDir) <= 50*1024 {
 			task.AddDirs = append(task.AddDirs, cfg.KnowledgeDir)
 		}
@@ -123,9 +124,9 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 
 	// --- 6. Reflection ---
 	// Simple: skip. Standard: limit 1. Complex: limit 3.
-	if complexity != ComplexitySimple && cfg.Reflection.Enabled && agentName != "" && cfg.HistoryDB != "" {
+	if complexity != classify.Simple && cfg.Reflection.Enabled && agentName != "" && cfg.HistoryDB != "" {
 		limit := 1
-		if complexity == ComplexityComplex {
+		if complexity == classify.Complex {
 			limit = 3
 		}
 		if refCtx := buildReflectionContext(cfg.HistoryDB, agentName, limit); refCtx != "" {
@@ -135,7 +136,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 
 	// --- 7. Writing Style ---
 	// Simple/Standard: skip. Complex: inject.
-	if complexity == ComplexityComplex && cfg.WritingStyle.Enabled {
+	if complexity == classify.Complex && cfg.WritingStyle.Enabled {
 		style := loadWritingStyle(cfg)
 		if style != "" {
 			task.SystemPrompt += "\n\n## Writing Style\n\n" + style
@@ -144,7 +145,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 
 	// --- 8. Citation Rules ---
 	// Simple: skip. Standard/Complex: inject.
-	if complexity != ComplexitySimple && cfg.Citation.Enabled {
+	if complexity != classify.Simple && cfg.Citation.Enabled {
 		citationFmt := cfg.Citation.Format
 		if citationFmt == "" {
 			citationFmt = "bracket"
@@ -171,7 +172,7 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 
 	// --- 9. Workspace Content Injection ---
 	// Simple: skip entirely. Standard/Complex: call injectWorkspaceContent.
-	if complexity != ComplexitySimple {
+	if complexity != classify.Simple {
 		injectWorkspaceContent(cfg, task, agentName)
 	}
 
@@ -179,9 +180,9 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity Req
 	// Simple: clear AddDirs, only keep baseDir.
 	// Standard: keep workspace dir only (+ baseDir).
 	// Complex: keep all.
-	if complexity == ComplexitySimple {
+	if complexity == classify.Simple {
 		task.AddDirs = []string{cfg.BaseDir}
-	} else if complexity == ComplexityStandard {
+	} else if complexity == classify.Standard {
 		var kept []string
 		ws := resolveWorkspace(cfg, agentName)
 		for _, d := range task.AddDirs {

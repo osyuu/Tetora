@@ -12,6 +12,7 @@ import (
 	"tetora/internal/history"
 	"tetora/internal/log"
 	"tetora/internal/quiet"
+	"tetora/internal/webhook"
 )
 
 var quietGlobal = quiet.NewState(log.Info)
@@ -1109,7 +1110,7 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 		}
 
 		// Webhook notifications.
-		sendWebhooks(ce.cfg, result.Status, WebhookPayload{
+		sendWebhooks(ce.cfg, result.Status, webhook.Payload{
 			JobID:    j.ID,
 			Name:     j.Name,
 			Source:   "cron",

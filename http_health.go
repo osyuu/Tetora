@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"tetora/internal/circuit"
 )
 
 func formatDurationShort(d time.Duration) string {
@@ -176,7 +178,7 @@ func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
 		w.Header().Set("Content-Type", "application/json")
 		var status map[string]any
 		if cfg.Runtime.CircuitRegistry != nil {
-			status = cfg.Runtime.CircuitRegistry.(*circuitRegistry).Status()
+			status = cfg.Runtime.CircuitRegistry.(*circuit.Registry).Status()
 		} else {
 			status = map[string]any{}
 		}
@@ -200,7 +202,7 @@ func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"circuit breaker not initialized"}`, http.StatusServiceUnavailable)
 			return
 		}
-		if ok := cfg.Runtime.CircuitRegistry.(*circuitRegistry).ResetKey(provider); !ok {
+		if ok := cfg.Runtime.CircuitRegistry.(*circuit.Registry).ResetKey(provider); !ok {
 			http.Error(w, `{"error":"provider not found"}`, http.StatusNotFound)
 			return
 		}

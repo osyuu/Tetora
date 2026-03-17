@@ -16,6 +16,7 @@ import (
 	"tetora/internal/messaging"
 	"tetora/internal/trace"
 	"tetora/internal/upload"
+	"tetora/internal/webhook"
 )
 
 // messagingRuntime implements messaging.BotRuntime using root package functions.
@@ -260,7 +261,7 @@ func (r *messagingRuntime) SetMemory(agent, key, value string) {
 }
 
 func (r *messagingRuntime) SendWebhooks(status string, payload map[string]interface{}) {
-	wp := WebhookPayload{}
+	wp := webhook.Payload{}
 	if v, ok := payload["job_id"].(string); ok {
 		wp.JobID = v
 	}

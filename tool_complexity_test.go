@@ -1,16 +1,20 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"tetora/internal/classify"
+)
 
 func TestToolsForComplexity(t *testing.T) {
 	tests := []struct {
 		name       string
-		complexity RequestComplexity
+		complexity classify.Complexity
 		want       string
 	}{
-		{"simple returns none", ComplexitySimple, "none"},
-		{"standard returns standard", ComplexityStandard, "standard"},
-		{"complex returns full", ComplexityComplex, "full"},
+		{"simple returns none", classify.Simple, "none"},
+		{"standard returns standard", classify.Standard, "standard"},
+		{"complex returns full", classify.Complex, "full"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -27,7 +31,7 @@ func TestToolsForComplexityProfileIntegration(t *testing.T) {
 	// correctly by ToolsForProfile.
 
 	// "none" profile should return nil from ToolsForProfile (unknown profile).
-	profile := ToolsForComplexity(ComplexitySimple)
+	profile := ToolsForComplexity(classify.Simple)
 	if profile != "none" {
 		t.Fatalf("expected 'none' for simple, got %q", profile)
 	}
@@ -37,7 +41,7 @@ func TestToolsForComplexityProfileIntegration(t *testing.T) {
 	}
 
 	// "standard" should return a non-nil set with known tools.
-	profile = ToolsForComplexity(ComplexityStandard)
+	profile = ToolsForComplexity(classify.Standard)
 	if profile != "standard" {
 		t.Fatalf("expected 'standard', got %q", profile)
 	}
@@ -53,7 +57,7 @@ func TestToolsForComplexityProfileIntegration(t *testing.T) {
 	}
 
 	// "full" should return nil (all tools).
-	profile = ToolsForComplexity(ComplexityComplex)
+	profile = ToolsForComplexity(classify.Complex)
 	if profile != "full" {
 		t.Fatalf("expected 'full', got %q", profile)
 	}

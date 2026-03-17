@@ -12,6 +12,7 @@ import (
 	"tetora/internal/log"
 	"tetora/internal/trace"
 	"tetora/internal/upload"
+	"tetora/internal/webhook"
 )
 
 // --- Constants ---
@@ -1215,7 +1216,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 	auditLog(dbPath, "route.dispatch", "discord",
 		fmt.Sprintf("agent=%s method=%s session=%s", route.Agent, route.Method, task.SessionID), "")
 
-	sendWebhooks(db.cfg, result.Status, WebhookPayload{
+	sendWebhooks(db.cfg, result.Status, webhook.Payload{
 		JobID: task.ID, Name: task.Name, Source: task.Source,
 		Status: result.Status, Cost: result.CostUSD, Duration: result.DurationMs,
 		Model: result.Model, Output: truncate(result.Output, 500), Error: truncate(result.Error, 300),

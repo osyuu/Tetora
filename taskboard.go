@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-
-	"tetora/internal/log"
 	"tetora/internal/db"
+	"tetora/internal/log"
+	"tetora/internal/webhook"
 )
 
 // --- Task Board Types ---
@@ -630,7 +630,7 @@ func (tb *TaskBoardEngine) fireWebhook(event string, payload any) {
 	fullEvent := "taskboard." + event
 	for _, wh := range tb.webhooks {
 		// Check if webhook listens to this event.
-		if !webhookMatchesEvent(wh, fullEvent) {
+		if !webhook.MatchesEvent(webhook.Config{URL: wh.URL, Events: wh.Events, Headers: wh.Headers}, fullEvent) {
 			continue
 		}
 

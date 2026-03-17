@@ -25,7 +25,7 @@ func checkSLAViolationsTest(c *Config, notifyFn func(string)) {
 }
 
 // querySLAStatusAllTest is a test helper that mimics the old querySLAStatusAll wrapper.
-func querySLAStatusAllTest(c *Config) ([]SLAStatus, error) {
+func querySLAStatusAllTest(c *Config) ([]sla.SLAStatus, error) {
 	window := c.SLA.WindowOrDefault()
 	windowHours := int(window.Hours())
 	if windowHours <= 0 {
@@ -229,7 +229,7 @@ func TestSLAStatusViolation(t *testing.T) {
 		},
 		SLA: SLAConfig{
 			Enabled: true,
-			Agents: map[string]AgentSLACfg{
+			Agents: map[string]sla.AgentSLACfg{
 				"翡翠": {MinSuccessRate: 0.95},
 			},
 		},
@@ -269,7 +269,7 @@ func TestSLAStatusOK(t *testing.T) {
 		},
 		SLA: SLAConfig{
 			Enabled: true,
-			Agents: map[string]AgentSLACfg{
+			Agents: map[string]sla.AgentSLACfg{
 				"翡翠": {MinSuccessRate: 0.90},
 			},
 		},
@@ -290,7 +290,7 @@ func TestSLAStatusOK(t *testing.T) {
 func TestRecordSLACheck(t *testing.T) {
 	dbPath := setupSLATestDB(t)
 
-	sla.RecordSLACheck(dbPath, SLACheckResult{
+	sla.RecordSLACheck(dbPath, sla.SLACheckResult{
 		Agent:        "翡翠",
 		Timestamp:   time.Now().Format(time.RFC3339),
 		SuccessRate: 0.85,
@@ -341,7 +341,7 @@ func TestCheckSLAViolationsNotifies(t *testing.T) {
 		SLA: SLAConfig{
 			Enabled: true,
 			Window:  "24h",
-			Agents: map[string]AgentSLACfg{
+			Agents: map[string]sla.AgentSLACfg{
 				"黒曜": {MinSuccessRate: 0.90},
 			},
 		},
@@ -381,7 +381,7 @@ func TestCheckSLAViolationsNoData(t *testing.T) {
 		HistoryDB: dbPath,
 		SLA: SLAConfig{
 			Enabled: true,
-			Agents: map[string]AgentSLACfg{
+			Agents: map[string]sla.AgentSLACfg{
 				"翡翠": {MinSuccessRate: 0.90},
 			},
 		},
@@ -424,7 +424,7 @@ func TestSLACheckerTick(t *testing.T) {
 		SLA: SLAConfig{
 			Enabled:       true,
 			CheckInterval: "1s",
-			Agents: map[string]AgentSLACfg{
+			Agents: map[string]sla.AgentSLACfg{
 				"翡翠": {MinSuccessRate: 0.90},
 			},
 		},
@@ -498,7 +498,7 @@ func TestSLALatencyThreshold(t *testing.T) {
 		},
 		SLA: SLAConfig{
 			Enabled: true,
-			Agents: map[string]AgentSLACfg{
+			Agents: map[string]sla.AgentSLACfg{
 				"黒曜": {MinSuccessRate: 0.90, MaxP95LatencyMs: 60000}, // max 60s
 			},
 		},
@@ -532,11 +532,11 @@ func TestSLADisabledNoOp(t *testing.T) {
 func TestSLACheckHistoryQuery(t *testing.T) {
 	dbPath := setupSLATestDB(t)
 
-	sla.RecordSLACheck(dbPath, SLACheckResult{
+	sla.RecordSLACheck(dbPath, sla.SLACheckResult{
 		Agent: "翡翠", Timestamp: time.Now().Format(time.RFC3339),
 		SuccessRate: 0.95, P95Latency: 10000, Violation: false,
 	})
-	sla.RecordSLACheck(dbPath, SLACheckResult{
+	sla.RecordSLACheck(dbPath, sla.SLACheckResult{
 		Agent: "黒曜", Timestamp: time.Now().Format(time.RFC3339),
 		SuccessRate: 0.80, P95Latency: 50000, Violation: true, Detail: "low success rate",
 	})

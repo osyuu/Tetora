@@ -9,8 +9,9 @@ import (
 	"time"
 
 
-	"tetora/internal/log"
+	"tetora/internal/circuit"
 	"tetora/internal/db"
+	"tetora/internal/log"
 )
 
 // --- Queue Item ---
@@ -320,8 +321,8 @@ func (d *queueDrainer) anyProviderAvailable() bool {
 		return true // no circuit breaker = always available
 	}
 	for name := range d.cfg.Providers {
-		cb := d.cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(name)
-		if cb.State() != CircuitOpen {
+		cb := d.cfg.Runtime.CircuitRegistry.(*circuit.Registry).Get(name)
+		if cb.State() != circuit.Open {
 			return true
 		}
 	}

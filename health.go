@@ -4,11 +4,39 @@ package main
 // Business logic lives in internal/health/; this file bridges globals/Config.
 
 import (
+	"context"
 	"fmt"
+	"time"
+
+	"tetora/internal/circuit"
 	"tetora/internal/db"
 	"tetora/internal/health"
-	"time"
+	"tetora/internal/sla"
 )
+
+// --- SLA monitor ---
+
+// slaChecker wraps sla.Checker, bridging *Config.
+type slaChecker struct {
+	cfg     *Config
+	inner   *sla.Checker
+	lastRun time.Time
+}
+
+func newSLAChecker(cfg *Config, notifyFn func(string)) *slaChecker {
+	return &slaChecker{
+		cfg:   cfg,
+		inner: sla.NewChecker(cfg.HistoryDB, cfg.SLA, notifyFn),
+	}
+}
+
+func (s *slaChecker) tick(ctx context.Context) {
+	if !s.cfg.SLA.Enabled {
+		return
+	}
+	s.inner.Tick(ctx)
+	s.lastRun = s.inner.LastRun()
+}
 
 // deepHealthCheck performs a comprehensive health check and returns a structured report.
 func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startTime time.Time) map[string]any {
@@ -48,12 +76,12 @@ func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startT
 				Status: "ok",
 			}
 			if cfg.Runtime.CircuitRegistry != nil {
-				cb := cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get(name)
+				cb := cfg.Runtime.CircuitRegistry.(*circuit.Registry).Get(name)
 				st := cb.State()
 				pi.Circuit = st.String()
-				if st == CircuitOpen {
+				if st == circuit.Open {
 					pi.Status = "open"
-				} else if st == CircuitHalfOpen {
+				} else if st == circuit.HalfOpen {
 					pi.Status = "recovering"
 				}
 			}
@@ -63,10 +91,10 @@ func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startT
 		if _, exists := providers["claude"]; !exists {
 			pi := health.ProviderInfo{Type: "claude-cli", Status: "ok"}
 			if cfg.Runtime.CircuitRegistry != nil {
-				cb := cfg.Runtime.CircuitRegistry.(*circuitRegistry).Get("claude")
+				cb := cfg.Runtime.CircuitRegistry.(*circuit.Registry).Get("claude")
 				st := cb.State()
 				pi.Circuit = st.String()
-				if st == CircuitOpen {
+				if st == circuit.Open {
 					pi.Status = "open"
 				}
 			}
@@ -96,7 +124,7 @@ func deepHealthCheck(cfg *Config, state *dispatchState, cron *CronEngine, startT
 
 	// Circuit breakers summary.
 	if cfg.Runtime.CircuitRegistry != nil {
-		input.CircuitStatus = cfg.Runtime.CircuitRegistry.(*circuitRegistry).Status()
+		input.CircuitStatus = cfg.Runtime.CircuitRegistry.(*circuit.Registry).Status()
 	}
 
 	// Offline queue.

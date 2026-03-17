@@ -9,11 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"tetora/internal/log"
+	"tetora/internal/classify"
 	"tetora/internal/cost"
 	dtypes "tetora/internal/dispatch"
+	"tetora/internal/log"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
+	"tetora/internal/webhook"
 )
 
 // --- Type Aliases (canonical definitions in internal/dispatch) ---
@@ -22,6 +24,23 @@ type ChannelNotifier = dtypes.ChannelNotifier
 type Task = dtypes.Task
 type TaskResult = dtypes.TaskResult
 type DispatchResult = dtypes.DispatchResult
+
+// --- Webhook Helpers ---
+
+// sendWebhooks converts cfg.Webhooks to []webhook.Config and posts the event payload
+// to all matching endpoints.
+func sendWebhooks(cfg *Config, event string, payload webhook.Payload) {
+	whs := make([]webhook.Config, len(cfg.Webhooks))
+	for i, w := range cfg.Webhooks {
+		whs[i] = webhook.Config{URL: w.URL, Events: w.Events, Headers: w.Headers}
+	}
+	webhook.Send(whs, event, payload)
+}
+
+// webhookMatchesEvent checks whether a WebhookConfig should fire for the given event.
+func webhookMatchesEvent(wh WebhookConfig, event string) bool {
+	return webhook.MatchesEvent(webhook.Config{URL: wh.URL, Events: wh.Events, Headers: wh.Headers}, event)
+}
 
 // --- Failed Task Storage (for retry/reroute) ---
 
@@ -404,7 +423,7 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 	}
 
 	// Classify request complexity and build tiered system prompt.
-	complexity := classifyComplexity(task.Prompt, task.Source)
+	complexity := classify.Classify(task.Prompt, task.Source)
 	if task.Source != "route-classify" {
 		buildTieredPrompt(cfg, &task, agentName, complexity)
 	} else {
@@ -651,7 +670,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 	}
 
 	// Classify request complexity and build tiered system prompt.
-	complexity := classifyComplexity(task.Prompt, task.Source)
+	complexity := classify.Classify(task.Prompt, task.Source)
 	buildTieredPrompt(cfg, &task, agentName, complexity)
 
 	// Apply trust level (may override permissionMode for observe mode).
@@ -770,7 +789,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 	// Reuse complexity from tiered prompt builder for tool trimming.
 	start := time.Now()
 	var pr *ProviderResult
-	if complexity == ComplexitySimple {
+	if complexity == classify.Simple {
 		// Simple requests skip the tool engine entirely.
 		pr = executeWithProvider(taskCtx, cfg, task, agentName, cfg.Runtime.ProviderRegistry.(*providerRegistry), eventCh)
 	} else {
@@ -924,7 +943,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 	}
 
 	// Webhook notifications.
-	sendWebhooks(cfg, result.Status, WebhookPayload{
+	sendWebhooks(cfg, result.Status, webhook.Payload{
 		JobID:    task.ID,
 		Name:     task.Name,
 		Source:   task.Source,

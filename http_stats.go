@@ -185,7 +185,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 				return
 			}
 			if statuses == nil {
-				statuses = []SLAStatus{}
+				statuses = []sla.SLAStatus{}
 			}
 
 			// Also fetch recent check history.
@@ -198,7 +198,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			}
 			history, _ := sla.QuerySLAHistory(cfg.HistoryDB, role, limit)
 			if history == nil {
-				history = []SLACheckResult{}
+				history = []sla.SLACheckResult{}
 			}
 
 			json.NewEncoder(w).Encode(map[string]any{
