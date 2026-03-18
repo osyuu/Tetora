@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 )
 
@@ -23,10 +24,12 @@ func RegisterDocsRoutes(mux *http.ServeMux, fs embed.FS, docsList []DocsPageEntr
 	for i := range docsList {
 		entry := &docsList[i]
 		allowed[entry.File] = struct{}{}
-		base := strings.TrimSuffix(entry.File, ".md")
+		// i18n variants live in docs/i18n/ using the base filename only (no directory prefix).
+		// e.g. README.md → docs/i18n/README.zh-TW.md
+		base := strings.TrimSuffix(filepath.Base(entry.File), ".md")
 		var langs []string
 		for _, lang := range supportedLangs {
-			candidate := base + "." + lang + ".md"
+			candidate := "docs/i18n/" + base + "." + lang + ".md"
 			if _, err := fs.ReadFile(candidate); err == nil {
 				langs = append(langs, lang)
 				allowed[candidate] = struct{}{}
@@ -65,8 +68,8 @@ func RegisterDocsRoutes(mux *http.ServeMux, fs embed.FS, docsList []DocsPageEntr
 
 		resolvedPath := filePath
 		if lang := r.URL.Query().Get("lang"); lang != "" && lang != "en" {
-			base := strings.TrimSuffix(filePath, ".md")
-			candidate := base + "." + lang + ".md"
+			base := strings.TrimSuffix(filepath.Base(filePath), ".md")
+			candidate := "docs/i18n/" + base + "." + lang + ".md"
 			if _, ok := allowed[candidate]; ok {
 				resolvedPath = candidate
 			}

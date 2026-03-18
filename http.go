@@ -2545,13 +2545,13 @@ func wsEventsReadLoop(conn net.Conn) {
 //go:embed dashboard.html
 var dashboardHTML []byte
 
-//go:embed office_bg.webp
+//go:embed assets/office_bg.webp
 var officeBgWebp []byte
 
-//go:embed sprite_ruri.png sprite_hisui.png sprite_kokuyou.png sprite_kohaku.png sprite_default.png
+//go:embed assets/sprites/sprite_ruri.png assets/sprites/sprite_hisui.png assets/sprites/sprite_kokuyou.png assets/sprites/sprite_kohaku.png assets/sprites/sprite_default.png
 var spriteFS embed.FS
 
-//go:embed README.md README.*.md INSTALL.md CHANGELOG.md ROADMAP.md CONTRIBUTING.md docs/*.md
+//go:embed README.md INSTALL.md CHANGELOG.md ROADMAP.md CONTRIBUTING.md docs/*.md docs/i18n/*.md
 var docsFS embed.FS
 
 var supportedDocsLangs = []string{"zh-TW", "ja", "ko", "id", "th", "fil", "es", "fr", "de"}
@@ -2589,7 +2589,7 @@ func handleSprite(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := spriteFS.ReadFile("sprite_" + name)
+	data, err := spriteFS.ReadFile("assets/sprites/sprite_" + name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -5130,7 +5130,7 @@ func triggerWebhookWorkflow(ctx context.Context, cfg *Config, name string, whCfg
 	}
 }
 
-//go:embed apidocs.html
+//go:embed docs/apidocs.html
 var apiDocsHTML string
 
 // handleAPIDocs serves the embedded API documentation HTML page.

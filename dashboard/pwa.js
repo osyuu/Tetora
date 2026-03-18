@@ -450,6 +450,7 @@ function refreshSettings() {
       renderSettingsSecurity(data.security || {});
       renderSettingsHeartbeat(data.heartbeat || {});
       renderSettingsTaskBoard(data.taskBoard || {});
+      renderSettingsProviders();
       refreshNotificationsTable();
       refreshDiscordSettings();
       refreshHooksStatus();
@@ -457,6 +458,172 @@ function refreshSettings() {
     .catch(function(e) {
       document.getElementById('settings-loading').innerHTML = '<span style="color:var(--red)">Failed to load: ' + e + '</span>';
     });
+}
+
+// --- Provider Management ---
+
+var _providerPresets = [];
+var _selectedPreset = null;
+
+function renderSettingsProviders() {
+  fetch(API + '/api/provider-presets').then(function(r){return r.json()}).then(function(presets) {
+    _providerPresets = presets;
+    var el = document.getElementById('providers-list');
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px">Use "Add Provider" to configure LLM providers. Providers are saved to config.json and hot-reloaded.</div>';
+  }).catch(function(){});
+}
+
+function openAddProviderModal() {
+  document.getElementById('provider-modal').style.display = '';
+  showProviderStep(1);
+  _selectedPreset = null;
+
+  // Fetch presets if not loaded
+  if (_providerPresets.length === 0) {
+    fetch(API + '/api/provider-presets').then(function(r){return r.json()}).then(function(presets) {
+      _providerPresets = presets;
+      renderPresetList(presets);
+    });
+  } else {
+    renderPresetList(_providerPresets);
+  }
+}
+
+function closeProviderModal() {
+  document.getElementById('provider-modal').style.display = 'none';
+}
+
+function renderPresetList(presets) {
+  var el = document.getElementById('provider-preset-list');
+  el.innerHTML = '';
+  presets.forEach(function(p) {
+    var card = document.createElement('button');
+    card.className = 'btn';
+    card.style.cssText = 'text-align:left;padding:12px;display:flex;justify-content:space-between;align-items:center';
+    var status = '';
+    if (p.dynamic && !p.available) {
+      status = '<span style="color:var(--yellow);font-size:11px">offline</span>';
+    }
+    card.innerHTML = '<span><strong>' + p.displayName + '</strong>' +
+      (p.requiresKey ? ' <span style="color:var(--muted);font-size:11px">API key required</span>' : '') +
+      '</span>' + status;
+    card.onclick = function() { selectPreset(p); };
+    el.appendChild(card);
+  });
+}
+
+function selectPreset(preset) {
+  _selectedPreset = preset;
+  if (preset.requiresKey) {
+    showProviderStep(2);
+  } else {
+    showProviderStep(3);
+    populateModelSelect(preset);
+  }
+}
+
+function showProviderStep(step) {
+  for (var i = 1; i <= 4; i++) {
+    document.getElementById('provider-step-' + i).style.display = i === step ? '' : 'none';
+  }
+}
+
+function providerStepBack(toStep) {
+  showProviderStep(toStep);
+}
+
+function providerStepNext(toStep) {
+  if (toStep === 3) {
+    populateModelSelect(_selectedPreset);
+  }
+  if (toStep === 4) {
+    var model = document.getElementById('provider-model-select').value ||
+                document.getElementById('provider-model-custom').value;
+    var summary = '<strong>' + _selectedPreset.displayName + '</strong><br>' +
+      'Base URL: ' + (_selectedPreset.baseUrl || '(default)') + '<br>' +
+      'Model: ' + (model || '(none selected)');
+    document.getElementById('provider-test-summary').innerHTML = summary;
+    document.getElementById('provider-test-result').innerHTML = '';
+    document.getElementById('provider-save-btn').disabled = true;
+  }
+  showProviderStep(toStep);
+}
+
+function populateModelSelect(preset) {
+  var sel = document.getElementById('provider-model-select');
+  sel.innerHTML = '<option value="">-- select model --</option>';
+  var models = (preset.fetchedModels && preset.fetchedModels.length > 0) ? preset.fetchedModels : preset.models;
+  (models || []).forEach(function(m) {
+    var opt = document.createElement('option');
+    opt.value = m; opt.textContent = m;
+    sel.appendChild(opt);
+  });
+}
+
+function testProviderConnection() {
+  var btn = document.getElementById('provider-test-btn');
+  var result = document.getElementById('provider-test-result');
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+  result.innerHTML = '<span style="color:var(--muted)">Connecting...</span>';
+
+  var model = document.getElementById('provider-model-select').value ||
+              document.getElementById('provider-model-custom').value;
+  var apiKey = document.getElementById('provider-apikey').value;
+
+  fetch(API + '/api/provider-test', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      type: _selectedPreset.type,
+      baseUrl: _selectedPreset.baseUrl,
+      apiKey: apiKey,
+      model: model
+    })
+  }).then(function(r){return r.json()}).then(function(d) {
+    btn.disabled = false;
+    btn.textContent = 'Test';
+    if (d.ok) {
+      result.innerHTML = '<span style="color:var(--green)">Connected</span> &middot; ' + d.latencyMs + 'ms';
+      document.getElementById('provider-save-btn').disabled = false;
+    } else {
+      result.innerHTML = '<span style="color:var(--red)">Failed</span>: ' + (d.error || 'unknown error');
+    }
+  }).catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = 'Test';
+    result.innerHTML = '<span style="color:var(--red)">Error</span>: ' + e;
+  });
+}
+
+function saveProvider() {
+  var model = document.getElementById('provider-model-select').value ||
+              document.getElementById('provider-model-custom').value;
+  var apiKey = document.getElementById('provider-apikey').value;
+  var name = _selectedPreset.name;
+
+  fetch(API + '/api/config/providers', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name: name,
+      config: {
+        type: _selectedPreset.type,
+        baseUrl: _selectedPreset.baseUrl,
+        apiKey: apiKey,
+        model: model
+      }
+    })
+  }).then(function(r){return r.json()}).then(function(d) {
+    if (d.status === 'ok') {
+      closeProviderModal();
+      refreshSettings();
+    } else {
+      alert('Save failed: ' + (d.error || 'unknown'));
+    }
+  }).catch(function(e) {
+    alert('Save failed: ' + e);
+  });
 }
 
 // --- v3: Claude Code Hooks Settings ---
