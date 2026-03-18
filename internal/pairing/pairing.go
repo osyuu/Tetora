@@ -1,4 +1,5 @@
-package main
+// Package pairing manages user pairing/approval for messaging channel access.
+package pairing
 
 import (
 	"crypto/rand"
@@ -8,20 +9,28 @@ import (
 	"sync"
 	"time"
 
-
-	"tetora/internal/log"
 	"tetora/internal/db"
+	"tetora/internal/log"
 )
 
-// --- Types ---
-
-type PairingManager struct {
-	mu      sync.RWMutex
-	cfg     *Config
-	pending map[string]*PairingRequest // code → request
+// Config holds the pairing-relevant config fields.
+type Config struct {
+	HistoryDB      string
+	DMPairing      bool
+	PairingExpiry  string
+	PairingMessage string
+	Allowlists     map[string][]string // channel → allowed user IDs
 }
 
-type PairingRequest struct {
+// Manager manages in-memory pending pairing requests and DB-backed approvals.
+type Manager struct {
+	mu      sync.RWMutex
+	cfg     Config
+	pending map[string]*Request // code → request
+}
+
+// Request represents a pending pairing request.
+type Request struct {
 	Code      string    `json:"code"`
 	Channel   string    `json:"channel"` // "telegram", "slack", "discord", "whatsapp"
 	UserID    string    `json:"userId"`
@@ -30,23 +39,20 @@ type PairingRequest struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// --- Core Functions ---
-
-func newPairingManager(cfg *Config) *PairingManager {
-	pm := &PairingManager{
+// New creates a new Manager with the given config.
+func New(cfg Config) *Manager {
+	pm := &Manager{
 		cfg:     cfg,
-		pending: make(map[string]*PairingRequest),
+		pending: make(map[string]*Request),
 	}
-	if err := pm.initPairingDB(); err != nil {
+	if err := pm.initDB(); err != nil {
 		log.Warn("init pairing db failed", "error", err)
 	}
-	// Cleanup expired pending requests periodically.
 	go pm.cleanupExpired()
 	return pm
 }
 
-// cleanupExpired removes expired pending requests every minute.
-func (pm *PairingManager) cleanupExpired() {
+func (pm *Manager) cleanupExpired() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -62,33 +68,25 @@ func (pm *PairingManager) cleanupExpired() {
 }
 
 // IsAllowed checks if a user is allowed to interact with the bot.
-// Check order: 1) allowlist, 2) approved in DB, 3) DM pairing disabled → allow all
-func (pm *PairingManager) IsAllowed(channel, userID string) bool {
-	// If DM pairing is disabled, allow all.
-	if !pm.cfg.AccessControl.DMPairing {
+func (pm *Manager) IsAllowed(channel, userID string) bool {
+	if !pm.cfg.DMPairing {
 		return true
 	}
-
-	// Check allowlist first.
-	if allowlist, ok := pm.cfg.AccessControl.Allowlists[channel]; ok {
+	if allowlist, ok := pm.cfg.Allowlists[channel]; ok {
 		for _, id := range allowlist {
 			if id == userID {
 				return true
 			}
 		}
 	}
-
-	// Check DB for approval.
 	return pm.isApprovedInDB(channel, userID)
 }
 
 // RequestPairing generates a 6-digit code and stores the pending request.
-// Returns the formatted pairing message.
-func (pm *PairingManager) RequestPairing(channel, userID, username string) (string, error) {
+func (pm *Manager) RequestPairing(channel, userID, username string) (string, error) {
 	code := pm.generateCode()
 
-	// Parse expiry duration (default 15m).
-	expiryStr := pm.cfg.AccessControl.PairingExpiry
+	expiryStr := pm.cfg.PairingExpiry
 	if expiryStr == "" {
 		expiryStr = "15m"
 	}
@@ -98,7 +96,7 @@ func (pm *PairingManager) RequestPairing(channel, userID, username string) (stri
 	}
 
 	now := time.Now()
-	req := &PairingRequest{
+	req := &Request{
 		Code:      code,
 		Channel:   channel,
 		UserID:    userID,
@@ -111,63 +109,52 @@ func (pm *PairingManager) RequestPairing(channel, userID, username string) (stri
 	pm.pending[code] = req
 	pm.mu.Unlock()
 
-	// Format message using template.
-	msg := pm.cfg.AccessControl.PairingMessage
+	msg := pm.cfg.PairingMessage
 	if msg == "" {
 		msg = "Please approve this request using the code: {{.Code}}"
 	}
 	msg = strings.ReplaceAll(msg, "{{.Code}}", code)
-
 	return msg, nil
 }
 
-// Approve finds a pending request by code, stores approval in DB, and removes from pending.
-func (pm *PairingManager) Approve(code string) (*PairingRequest, error) {
+// Approve finds a pending request by code, stores approval in DB.
+func (pm *Manager) Approve(code string) (*Request, error) {
 	pm.mu.Lock()
 	req, ok := pm.pending[code]
 	if !ok {
 		pm.mu.Unlock()
 		return nil, fmt.Errorf("invalid or expired code")
 	}
-
-	// Check expiry.
 	if time.Now().After(req.ExpiresAt) {
 		delete(pm.pending, code)
 		pm.mu.Unlock()
 		return nil, fmt.Errorf("code expired")
 	}
-
-	// Remove from pending.
 	delete(pm.pending, code)
 	pm.mu.Unlock()
 
-	// Store approval in DB.
 	if err := pm.storeApproval(req.Channel, req.UserID, req.Username); err != nil {
 		return nil, fmt.Errorf("store approval failed: %w", err)
 	}
-
 	return req, nil
 }
 
 // Reject removes a pending request by code.
-func (pm *PairingManager) Reject(code string) error {
+func (pm *Manager) Reject(code string) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-
 	if _, ok := pm.pending[code]; !ok {
 		return fmt.Errorf("invalid or expired code")
 	}
-
 	delete(pm.pending, code)
 	return nil
 }
 
 // ListPending returns all pending pairing requests.
-func (pm *PairingManager) ListPending() []*PairingRequest {
+func (pm *Manager) ListPending() []*Request {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-
-	var result []*PairingRequest
+	var result []*Request
 	for _, req := range pm.pending {
 		result = append(result, req)
 	}
@@ -175,24 +162,19 @@ func (pm *PairingManager) ListPending() []*PairingRequest {
 }
 
 // ListApproved returns all approved users from DB.
-func (pm *PairingManager) ListApproved() ([]map[string]any, error) {
+func (pm *Manager) ListApproved() ([]map[string]any, error) {
 	sql := `SELECT channel, user_id, username, approved_at FROM pairing_approved ORDER BY approved_at DESC`
-	rows, err := db.Query(pm.cfg.HistoryDB, sql)
-	if err != nil {
-		return nil, err
-	}
-	return rows, nil
+	return db.Query(pm.cfg.HistoryDB, sql)
 }
 
 // Revoke removes an approved user from DB.
-func (pm *PairingManager) Revoke(channel, userID string) error {
+func (pm *Manager) Revoke(channel, userID string) error {
 	return pm.removeApproval(channel, userID)
 }
 
-// --- DB Storage Helpers ---
+// --- DB Storage ---
 
-// initPairingDB creates the pairing_approved table if it doesn't exist.
-func (pm *PairingManager) initPairingDB() error {
+func (pm *Manager) initDB() error {
 	sql := `CREATE TABLE IF NOT EXISTS pairing_approved (
 		channel TEXT NOT NULL,
 		user_id TEXT NOT NULL,
@@ -207,8 +189,7 @@ func (pm *PairingManager) initPairingDB() error {
 	return nil
 }
 
-// isApprovedInDB checks if a user is approved in the database.
-func (pm *PairingManager) isApprovedInDB(channel, userID string) bool {
+func (pm *Manager) isApprovedInDB(channel, userID string) bool {
 	sql := fmt.Sprintf(
 		`SELECT COUNT(*) as cnt FROM pairing_approved WHERE channel = '%s' AND user_id = '%s'`,
 		db.Escape(channel), db.Escape(userID))
@@ -220,9 +201,7 @@ func (pm *PairingManager) isApprovedInDB(channel, userID string) bool {
 	return ok && cnt > 0
 }
 
-// storeApproval stores a user approval in the database.
-// Uses INSERT OR REPLACE to handle duplicate approvals.
-func (pm *PairingManager) storeApproval(channel, userID, username string) error {
+func (pm *Manager) storeApproval(channel, userID, username string) error {
 	sql := fmt.Sprintf(
 		`INSERT OR REPLACE INTO pairing_approved (channel, user_id, username, approved_at)
 		 VALUES ('%s', '%s', '%s', datetime('now'))`,
@@ -234,8 +213,7 @@ func (pm *PairingManager) storeApproval(channel, userID, username string) error 
 	return nil
 }
 
-// removeApproval removes a user approval from the database.
-func (pm *PairingManager) removeApproval(channel, userID string) error {
+func (pm *Manager) removeApproval(channel, userID string) error {
 	sql := fmt.Sprintf(
 		`DELETE FROM pairing_approved WHERE channel = '%s' AND user_id = '%s'`,
 		db.Escape(channel), db.Escape(userID))
@@ -246,22 +224,15 @@ func (pm *PairingManager) removeApproval(channel, userID string) error {
 	return nil
 }
 
-// generateCode generates a random 6-digit numeric code.
-func (pm *PairingManager) generateCode() string {
+func (pm *Manager) generateCode() string {
 	for {
-		// Generate 3 random bytes (24 bits).
 		b := make([]byte, 3)
 		if _, err := rand.Read(b); err != nil {
-			// Fallback to timestamp-based code.
 			return fmt.Sprintf("%06d", time.Now().Unix()%1000000)
 		}
-		// Convert to integer and mod 1000000 to get 6 digits.
 		num := int(b[0])<<16 | int(b[1])<<8 | int(b[2])
 		code := num % 1000000
-		// Ensure it's 6 digits (pad with zeros if needed).
 		codeStr := fmt.Sprintf("%06d", code)
-
-		// Check uniqueness.
 		pm.mu.RLock()
 		_, exists := pm.pending[codeStr]
 		pm.mu.RUnlock()

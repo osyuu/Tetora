@@ -1,4 +1,4 @@
-package main
+package pairing
 
 import (
 	"os"
@@ -12,17 +12,15 @@ func TestPairing_IsAllowed_Allowlist(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing: true,
 			Allowlists: map[string][]string{
 				"telegram": {"12345", "67890"},
-			},
 		},
 	}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// User in allowlist should be allowed.
 	if !pm.IsAllowed("telegram", "12345") {
@@ -39,14 +37,12 @@ func TestPairing_IsAllowed_NoConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing: false, // DM pairing disabled → allow all
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// All users should be allowed when DM pairing is disabled.
 	if !pm.IsAllowed("telegram", "12345") {
@@ -61,16 +57,14 @@ func TestPairing_RequestAndApprove(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing:      true,
 			PairingMessage: "Your code: {{.Code}}",
 			PairingExpiry:  "15m",
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// Request pairing.
 	msg, err := pm.RequestPairing("telegram", "12345", "testuser")
@@ -127,15 +121,13 @@ func TestPairing_RequestAndReject(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing:     true,
 			PairingExpiry: "15m",
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// Request pairing.
 	_, err := pm.RequestPairing("telegram", "12345", "testuser")
@@ -171,15 +163,13 @@ func TestPairing_ExpiredCode(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing:     true,
 			PairingExpiry: "1s", // Very short expiry for testing
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// Request pairing.
 	_, err := pm.RequestPairing("telegram", "12345", "testuser")
@@ -211,14 +201,12 @@ func TestPairing_DuplicateApproval(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing: true,
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// Request and approve first time.
 	msg1, _ := pm.RequestPairing("telegram", "12345", "testuser")
@@ -259,14 +247,12 @@ func TestPairing_ListPending(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing: true,
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// Create multiple pending requests.
 	pm.RequestPairing("telegram", "user1", "User 1")
@@ -293,14 +279,12 @@ func TestPairing_Revoke(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing: true,
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// Approve a user.
 	msg, _ := pm.RequestPairing("telegram", "12345", "testuser")
@@ -329,14 +313,12 @@ func TestPairing_GenerateCode(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing: true,
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	// Generate multiple codes and verify uniqueness.
 	codes := make(map[string]bool)
@@ -364,15 +346,13 @@ func TestPairing_PairingMessage(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		AccessControl: AccessControlConfig{
 			DMPairing:      true,
 			PairingMessage: "Welcome! Use code {{.Code}} to pair your device.",
-		},
-	}
+		}
 
-	pm := newPairingManager(cfg)
+	pm := New(cfg)
 
 	msg, err := pm.RequestPairing("telegram", "12345", "testuser")
 	if err != nil {

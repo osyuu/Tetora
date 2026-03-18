@@ -27,6 +27,7 @@ import (
 	"tetora/internal/httputil"
 	"tetora/internal/knowledge"
 	"tetora/internal/log"
+	"tetora/internal/pairing"
 	"tetora/internal/pwa"
 	"tetora/internal/quickaction"
 	"tetora/internal/sla"
@@ -1867,7 +1868,13 @@ func startHTTPServer(s *Server) *http.Server {
 	if cfg.Push.Enabled {
 		pushManager = newPushManager(cfg)
 	}
-	pairingManager := newPairingManager(cfg)
+	pairingManager := pairing.New(pairing.Config{
+		HistoryDB:      cfg.HistoryDB,
+		DMPairing:      cfg.AccessControl.DMPairing,
+		PairingExpiry:  cfg.AccessControl.PairingExpiry,
+		PairingMessage: cfg.AccessControl.PairingMessage,
+		Allowlists:     cfg.AccessControl.Allowlists,
+	})
 	httpapi.RegisterPushRoutes(mux, httpapi.PushDeps{
 		Enabled:  cfg.Push.Enabled && pushManager != nil,
 		VAPIDKey: cfg.Push.VAPIDPublicKey,
