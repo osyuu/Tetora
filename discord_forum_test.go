@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"tetora/internal/discord"
 )
 
 // --- Valid Forum Statuses ---
 
 func TestValidForumStatuses(t *testing.T) {
-	statuses := validForumStatuses()
+	statuses := discord.ValidForumStatuses()
 	if len(statuses) != 5 {
 		t.Errorf("expected 5 statuses, got %d", len(statuses))
 	}
@@ -40,9 +41,9 @@ func TestIsValidForumStatus(t *testing.T) {
 		{"doing ", false}, // trailing space
 	}
 	for _, tt := range tests {
-		got := isValidForumStatus(tt.status)
+		got := discord.IsValidForumStatus(tt.status)
 		if got != tt.expected {
-			t.Errorf("isValidForumStatus(%q) = %v, want %v", tt.status, got, tt.expected)
+			t.Errorf("discord.IsValidForumStatus(%q) = %v, want %v", tt.status, got, tt.expected)
 		}
 	}
 }
@@ -50,20 +51,20 @@ func TestIsValidForumStatus(t *testing.T) {
 // --- Status Constants ---
 
 func TestForumStatusConstants(t *testing.T) {
-	if forumStatusBacklog != "backlog" {
-		t.Errorf("expected 'backlog', got %q", forumStatusBacklog)
+	if discord.ForumStatusBacklog != "backlog" {
+		t.Errorf("expected 'backlog', got %q", discord.ForumStatusBacklog)
 	}
-	if forumStatusTodo != "todo" {
-		t.Errorf("expected 'todo', got %q", forumStatusTodo)
+	if discord.ForumStatusTodo != "todo" {
+		t.Errorf("expected 'todo', got %q", discord.ForumStatusTodo)
 	}
-	if forumStatusDoing != "doing" {
-		t.Errorf("expected 'doing', got %q", forumStatusDoing)
+	if discord.ForumStatusDoing != "doing" {
+		t.Errorf("expected 'doing', got %q", discord.ForumStatusDoing)
 	}
-	if forumStatusReview != "review" {
-		t.Errorf("expected 'review', got %q", forumStatusReview)
+	if discord.ForumStatusReview != "review" {
+		t.Errorf("expected 'review', got %q", discord.ForumStatusReview)
 	}
-	if forumStatusDone != "done" {
-		t.Errorf("expected 'done', got %q", forumStatusDone)
+	if discord.ForumStatusDone != "done" {
+		t.Errorf("expected 'done', got %q", discord.ForumStatusDone)
 	}
 }
 
@@ -123,7 +124,7 @@ func TestValidateForumBoardConfig(t *testing.T) {
 			"done":    "TAG2",
 		},
 	}
-	warnings := validateForumBoardConfig(cfg)
+	warnings := discord.ValidateForumBoardConfig(cfg)
 	if len(warnings) != 0 {
 		t.Errorf("expected no warnings, got %v", warnings)
 	}
@@ -133,7 +134,7 @@ func TestValidateForumBoardConfig_MissingChannelID(t *testing.T) {
 	cfg := DiscordForumBoardConfig{
 		Enabled: true,
 	}
-	warnings := validateForumBoardConfig(cfg)
+	warnings := discord.ValidateForumBoardConfig(cfg)
 	if len(warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
 	}
@@ -148,7 +149,7 @@ func TestValidateForumBoardConfig_UnknownStatus(t *testing.T) {
 			"invalid_status": "TAG1",
 		},
 	}
-	warnings := validateForumBoardConfig(cfg)
+	warnings := discord.ValidateForumBoardConfig(cfg)
 	found := false
 	for _, w := range warnings {
 		if strings.Contains(w, "unknown status") {
@@ -166,7 +167,7 @@ func TestValidateForumBoardConfig_EmptyTagID(t *testing.T) {
 			"doing": "",
 		},
 	}
-	warnings := validateForumBoardConfig(cfg)
+	warnings := discord.ValidateForumBoardConfig(cfg)
 	found := false
 	for _, w := range warnings {
 		if strings.Contains(w, "empty tag ID") {
@@ -183,7 +184,7 @@ func TestValidateForumBoardConfig_Disabled(t *testing.T) {
 	cfg := DiscordForumBoardConfig{
 		Enabled: false,
 	}
-	warnings := validateForumBoardConfig(cfg)
+	warnings := discord.ValidateForumBoardConfig(cfg)
 	if len(warnings) != 0 {
 		t.Errorf("expected no warnings for disabled config, got %v", warnings)
 	}

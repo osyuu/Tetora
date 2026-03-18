@@ -92,9 +92,9 @@ func TestDiscordComponentPingPong(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	var resp discordInteractionResponse
+	var resp discord.InteractionResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.Type != interactionResponsePong {
+	if resp.Type != discord.InteractionResponsePong {
 		t.Errorf("expected PONG (type 1), got %d", resp.Type)
 	}
 }
@@ -135,13 +135,13 @@ func TestDiscordComponentButtonRouting(t *testing.T) {
 	interactions.register(&pendingInteraction{
 		CustomID:  "test_btn",
 		CreatedAt: time.Now(),
-		Callback:  func(data discordInteractionData) {},
+		Callback:  func(data discord.InteractionData) {},
 	})
 
 	db := &DiscordBot{cfg: cfg, api: discord.NewClient(""), interactions: interactions}
 
 	payload := map[string]any{
-		"type":    interactionTypeMessageComponent,
+		"type":    discord.InteractionTypeMessageComponent,
 		"id":      "int_1",
 		"token":   "tok",
 		"version": 1,
@@ -163,9 +163,9 @@ func TestDiscordComponentButtonRouting(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	var resp discordInteractionResponse
+	var resp discord.InteractionResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.Type != interactionResponseDeferredUpdate {
+	if resp.Type != discord.InteractionResponseDeferredUpdate {
 		t.Errorf("expected DEFERRED_UPDATE (type 6), got %d", resp.Type)
 	}
 }
@@ -181,7 +181,7 @@ func TestDiscordComponentSelectMenuValues(t *testing.T) {
 	db := &DiscordBot{cfg: cfg, api: discord.NewClient(""), interactions: newDiscordInteractionState()}
 
 	payload := map[string]any{
-		"type":    interactionTypeMessageComponent,
+		"type":    discord.InteractionTypeMessageComponent,
 		"id":      "int_2",
 		"token":   "tok",
 		"version": 1,
@@ -203,9 +203,9 @@ func TestDiscordComponentSelectMenuValues(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	var resp discordInteractionResponse
+	var resp discord.InteractionResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.Type != interactionResponseMessage {
+	if resp.Type != discord.InteractionResponseMessage {
 		t.Errorf("expected MESSAGE (type 4), got %d", resp.Type)
 	}
 	if resp.Data == nil || !strings.Contains(resp.Data.Content, "ruri") {
@@ -224,7 +224,7 @@ func TestDiscordComponentModalSubmitParsing(t *testing.T) {
 	db := &DiscordBot{cfg: cfg, api: discord.NewClient(""), interactions: newDiscordInteractionState()}
 
 	payload := map[string]any{
-		"type":    interactionTypeModalSubmit,
+		"type":    discord.InteractionTypeModalSubmit,
 		"id":      "int_3",
 		"token":   "tok",
 		"version": 1,
@@ -232,15 +232,15 @@ func TestDiscordComponentModalSubmitParsing(t *testing.T) {
 			"custom_id": "task_form",
 			"components": []any{
 				map[string]any{
-					"type": componentTypeActionRow,
+					"type": discord.ComponentTypeActionRow,
 					"components": []any{
-						map[string]any{"type": componentTypeTextInput, "custom_id": "title", "value": "My Task"},
+						map[string]any{"type": discord.ComponentTypeTextInput, "custom_id": "title", "value": "My Task"},
 					},
 				},
 				map[string]any{
-					"type": componentTypeActionRow,
+					"type": discord.ComponentTypeActionRow,
 					"components": []any{
-						map[string]any{"type": componentTypeTextInput, "custom_id": "desc", "value": "Do something"},
+						map[string]any{"type": discord.ComponentTypeTextInput, "custom_id": "desc", "value": "Do something"},
 					},
 				},
 			},
@@ -262,7 +262,7 @@ func TestDiscordComponentModalSubmitParsing(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	var resp discordInteractionResponse
+	var resp discord.InteractionResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Data == nil || !strings.Contains(resp.Data.Content, "2 fields") {
 		t.Errorf("expected response mentioning 2 fields, got %v", resp.Data)
@@ -282,14 +282,14 @@ func TestDiscordComponentAllowedUsersEnforcement(t *testing.T) {
 		CustomID:   "restricted_btn",
 		CreatedAt:  time.Now(),
 		AllowedIDs: []string{"user_allowed"},
-		Callback:   func(data discordInteractionData) {},
+		Callback:   func(data discord.InteractionData) {},
 	})
 
 	db := &DiscordBot{cfg: cfg, api: discord.NewClient(""), interactions: interactions}
 
 	// Interaction from a disallowed user (no member/user = empty userID).
 	payload := map[string]any{
-		"type":    interactionTypeMessageComponent,
+		"type":    discord.InteractionTypeMessageComponent,
 		"id":      "int_4",
 		"token":   "tok",
 		"version": 1,
@@ -312,7 +312,7 @@ func TestDiscordComponentAllowedUsersEnforcement(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	var resp discordInteractionResponse
+	var resp discord.InteractionResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Data == nil || !strings.Contains(resp.Data.Content, "not allowed") {
 		t.Errorf("expected 'not allowed' message, got %v", resp.Data)
@@ -322,13 +322,13 @@ func TestDiscordComponentAllowedUsersEnforcement(t *testing.T) {
 // --- Component Message Builder JSON ---
 
 func TestDiscordComponentBuilderJSON(t *testing.T) {
-	components := []discordComponent{
+	components := []discord.Component{
 		discordActionRow(
-			discordButton("btn_1", "Click Me", buttonStylePrimary),
-			discordButton("btn_2", "Cancel", buttonStyleDanger),
+			discordButton("btn_1", "Click Me", discord.ButtonStylePrimary),
+			discordButton("btn_2", "Cancel", discord.ButtonStyleDanger),
 		),
 		discordActionRow(
-			discordSelectMenu("sel_1", "Choose...", []discordSelectOption{
+			discordSelectMenu("sel_1", "Choose...", []discord.SelectOption{
 				{Label: "Option A", Value: "a"},
 				{Label: "Option B", Value: "b", Description: "Second option"},
 			}),
@@ -349,8 +349,8 @@ func TestDiscordComponentBuilderJSON(t *testing.T) {
 
 	// First row: buttons.
 	row1 := decoded[0]
-	if int(row1["type"].(float64)) != componentTypeActionRow {
-		t.Errorf("expected action row type %d, got %v", componentTypeActionRow, row1["type"])
+	if int(row1["type"].(float64)) != discord.ComponentTypeActionRow {
+		t.Errorf("expected action row type %d, got %v", discord.ComponentTypeActionRow, row1["type"])
 	}
 	buttons := row1["components"].([]any)
 	if len(buttons) != 2 {
@@ -360,7 +360,7 @@ func TestDiscordComponentBuilderJSON(t *testing.T) {
 	if btn1["custom_id"] != "btn_1" {
 		t.Errorf("expected custom_id 'btn_1', got %v", btn1["custom_id"])
 	}
-	if int(btn1["style"].(float64)) != buttonStylePrimary {
+	if int(btn1["style"].(float64)) != discord.ButtonStylePrimary {
 		t.Errorf("expected primary style, got %v", btn1["style"])
 	}
 
@@ -388,8 +388,8 @@ func TestDiscordComponentModalBuilder(t *testing.T) {
 		discordParagraphInput("bio", "Your Bio", false),
 	)
 
-	if modal.Type != interactionResponseModal {
-		t.Errorf("expected modal response type %d, got %d", interactionResponseModal, modal.Type)
+	if modal.Type != discord.InteractionResponseModal {
+		t.Errorf("expected modal response type %d, got %d", discord.InteractionResponseModal, modal.Type)
 	}
 	if modal.Data == nil {
 		t.Fatal("expected modal data")
@@ -405,7 +405,7 @@ func TestDiscordComponentModalBuilder(t *testing.T) {
 		t.Fatalf("expected 2 action rows, got %d", len(modal.Data.Components))
 	}
 	for i, row := range modal.Data.Components {
-		if row.Type != componentTypeActionRow {
+		if row.Type != discord.ComponentTypeActionRow {
 			t.Errorf("component %d: expected action row, got type %d", i, row.Type)
 		}
 		if len(row.Components) != 1 {
@@ -422,7 +422,7 @@ func TestDiscordComponentApprovalButtons(t *testing.T) {
 		t.Fatalf("expected 1 action row, got %d", len(components))
 	}
 	row := components[0]
-	if row.Type != componentTypeActionRow {
+	if row.Type != discord.ComponentTypeActionRow {
 		t.Errorf("expected action row type")
 	}
 	if len(row.Components) != 2 {
@@ -431,13 +431,13 @@ func TestDiscordComponentApprovalButtons(t *testing.T) {
 	if row.Components[0].CustomID != "approve:task123" {
 		t.Errorf("expected approve custom_id, got %q", row.Components[0].CustomID)
 	}
-	if row.Components[0].Style != buttonStyleSuccess {
+	if row.Components[0].Style != discord.ButtonStyleSuccess {
 		t.Errorf("expected success style for approve button")
 	}
 	if row.Components[1].CustomID != "reject:task123" {
 		t.Errorf("expected reject custom_id, got %q", row.Components[1].CustomID)
 	}
-	if row.Components[1].Style != buttonStyleDanger {
+	if row.Components[1].Style != discord.ButtonStyleDanger {
 		t.Errorf("expected danger style for reject button")
 	}
 }
@@ -445,12 +445,12 @@ func TestDiscordComponentApprovalButtons(t *testing.T) {
 // --- Extract Modal Values ---
 
 func TestDiscordComponentExtractModalValues(t *testing.T) {
-	components := []discordComponent{
-		{Type: componentTypeActionRow, Components: []discordComponent{
-			{Type: componentTypeTextInput, CustomID: "field1", Value: "hello"},
+	components := []discord.Component{
+		{Type: discord.ComponentTypeActionRow, Components: []discord.Component{
+			{Type: discord.ComponentTypeTextInput, CustomID: "field1", Value: "hello"},
 		}},
-		{Type: componentTypeActionRow, Components: []discordComponent{
-			{Type: componentTypeTextInput, CustomID: "field2", Value: "world"},
+		{Type: discord.ComponentTypeActionRow, Components: []discord.Component{
+			{Type: discord.ComponentTypeTextInput, CustomID: "field2", Value: "world"},
 		}},
 	}
 
@@ -489,10 +489,10 @@ func TestDiscordComponentMissingSignatureHeaders(t *testing.T) {
 
 func TestDiscordComponentLinkButton(t *testing.T) {
 	btn := discordLinkButton("https://example.com", "Visit")
-	if btn.Type != componentTypeButton {
+	if btn.Type != discord.ComponentTypeButton {
 		t.Errorf("expected button type")
 	}
-	if btn.Style != buttonStyleLink {
+	if btn.Style != discord.ButtonStyleLink {
 		t.Errorf("expected link style")
 	}
 	if btn.URL != "https://example.com" {
@@ -515,7 +515,7 @@ func TestDiscordComponentAgentSelectMenu(t *testing.T) {
 		t.Fatalf("expected 1 select menu, got %d", len(row.Components))
 	}
 	sel := row.Components[0]
-	if sel.Type != componentTypeStringSelect {
+	if sel.Type != discord.ComponentTypeStringSelect {
 		t.Errorf("expected string select type")
 	}
 	if len(sel.Options) != 4 {
@@ -561,25 +561,25 @@ func TestDiscordComponentContainsStr(t *testing.T) {
 
 func TestDiscordComponentInteractionUserID(t *testing.T) {
 	// Guild interaction (member).
-	i := &discordInteraction{
+	i := &discord.Interaction{
 		Member: &struct {
-			User discordUser `json:"user"`
-		}{User: discordUser{ID: "guild_user"}},
+			User discord.User `json:"user"`
+		}{User: discord.User{ID: "guild_user"}},
 	}
 	if got := interactionUserID(i); got != "guild_user" {
 		t.Errorf("expected 'guild_user', got %q", got)
 	}
 
 	// DM interaction (user).
-	i2 := &discordInteraction{
-		User: &discordUser{ID: "dm_user"},
+	i2 := &discord.Interaction{
+		User: &discord.User{ID: "dm_user"},
 	}
 	if got := interactionUserID(i2); got != "dm_user" {
 		t.Errorf("expected 'dm_user', got %q", got)
 	}
 
 	// Neither.
-	i3 := &discordInteraction{}
+	i3 := &discord.Interaction{}
 	if got := interactionUserID(i3); got != "" {
 		t.Errorf("expected empty, got %q", got)
 	}

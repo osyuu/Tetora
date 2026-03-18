@@ -32,11 +32,11 @@ type pendingInteraction struct {
 	ChannelID     string
 	UserID        string
 	CreatedAt     time.Time
-	Callback      func(data discordInteractionData)
+	Callback      func(data discord.InteractionData)
 	AllowedIDs    []string                    // restrict to specific user IDs (empty = allow all)
 	Reusable      bool                        // if true, don't remove after first use
-	ModalResponse *discordInteractionResponse // if set, respond with this modal instead of deferred update
-	Response      *discordInteractionResponse // if set, use this instead of deferred update (e.g. type 7 message update)
+	ModalResponse *discord.InteractionResponse // if set, respond with this modal instead of deferred update
+	Response      *discord.InteractionResponse // if set, use this instead of deferred update (e.g. type 7 message update)
 }
 
 func newDiscordInteractionState() *discordInteractionState {
@@ -145,7 +145,7 @@ func handleDiscordInteraction(db *DiscordBot, w http.ResponseWriter, r *http.Req
 	}
 
 	// Parse interaction.
-	var interaction discordInteraction
+	var interaction discord.Interaction
 	if err := json.Unmarshal(body, &interaction); err != nil {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
 		return
@@ -155,28 +155,28 @@ func handleDiscordInteraction(db *DiscordBot, w http.ResponseWriter, r *http.Req
 
 	// Route by interaction type.
 	switch interaction.Type {
-	case interactionTypePing:
+	case discord.InteractionTypePing:
 		// Respond with PONG.
 		log.InfoCtx(ctx, "discord interaction PING received")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(discordInteractionResponse{Type: interactionResponsePong})
+		json.NewEncoder(w).Encode(discord.InteractionResponse{Type: discord.InteractionResponsePong})
 		return
 
-	case interactionTypeMessageComponent:
+	case discord.InteractionTypeMessageComponent:
 		handleComponentInteraction(ctx, db, w, &interaction)
 		return
 
-	case interactionTypeModalSubmit:
+	case discord.InteractionTypeModalSubmit:
 		handleModalSubmit(ctx, db, w, &interaction)
 		return
 
-	case interactionTypeApplicationCmd:
+	case discord.InteractionTypeApplicationCmd:
 		// Application commands — respond with a basic message for now.
 		log.InfoCtx(ctx, "discord application command received")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(discordInteractionResponse{
-			Type: interactionResponseMessage,
-			Data: &discordInteractionResponseData{
+		json.NewEncoder(w).Encode(discord.InteractionResponse{
+			Type: discord.InteractionResponseMessage,
+			Data: &discord.InteractionResponseData{
 				Content: "Command received. Use the Tetora dashboard for full functionality.",
 			},
 		})
@@ -185,9 +185,9 @@ func handleDiscordInteraction(db *DiscordBot, w http.ResponseWriter, r *http.Req
 	default:
 		log.Warn("discord interactions: unknown type", "type", interaction.Type)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(discordInteractionResponse{
-			Type: interactionResponseMessage,
-			Data: &discordInteractionResponseData{
+		json.NewEncoder(w).Encode(discord.InteractionResponse{
+			Type: discord.InteractionResponseMessage,
+			Data: &discord.InteractionResponseData{
 				Content: "Unknown interaction type.",
 				Flags:   64, // ephemeral
 			},
@@ -196,8 +196,8 @@ func handleDiscordInteraction(db *DiscordBot, w http.ResponseWriter, r *http.Req
 }
 
 // handleComponentInteraction routes button clicks and select menu selections.
-func handleComponentInteraction(ctx context.Context, db *DiscordBot, w http.ResponseWriter, interaction *discordInteraction) {
-	var data discordInteractionData
+func handleComponentInteraction(ctx context.Context, db *DiscordBot, w http.ResponseWriter, interaction *discord.Interaction) {
+	var data discord.InteractionData
 	if err := json.Unmarshal(interaction.Data, &data); err != nil {
 		log.WarnCtx(ctx, "discord component: invalid data", "error", err)
 		http.Error(w, `{"error":"invalid component data"}`, http.StatusBadRequest)
@@ -216,9 +216,9 @@ func handleComponentInteraction(ctx context.Context, db *DiscordBot, w http.Resp
 			// Check allowed users.
 			if len(pi.AllowedIDs) > 0 && !sliceContainsStr(pi.AllowedIDs, userID) {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(discordInteractionResponse{
-					Type: interactionResponseMessage,
-					Data: &discordInteractionResponseData{
+				json.NewEncoder(w).Encode(discord.InteractionResponse{
+					Type: discord.InteractionResponseMessage,
+					Data: &discord.InteractionResponseData{
 						Content: "You are not allowed to use this component.",
 						Flags:   64, // ephemeral
 					},
@@ -243,8 +243,8 @@ func handleComponentInteraction(ctx context.Context, db *DiscordBot, w http.Resp
 			} else if pi.ModalResponse != nil {
 				json.NewEncoder(w).Encode(*pi.ModalResponse)
 			} else {
-				json.NewEncoder(w).Encode(discordInteractionResponse{
-					Type: interactionResponseDeferredUpdate,
+				json.NewEncoder(w).Encode(discord.InteractionResponse{
+					Type: discord.InteractionResponseDeferredUpdate,
 				})
 			}
 			return
@@ -258,8 +258,8 @@ func handleComponentInteraction(ctx context.Context, db *DiscordBot, w http.Resp
 }
 
 // handleModalSubmit processes modal form submissions.
-func handleModalSubmit(ctx context.Context, db *DiscordBot, w http.ResponseWriter, interaction *discordInteraction) {
-	var data discordInteractionData
+func handleModalSubmit(ctx context.Context, db *DiscordBot, w http.ResponseWriter, interaction *discord.Interaction) {
+	var data discord.InteractionData
 	if err := json.Unmarshal(interaction.Data, &data); err != nil {
 		log.WarnCtx(ctx, "discord modal: invalid data", "error", err)
 		http.Error(w, `{"error":"invalid modal data"}`, http.StatusBadRequest)
@@ -279,9 +279,9 @@ func handleModalSubmit(ctx context.Context, db *DiscordBot, w http.ResponseWrite
 		if pi := db.interactions.lookup(data.CustomID); pi != nil {
 			if len(pi.AllowedIDs) > 0 && !sliceContainsStr(pi.AllowedIDs, userID) {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(discordInteractionResponse{
-					Type: interactionResponseMessage,
-					Data: &discordInteractionResponseData{
+				json.NewEncoder(w).Encode(discord.InteractionResponse{
+					Type: discord.InteractionResponseMessage,
+					Data: &discord.InteractionResponseData{
 						Content: "You are not allowed to submit this form.",
 						Flags:   64,
 					},
@@ -295,9 +295,9 @@ func handleModalSubmit(ctx context.Context, db *DiscordBot, w http.ResponseWrite
 			db.interactions.remove(data.CustomID)
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(discordInteractionResponse{
-				Type: interactionResponseMessage,
-				Data: &discordInteractionResponseData{
+			json.NewEncoder(w).Encode(discord.InteractionResponse{
+				Type: discord.InteractionResponseMessage,
+				Data: &discord.InteractionResponseData{
 					Content: "Form submitted successfully.",
 					Flags:   64,
 				},
@@ -309,9 +309,9 @@ func handleModalSubmit(ctx context.Context, db *DiscordBot, w http.ResponseWrite
 	// Default response for unhandled modals.
 	log.InfoCtx(ctx, "discord modal unhandled", "customID", data.CustomID, "values", fmt.Sprintf("%v", values))
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(discordInteractionResponse{
-		Type: interactionResponseMessage,
-		Data: &discordInteractionResponseData{
+	json.NewEncoder(w).Encode(discord.InteractionResponse{
+		Type: discord.InteractionResponseMessage,
+		Data: &discord.InteractionResponseData{
 			Content: fmt.Sprintf("Form received (%d fields).", len(values)),
 			Flags:   64,
 		},
@@ -321,7 +321,7 @@ func handleModalSubmit(ctx context.Context, db *DiscordBot, w http.ResponseWrite
 // --- Built-in Component Handlers ---
 
 // handleBuiltinComponent handles common built-in component custom_id patterns.
-func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInteractionData, userID string) discordInteractionResponse {
+func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discord.InteractionData, userID string) discord.InteractionResponse {
 	customID := data.CustomID
 
 	// P28.0: Approval gate callbacks.
@@ -330,9 +330,9 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 		if db.approvalGate != nil {
 			db.approvalGate.handleGateCallback(reqID, true)
 		}
-		return discordInteractionResponse{
-			Type: interactionResponseUpdateMessage,
-			Data: &discordInteractionResponseData{
+		return discord.InteractionResponse{
+			Type: discord.InteractionResponseUpdateMessage,
+			Data: &discord.InteractionResponseData{
 				Content: fmt.Sprintf("Approved by <@%s>.", userID),
 			},
 		}
@@ -346,9 +346,9 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 				db.approvalGate.AutoApprove(toolName)
 				db.approvalGate.handleGateCallback(reqID, true)
 			}
-			return discordInteractionResponse{
-				Type: interactionResponseUpdateMessage,
-				Data: &discordInteractionResponseData{
+			return discord.InteractionResponse{
+				Type: discord.InteractionResponseUpdateMessage,
+				Data: &discord.InteractionResponseData{
 					Content: fmt.Sprintf("Always approved `%s` by <@%s>.", toolName, userID),
 				},
 			}
@@ -359,9 +359,9 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 		if db.approvalGate != nil {
 			db.approvalGate.handleGateCallback(reqID, false)
 		}
-		return discordInteractionResponse{
-			Type: interactionResponseUpdateMessage,
-			Data: &discordInteractionResponseData{
+		return discord.InteractionResponse{
+			Type: discord.InteractionResponseUpdateMessage,
+			Data: &discord.InteractionResponseData{
 				Content: fmt.Sprintf("Rejected by <@%s>.", userID),
 			},
 		}
@@ -373,9 +373,9 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 		log.InfoCtx(ctx, "discord component: task approved", "taskID", taskID, "userID", userID)
 		audit.Log(db.cfg.HistoryDB, "discord.component.approve", "discord",
 			fmt.Sprintf("task=%s user=%s", taskID, userID), "")
-		return discordInteractionResponse{
-			Type: interactionResponseUpdateMessage,
-			Data: &discordInteractionResponseData{
+		return discord.InteractionResponse{
+			Type: discord.InteractionResponseUpdateMessage,
+			Data: &discord.InteractionResponseData{
 				Content: fmt.Sprintf("Task `%s` approved by <@%s>.", truncate(taskID, 8), userID),
 			},
 		}
@@ -386,9 +386,9 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 		log.InfoCtx(ctx, "discord component: task rejected", "taskID", taskID, "userID", userID)
 		audit.Log(db.cfg.HistoryDB, "discord.component.reject", "discord",
 			fmt.Sprintf("task=%s user=%s", taskID, userID), "")
-		return discordInteractionResponse{
-			Type: interactionResponseUpdateMessage,
-			Data: &discordInteractionResponseData{
+		return discord.InteractionResponse{
+			Type: discord.InteractionResponseUpdateMessage,
+			Data: &discord.InteractionResponseData{
 				Content: fmt.Sprintf("Task `%s` rejected by <@%s>.", truncate(taskID, 8), userID),
 			},
 		}
@@ -398,9 +398,9 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 	if customID == "agent_select" && len(data.Values) > 0 {
 		agent := data.Values[0]
 		log.InfoCtx(ctx, "discord component: agent selected", "agent", agent, "userID", userID)
-		return discordInteractionResponse{
-			Type: interactionResponseMessage,
-			Data: &discordInteractionResponseData{
+		return discord.InteractionResponse{
+			Type: discord.InteractionResponseMessage,
+			Data: &discord.InteractionResponseData{
 				Content: fmt.Sprintf("Routing to agent **%s**...", agent),
 			},
 		}
@@ -408,8 +408,8 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 
 	// Unknown component.
 	log.InfoCtx(ctx, "discord component: unhandled", "customID", customID)
-	return discordInteractionResponse{
-		Type: interactionResponseDeferredUpdate,
+	return discord.InteractionResponse{
+		Type: discord.InteractionResponseDeferredUpdate,
 	}
 }
 
@@ -438,14 +438,14 @@ var wsConnect = discord.WsConnect
 var wsAcceptKey = discord.WsAcceptKey
 
 func (db *DiscordBot) sendIdentify(ws *wsConn) error {
-	intents := intentGuildMessages | intentDirectMessages | intentMessageContent
+	intents := discord.IntentGuildMessages | discord.IntentDirectMessages | discord.IntentMessageContent
 
 	// P14.5: Add voice intents if voice is enabled
 	if db.cfg.Discord.Voice.Enabled {
 		intents |= intentGuildVoiceStates
 	}
 
-	id := identifyData{
+	id := discord.IdentifyData{
 		Token:   db.cfg.Discord.BotToken,
 		Intents: intents,
 		Properties: map[string]string{
@@ -453,15 +453,15 @@ func (db *DiscordBot) sendIdentify(ws *wsConn) error {
 		},
 	}
 	d, _ := json.Marshal(id)
-	return ws.WriteJSON(gatewayPayload{Op: opIdentify, D: d})
+	return ws.WriteJSON(discord.GatewayPayload{Op: discord.OpIdentify, D: d})
 }
 
 func (db *DiscordBot) sendResume(ws *wsConn, seq int) error {
-	r := resumePayload{
+	r := discord.ResumePayload{
 		Token: db.cfg.Discord.BotToken, SessionID: db.sessionID, Seq: seq,
 	}
 	d, _ := json.Marshal(r)
-	return ws.WriteJSON(gatewayPayload{Op: opResume, D: d})
+	return ws.WriteJSON(discord.GatewayPayload{Op: discord.OpResume, D: d})
 }
 
 func (db *DiscordBot) heartbeatLoop(ctx context.Context, ws *wsConn, interval time.Duration) {
@@ -484,34 +484,34 @@ func (db *DiscordBot) sendHeartbeatWS(ws *wsConn) error {
 	seq := db.seq
 	db.seqMu.Unlock()
 	d, _ := json.Marshal(seq)
-	return ws.WriteJSON(gatewayPayload{Op: opHeartbeat, D: d})
+	return ws.WriteJSON(discord.GatewayPayload{Op: discord.OpHeartbeat, D: d})
 }
 
 // handleGatewayInteraction processes Discord interactions received via the Gateway
 // (as opposed to the HTTP webhook endpoint). Responds via REST API callback.
-func (db *DiscordBot) handleGatewayInteraction(interaction *discordInteraction) {
+func (db *DiscordBot) handleGatewayInteraction(interaction *discord.Interaction) {
 	ctx := trace.WithID(context.Background(), trace.NewID("discord-interaction"))
 
 	switch interaction.Type {
-	case interactionTypePing:
-		db.respondToInteraction(interaction, discordInteractionResponse{Type: interactionResponsePong})
+	case discord.InteractionTypePing:
+		db.respondToInteraction(interaction, discord.InteractionResponse{Type: discord.InteractionResponsePong})
 
-	case interactionTypeMessageComponent:
+	case discord.InteractionTypeMessageComponent:
 		resp := db.handleGatewayComponent(ctx, interaction)
 		db.respondToInteraction(interaction, resp)
 
-	case interactionTypeModalSubmit:
+	case discord.InteractionTypeModalSubmit:
 		resp := db.handleGatewayModal(ctx, interaction)
 		db.respondToInteraction(interaction, resp)
 	}
 }
 
 // handleGatewayComponent routes button clicks received via Gateway.
-func (db *DiscordBot) handleGatewayComponent(ctx context.Context, interaction *discordInteraction) discordInteractionResponse {
-	var data discordInteractionData
+func (db *DiscordBot) handleGatewayComponent(ctx context.Context, interaction *discord.Interaction) discord.InteractionResponse {
+	var data discord.InteractionData
 	if err := json.Unmarshal(interaction.Data, &data); err != nil {
 		log.WarnCtx(ctx, "discord gateway component: invalid data", "error", err)
-		return discordInteractionResponse{Type: interactionResponseDeferredUpdate}
+		return discord.InteractionResponse{Type: discord.InteractionResponseDeferredUpdate}
 	}
 
 	userID := interactionUserID(interaction)
@@ -522,9 +522,9 @@ func (db *DiscordBot) handleGatewayComponent(ctx context.Context, interaction *d
 	if db.interactions != nil {
 		if pi := db.interactions.lookup(data.CustomID); pi != nil {
 			if len(pi.AllowedIDs) > 0 && !sliceContainsStr(pi.AllowedIDs, userID) {
-				return discordInteractionResponse{
-					Type: interactionResponseMessage,
-					Data: &discordInteractionResponseData{
+				return discord.InteractionResponse{
+					Type: discord.InteractionResponseMessage,
+					Data: &discord.InteractionResponseData{
 						Content: "You are not allowed to use this component.",
 						Flags:   64,
 					},
@@ -542,7 +542,7 @@ func (db *DiscordBot) handleGatewayComponent(ctx context.Context, interaction *d
 			if pi.ModalResponse != nil {
 				return *pi.ModalResponse
 			}
-			return discordInteractionResponse{Type: interactionResponseDeferredUpdate}
+			return discord.InteractionResponse{Type: discord.InteractionResponseDeferredUpdate}
 		}
 	}
 
@@ -551,11 +551,11 @@ func (db *DiscordBot) handleGatewayComponent(ctx context.Context, interaction *d
 }
 
 // handleGatewayModal routes modal submissions received via Gateway.
-func (db *DiscordBot) handleGatewayModal(ctx context.Context, interaction *discordInteraction) discordInteractionResponse {
-	var data discordInteractionData
+func (db *DiscordBot) handleGatewayModal(ctx context.Context, interaction *discord.Interaction) discord.InteractionResponse {
+	var data discord.InteractionData
 	if err := json.Unmarshal(interaction.Data, &data); err != nil {
 		log.WarnCtx(ctx, "discord gateway modal: invalid data", "error", err)
-		return discordInteractionResponse{Type: interactionResponseDeferredUpdate}
+		return discord.InteractionResponse{Type: discord.InteractionResponseDeferredUpdate}
 	}
 
 	userID := interactionUserID(interaction)
@@ -564,9 +564,9 @@ func (db *DiscordBot) handleGatewayModal(ctx context.Context, interaction *disco
 	if db.interactions != nil {
 		if pi := db.interactions.lookup(data.CustomID); pi != nil {
 			if len(pi.AllowedIDs) > 0 && !sliceContainsStr(pi.AllowedIDs, userID) {
-				return discordInteractionResponse{
-					Type: interactionResponseMessage,
-					Data: &discordInteractionResponseData{
+				return discord.InteractionResponse{
+					Type: discord.InteractionResponseMessage,
+					Data: &discord.InteractionResponseData{
 						Content: "You are not allowed to submit this form.",
 						Flags:   64,
 					},
@@ -576,17 +576,17 @@ func (db *DiscordBot) handleGatewayModal(ctx context.Context, interaction *disco
 				runCallbackWithTimeout(pi.Callback, data)
 			}
 			db.interactions.remove(data.CustomID)
-			return discordInteractionResponse{
-				Type: interactionResponseDeferredUpdate,
+			return discord.InteractionResponse{
+				Type: discord.InteractionResponseDeferredUpdate,
 			}
 		}
 	}
 
-	return discordInteractionResponse{Type: interactionResponseDeferredUpdate}
+	return discord.InteractionResponse{Type: discord.InteractionResponseDeferredUpdate}
 }
 
 // respondToInteraction sends an interaction response via REST API (for Gateway-received interactions).
-func (db *DiscordBot) respondToInteraction(interaction *discordInteraction, resp discordInteractionResponse) {
+func (db *DiscordBot) respondToInteraction(interaction *discord.Interaction, resp discord.InteractionResponse) {
 	path := fmt.Sprintf("/interactions/%s/%s/callback", interaction.ID, interaction.Token)
 	db.discordPost(path, resp)
 }

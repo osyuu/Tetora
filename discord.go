@@ -38,12 +38,12 @@ type DiscordBot struct {
 	interactions *discordInteractionState // P14.1: tracks pending component interactions
 	threads       *threadBindingStore      // P14.2: per-thread agent bindings
 	threadParents *threadParentCache      // thread→parent channel cache
-	reactions     *discordReactionManager // P14.3: lifecycle reactions
+	reactions     *discord.ReactionManager // P14.3: lifecycle reactions
 	approvalGate *discordApprovalGate     // P28.0: approval gate
-	forumBoard   *discordForumBoard       // P14.4: forum task board
+	forumBoard   *discord.ForumBoard       // P14.4: forum task board
 	voice        *discordVoiceManager     // P14.5: voice channel manager
 	gatewayConn  *wsConn                  // P14.5: active gateway connection for voice state updates
-	notifier     *discordTaskNotifier     // task notification (thread-per-task)
+	notifier     *discord.TaskNotifier     // task notification (thread-per-task)
 	terminal     *terminalBridge         // terminal bridge (tmux sessions)
 	msgSem       chan struct{}            // limits concurrent message handlers
 	// Message dedup: ring buffer of recently processed message IDs to prevent
@@ -71,7 +71,7 @@ func newDiscordBot(cfg *Config, state *dispatchState, sem, childSem chan struct{
 
 	// P14.3: Initialize reaction manager.
 	if cfg.Discord.Reactions.Enabled {
-		db.reactions = newDiscordReactionManager(db, cfg.Discord.Reactions.Emojis)
+		db.reactions = discord.NewReactionManager(db.api, cfg.Discord.Reactions.Emojis)
 		log.Info("discord lifecycle reactions enabled")
 	}
 
@@ -104,7 +104,7 @@ func newDiscordBot(cfg *Config, state *dispatchState, sem, childSem chan struct{
 
 	// Task notification (thread-per-task).
 	if ch := cfg.Discord.NotifyChannelID; ch != "" {
-		db.notifier = newDiscordTaskNotifier(db, ch)
+		db.notifier = discord.NewTaskNotifier(db.api, ch)
 		log.Info("discord task notifier enabled", "channel", ch)
 	}
 
@@ -152,7 +152,7 @@ func (db *DiscordBot) Stop() {
 }
 
 func (db *DiscordBot) connectAndRun(ctx context.Context) error {
-	ws, err := wsConnect(discordGatewayURL)
+	ws, err := wsConnect(discord.GatewayURL)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -163,15 +163,15 @@ func (db *DiscordBot) connectAndRun(ctx context.Context) error {
 	defer func() { db.gatewayConn = nil }()
 
 	// Read Hello (op 10).
-	var hello gatewayPayload
+	var hello discord.GatewayPayload
 	if err := ws.ReadJSON(&hello); err != nil {
 		return fmt.Errorf("read hello: %w", err)
 	}
-	if hello.Op != opHello {
+	if hello.Op != discord.OpHello {
 		return fmt.Errorf("expected op 10, got %d", hello.Op)
 	}
 
-	var hd helloData
+	var hd discord.HelloData
 	json.Unmarshal(hello.D, &hd)
 
 	// Start heartbeat.
@@ -202,7 +202,7 @@ func (db *DiscordBot) connectAndRun(ctx context.Context) error {
 		default:
 		}
 
-		var payload gatewayPayload
+		var payload discord.GatewayPayload
 		if err := ws.ReadJSON(&payload); err != nil {
 			return fmt.Errorf("read: %w", err)
 		}
@@ -214,18 +214,18 @@ func (db *DiscordBot) connectAndRun(ctx context.Context) error {
 		}
 
 		switch payload.Op {
-		case opDispatch:
+		case discord.OpDispatch:
 			db.handleEvent(payload)
-		case opHeartbeat:
+		case discord.OpHeartbeat:
 			db.sendHeartbeatWS(ws)
-		case opReconnect:
+		case discord.OpReconnect:
 			log.Info("discord gateway reconnect requested")
 			return nil
-		case opInvalidSession:
+		case discord.OpInvalidSession:
 			log.Warn("discord invalid session")
 			db.sessionID = ""
 			return nil
-		case opHeartbeatAck:
+		case discord.OpHeartbeatAck:
 			// OK
 		}
 	}
@@ -233,10 +233,10 @@ func (db *DiscordBot) connectAndRun(ctx context.Context) error {
 
 // --- Event Handling ---
 
-func (db *DiscordBot) handleEvent(payload gatewayPayload) {
+func (db *DiscordBot) handleEvent(payload discord.GatewayPayload) {
 	switch payload.T {
 	case "READY":
-		var ready readyData
+		var ready discord.ReadyData
 		if json.Unmarshal(payload.D, &ready) == nil {
 			db.botUserID = ready.User.ID
 			db.sessionID = ready.SessionID
@@ -255,7 +255,7 @@ func (db *DiscordBot) handleEvent(payload gatewayPayload) {
 			case db.msgSem <- struct{}{}:
 				go func() {
 					defer func() { <-db.msgSem }()
-					db.handleMessageWithType(msgT.discordMessage, msgT.ChannelType)
+					db.handleMessageWithType(msgT.Message, msgT.ChannelType)
 				}()
 			default:
 				log.Warn("discord message handler limit reached, dropping message",
@@ -276,7 +276,7 @@ func (db *DiscordBot) handleEvent(payload gatewayPayload) {
 		}
 	case "INTERACTION_CREATE":
 		// Handle button clicks and component interactions via Gateway.
-		var interaction discordInteraction
+		var interaction discord.Interaction
 		if json.Unmarshal(payload.D, &interaction) == nil {
 			go db.handleGatewayInteraction(&interaction)
 		}
@@ -300,7 +300,7 @@ func (db *DiscordBot) isDuplicateMessage(msgID string) bool {
 
 // handleMessageWithType is the top-level message handler that checks for thread bindings
 // before falling through to normal message handling. (P14.2)
-func (db *DiscordBot) handleMessageWithType(msg discordMessage, channelType int) {
+func (db *DiscordBot) handleMessageWithType(msg discord.Message, channelType int) {
 	log.Debug("discord message received",
 		"author", msg.Author.Username, "channel", msg.ChannelID,
 		"content_len", len(msg.Content), "bot", msg.Author.Bot,
@@ -326,7 +326,7 @@ func (db *DiscordBot) handleMessageWithType(msg discordMessage, channelType int)
 	db.handleMessage(msg)
 }
 
-func (db *DiscordBot) handleMessage(msg discordMessage) {
+func (db *DiscordBot) handleMessage(msg discord.Message) {
 	// Ignore bots.
 	if msg.Author.Bot || msg.Author.ID == db.botUserID {
 		return
@@ -438,7 +438,7 @@ func (db *DiscordBot) handleMessage(msg discordMessage) {
 }
 
 // downloadDiscordAttachment fetches an attachment from Discord CDN and saves it locally.
-func downloadDiscordAttachment(baseDir string, att discordAttachment) (*upload.File, error) {
+func downloadDiscordAttachment(baseDir string, att discord.Attachment) (*upload.File, error) {
 	resp, err := http.Get(att.URL) //nolint:noctx
 	if err != nil {
 		return nil, fmt.Errorf("discord attachment: http get: %w", err)
@@ -453,7 +453,7 @@ func downloadDiscordAttachment(baseDir string, att discordAttachment) (*upload.F
 
 // --- Commands ---
 
-func (db *DiscordBot) handleCommand(msg discordMessage, cmdText string) {
+func (db *DiscordBot) handleCommand(msg discord.Message, cmdText string) {
 	parts := strings.SplitN(cmdText, " ", 2)
 	command := strings.ToLower(parts[0])
 	args := ""
@@ -501,7 +501,7 @@ func (db *DiscordBot) handleCommand(msg discordMessage, cmdText string) {
 	}
 }
 
-func (db *DiscordBot) cmdStatus(msg discordMessage) {
+func (db *DiscordBot) cmdStatus(msg discord.Message) {
 	running := 0
 	if db.state != nil {
 		db.state.mu.Lock()
@@ -512,10 +512,10 @@ func (db *DiscordBot) cmdStatus(msg discordMessage) {
 	if db.cron != nil {
 		jobs = len(db.cron.ListJobs())
 	}
-	db.sendEmbed(msg.ChannelID, discordEmbed{
+	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Title: "Tetora Status",
 		Color: 0x5865F2,
-		Fields: []discordEmbedField{
+		Fields: []discord.EmbedField{
 			{Name: "Version", Value: "v" + tetoraVersion, Inline: true},
 			{Name: "Running", Value: fmt.Sprintf("%d", running), Inline: true},
 			{Name: "Cron Jobs", Value: fmt.Sprintf("%d", jobs), Inline: true},
@@ -524,7 +524,7 @@ func (db *DiscordBot) cmdStatus(msg discordMessage) {
 	})
 }
 
-func (db *DiscordBot) cmdJobs(msg discordMessage) {
+func (db *DiscordBot) cmdJobs(msg discord.Message) {
 	if db.cron == nil {
 		db.sendMessage(msg.ChannelID, "Cron engine not available.")
 		return
@@ -534,22 +534,22 @@ func (db *DiscordBot) cmdJobs(msg discordMessage) {
 		db.sendMessage(msg.ChannelID, "No cron jobs configured.")
 		return
 	}
-	var fields []discordEmbedField
+	var fields []discord.EmbedField
 	for _, j := range jobs {
 		status := "enabled"
 		if !j.Enabled {
 			status = "disabled"
 		}
-		fields = append(fields, discordEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: j.Name, Value: fmt.Sprintf("`%s` [%s]", j.Schedule, status), Inline: true,
 		})
 	}
-	db.sendEmbed(msg.ChannelID, discordEmbed{
+	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Title: fmt.Sprintf("Cron Jobs (%d)", len(jobs)), Color: 0x57F287, Fields: fields,
 	})
 }
 
-func (db *DiscordBot) cmdCost(msg discordMessage) {
+func (db *DiscordBot) cmdCost(msg discord.Message) {
 	dbPath := db.cfg.HistoryDB
 	if dbPath == "" {
 		db.sendMessage(msg.ChannelID, "History DB not configured.")
@@ -560,10 +560,10 @@ func (db *DiscordBot) cmdCost(msg discordMessage) {
 		db.sendMessage(msg.ChannelID, fmt.Sprintf("Error: %v", err))
 		return
 	}
-	db.sendEmbed(msg.ChannelID, discordEmbed{
+	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Title: "Cost Summary",
 		Color: 0xFEE75C,
-		Fields: []discordEmbedField{
+		Fields: []discord.EmbedField{
 			{Name: "Today", Value: fmt.Sprintf("$%.4f", stats.Today), Inline: true},
 			{Name: "This Week", Value: fmt.Sprintf("$%.4f", stats.Week), Inline: true},
 			{Name: "This Month", Value: fmt.Sprintf("$%.4f", stats.Month), Inline: true},
@@ -571,7 +571,7 @@ func (db *DiscordBot) cmdCost(msg discordMessage) {
 	})
 }
 
-func (db *DiscordBot) cmdModel(msg discordMessage, args string) {
+func (db *DiscordBot) cmdModel(msg discord.Message, args string) {
 	parts := strings.Fields(args)
 
 	// !model → show current model for default role
@@ -589,17 +589,17 @@ func (db *DiscordBot) cmdModel(msg discordMessage, args string) {
 		if model == "" {
 			model = db.cfg.DefaultModel
 		}
-		var fields []discordEmbedField
+		var fields []discord.EmbedField
 		for name, r := range db.cfg.Agents {
 			m := r.Model
 			if m == "" {
 				m = db.cfg.DefaultModel
 			}
-			fields = append(fields, discordEmbedField{
+			fields = append(fields, discord.EmbedField{
 				Name: name, Value: "`" + m + "`", Inline: true,
 			})
 		}
-		db.sendEmbed(msg.ChannelID, discordEmbed{
+		db.sendEmbed(msg.ChannelID, discord.Embed{
 			Title: "Current Models", Color: 0x5865F2, Fields: fields,
 		})
 		return
@@ -623,7 +623,7 @@ func (db *DiscordBot) cmdModel(msg discordMessage, args string) {
 	db.sendMessage(msg.ChannelID, fmt.Sprintf("**%s** model: `%s` → `%s`", agentName, old, model))
 }
 
-func (db *DiscordBot) cmdCancel(msg discordMessage) {
+func (db *DiscordBot) cmdCancel(msg discord.Message) {
 	if db.state == nil {
 		db.sendMessage(msg.ChannelID, "No dispatch state.")
 		return
@@ -649,7 +649,7 @@ func (db *DiscordBot) cmdCancel(msg discordMessage) {
 	}
 }
 
-func (db *DiscordBot) cmdAsk(msg discordMessage, prompt string) {
+func (db *DiscordBot) cmdAsk(msg discord.Message, prompt string) {
 	db.sendTyping(msg.ChannelID)
 
 	ctx := trace.WithID(context.Background(), trace.NewID("discord"))
@@ -687,19 +687,19 @@ func (db *DiscordBot) cmdAsk(msg discordMessage, prompt string) {
 	if result.Status != "success" {
 		color = 0xED4245
 	}
-	db.sendEmbed(msg.ChannelID, discordEmbed{
+	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Description: output,
 		Color:       color,
-		Fields: []discordEmbedField{
+		Fields: []discord.EmbedField{
 			{Name: "Cost", Value: fmt.Sprintf("$%.4f", result.CostUSD), Inline: true},
 			{Name: "Duration", Value: formatDurationMs(result.DurationMs), Inline: true},
 		},
-		Footer:    &discordEmbedFooter{Text: fmt.Sprintf("ask | %s", task.ID[:8])},
+		Footer:    &discord.EmbedFooter{Text: fmt.Sprintf("ask | %s", task.ID[:8])},
 		Timestamp: time.Now().Format(time.RFC3339),
 	})
 }
 
-func (db *DiscordBot) cmdNewSession(msg discordMessage) {
+func (db *DiscordBot) cmdNewSession(msg discord.Message) {
 	dbPath := db.cfg.HistoryDB
 	if dbPath == "" {
 		db.sendMessage(msg.ChannelID, "History DB not configured.")
@@ -713,12 +713,12 @@ func (db *DiscordBot) cmdNewSession(msg discordMessage) {
 	db.sendMessage(msg.ChannelID, "New session started.")
 }
 
-func (db *DiscordBot) cmdHelp(msg discordMessage) {
-	db.sendEmbed(msg.ChannelID, discordEmbed{
+func (db *DiscordBot) cmdHelp(msg discord.Message) {
+	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Title:       "Tetora Help",
 		Description: "Mention me with a message to route it to the best agent, or use commands:",
 		Color:       0x5865F2,
-		Fields: []discordEmbedField{
+		Fields: []discord.EmbedField{
 			{Name: "!status", Value: "Show daemon status"},
 			{Name: "!jobs", Value: "List cron jobs"},
 			{Name: "!cost", Value: "Show cost summary"},
@@ -733,7 +733,7 @@ func (db *DiscordBot) cmdHelp(msg discordMessage) {
 	})
 }
 
-func (db *DiscordBot) cmdApprove(msg discordMessage, args string) {
+func (db *DiscordBot) cmdApprove(msg discord.Message, args string) {
 	if db.approvalGate == nil {
 		db.sendMessage(msg.ChannelID, "Approval gates are not enabled.")
 		return
@@ -772,14 +772,14 @@ func (db *DiscordBot) cmdApprove(msg discordMessage, args string) {
 // --- Direct Route (no SmartDispatch) ---
 
 // handleDirectRoute dispatches a message directly to a known agent without smart routing.
-func (db *DiscordBot) handleDirectRoute(msg discordMessage, prompt string, agent string) {
+func (db *DiscordBot) handleDirectRoute(msg discord.Message, prompt string, agent string) {
 	route := RouteResult{Agent: agent, Method: "default", Confidence: "high"}
 	db.executeRoute(msg, prompt, route)
 }
 
 // --- Smart Dispatch ---
 
-func (db *DiscordBot) handleRoute(msg discordMessage, prompt string) {
+func (db *DiscordBot) handleRoute(msg discord.Message, prompt string) {
 	ctx := trace.WithID(context.Background(), trace.NewID("discord"))
 	route := routeTask(ctx, db.cfg, RouteRequest{Prompt: prompt, Source: "discord"})
 	log.InfoCtx(ctx, "discord route result", "prompt", truncate(prompt, 60), "agent", route.Agent, "method", route.Method)
@@ -788,7 +788,7 @@ func (db *DiscordBot) handleRoute(msg discordMessage, prompt string) {
 
 // executeRoute runs a routed task through the full Discord execution pipeline
 // (session, SSE events, progress messages, reply).
-func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route RouteResult) {
+func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route RouteResult) {
 	db.sendTyping(msg.ChannelID)
 
 	// P14.3: Add queued reaction.
@@ -941,14 +941,14 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 	showProgress := db.cfg.Discord.ShowProgress == nil || *db.cfg.Discord.ShowProgress
 	var progressMsgID string
 	var progressStopCh chan struct{}
-	var progressBuilder *discordProgressBuilder
+	var progressBuilder *discord.ProgressBuilder
 	var progressEscapeID string // interaction custom ID for escape button cleanup
 	if showProgress && db.state != nil && db.state.broker != nil {
 		// Build escape button for the progress message.
 		escapeID := fmt.Sprintf("progress_escape:%s", task.ID)
-		escapeComponents := []discordComponent{
+		escapeComponents := []discord.Component{
 			discordActionRow(
-				discordButton(escapeID, "Escape", buttonStyleDanger),
+				discordButton(escapeID, "Escape", discord.ButtonStyleDanger),
 			),
 		}
 
@@ -957,19 +957,19 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 			progressMsgID = msgID
 			progressEscapeID = escapeID
 			progressStopCh = make(chan struct{})
-			progressBuilder = newDiscordProgressBuilder()
+			progressBuilder = discord.NewProgressBuilder()
 
 			// Register escape button interaction.
 			db.interactions.register(&pendingInteraction{
 				CustomID:  escapeID,
 				CreatedAt: time.Now(),
-				Response: &discordInteractionResponse{
-					Type: interactionResponseUpdateMessage,
-					Data: &discordInteractionResponseData{
+				Response: &discord.InteractionResponse{
+					Type: discord.InteractionResponseUpdateMessage,
+					Data: &discord.InteractionResponseData{
 						Content: "Interrupted.",
 					},
 				},
-				Callback: func(data discordInteractionData) {
+				Callback: func(data discord.InteractionData) {
 					log.Info("progress escape: cancelling task", "taskId", task.ID)
 					// Cancel the base context directly — works for both
 					// Discord chat mode (no state.running entry) and
@@ -1183,16 +1183,16 @@ func (db *DiscordBot) sendRouteResponse(channelID string, route *RouteResult, re
 	todayIn, todayOut := history.TodayTotalTokens(db.cfg.HistoryDB)
 
 	// Send metadata as a small embed at the end, as a reply to the original message.
-	db.sendEmbedReply(channelID, replyMsgID, discordEmbed{
+	db.sendEmbedReply(channelID, replyMsgID, discord.Embed{
 		Color: color,
-		Fields: []discordEmbedField{
+		Fields: []discord.EmbedField{
 			{Name: "Agent", Value: fmt.Sprintf("%s (%s)", route.Agent, route.Method), Inline: true},
 			{Name: "Status", Value: result.Status, Inline: true},
 			{Name: "Cost", Value: fmt.Sprintf("$%.4f", result.CostUSD), Inline: true},
 			{Name: "Duration", Value: formatDurationMs(result.DurationMs), Inline: true},
 			{Name: "今日 Token", Value: formatTokenField(todayIn, todayOut, db.cfg.CostAlert.DailyTokenLimit), Inline: true},
 		},
-		Footer:    &discordEmbedFooter{Text: fmt.Sprintf("Task: %s", task.ID[:8])},
+		Footer:    &discord.EmbedFooter{Text: fmt.Sprintf("Task: %s", task.ID[:8])},
 		Timestamp: time.Now().Format(time.RFC3339),
 	})
 }
@@ -1216,7 +1216,7 @@ const (
 func newDiscordVoiceManager(bot *DiscordBot) *discordVoiceManager {
 	deps := discord.VoiceDeps{
 		SendGateway: func(payload discord.GatewayPayload) error {
-			return bot.sendToGateway(gatewayPayload(payload))
+			return bot.sendToGateway(discord.GatewayPayload(payload))
 		},
 	}
 
@@ -1233,7 +1233,7 @@ func newDiscordVoiceManager(bot *DiscordBot) *discordVoiceManager {
 }
 
 // handleVoiceCommand processes /vc commands.
-func (db *DiscordBot) handleVoiceCommand(msg discordMessage, args []string) {
+func (db *DiscordBot) handleVoiceCommand(msg discord.Message, args []string) {
 	if !db.cfg.Discord.Voice.Enabled {
 		db.sendMessage(msg.ChannelID, "Voice channel support is not enabled.")
 		return
@@ -1290,10 +1290,45 @@ func (db *DiscordBot) handleVoiceCommand(msg discordMessage, args []string) {
 }
 
 // sendToGateway sends a payload to the active gateway websocket.
-func (db *DiscordBot) sendToGateway(payload gatewayPayload) error {
+func (db *DiscordBot) sendToGateway(payload discord.GatewayPayload) error {
 	if db.gatewayConn == nil {
 		return fmt.Errorf("no active gateway connection")
 	}
 	return db.gatewayConn.WriteJSON(payload)
+}
+
+// newDiscordForumBoard constructs a ForumBoard wired to DiscordBot dependencies.
+func newDiscordForumBoard(bot *DiscordBot, cfg DiscordForumBoardConfig) *discord.ForumBoard {
+	var deps discord.ForumBoardDeps
+	var client *discord.Client
+
+	if bot != nil {
+		client = bot.api
+
+		if bot.cfg != nil {
+			deps.ThreadBindingsEnabled = bot.cfg.Discord.ThreadBindings.Enabled
+
+			deps.ValidateAgent = func(name string) bool {
+				if bot.cfg.Agents == nil {
+					return false
+				}
+				_, ok := bot.cfg.Agents[name]
+				return ok
+			}
+		}
+
+		deps.AvailableRoles = func() []string {
+			return bot.availableRoleNames()
+		}
+
+		if bot.threads != nil && bot.cfg != nil {
+			deps.BindThread = func(guildID, threadID, role string) string {
+				ttl := bot.cfg.Discord.ThreadBindings.ThreadBindingsTTL()
+				return bot.threads.bind(guildID, threadID, role, ttl)
+			}
+		}
+	}
+
+	return discord.NewForumBoard(client, cfg, deps)
 }
 

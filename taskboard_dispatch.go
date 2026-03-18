@@ -16,6 +16,7 @@ import (
 
 	"tetora/internal/log"
 	"tetora/internal/db"
+	"tetora/internal/discord"
 )
 
 // TaskBoardDispatcher auto-dispatches tasks with status=todo and a non-empty assignee.
@@ -348,7 +349,7 @@ func (d *TaskBoardDispatcher) notifyStaleReset(taskID, title string, threshold t
 		shortID = shortID[:8]
 	}
 
-	embed := discordEmbed{
+	embed := discord.Embed{
 		Title: "⚠️ Stale Task Auto-Reset",
 		Description: fmt.Sprintf(
 			"Task **%s** (`%s`) was stuck in `doing` for >%s.\nReset to `todo` for re-dispatch.",
@@ -356,7 +357,7 @@ func (d *TaskBoardDispatcher) notifyStaleReset(taskID, title string, threshold t
 		),
 		Color:     0xFEE75C, // yellow
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Footer:    &discordEmbedFooter{Text: "tetora taskboard"},
+		Footer:    &discord.EmbedFooter{Text: "tetora taskboard"},
 	}
 	d.state.discordBot.sendEmbed(ch, embed)
 }

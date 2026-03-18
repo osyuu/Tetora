@@ -13,10 +13,10 @@ import (
 // --- Default Emoji Map ---
 
 func TestDefaultReactionEmojis(t *testing.T) {
-	emojis := defaultReactionEmojis()
+	emojis := discord.DefaultReactionEmojis()
 
 	// Must have all 5 phases.
-	phases := validReactionPhases()
+	phases := discord.ValidReactionPhases()
 	for _, phase := range phases {
 		if emoji, ok := emojis[phase]; !ok || emoji == "" {
 			t.Errorf("missing default emoji for phase %q", phase)
@@ -24,14 +24,14 @@ func TestDefaultReactionEmojis(t *testing.T) {
 	}
 
 	// Verify specific defaults.
-	if emojis[reactionPhaseQueued] != "\u23F3" {
-		t.Errorf("expected hourglass for queued, got %q", emojis[reactionPhaseQueued])
+	if emojis[discord.ReactionPhaseQueued] != "\u23F3" {
+		t.Errorf("expected hourglass for queued, got %q", emojis[discord.ReactionPhaseQueued])
 	}
-	if emojis[reactionPhaseDone] != "\u2705" {
-		t.Errorf("expected check mark for done, got %q", emojis[reactionPhaseDone])
+	if emojis[discord.ReactionPhaseDone] != "\u2705" {
+		t.Errorf("expected check mark for done, got %q", emojis[discord.ReactionPhaseDone])
 	}
-	if emojis[reactionPhaseError] != "\u274C" {
-		t.Errorf("expected cross mark for error, got %q", emojis[reactionPhaseError])
+	if emojis[discord.ReactionPhaseError] != "\u274C" {
+		t.Errorf("expected cross mark for error, got %q", emojis[discord.ReactionPhaseError])
 	}
 }
 
@@ -63,11 +63,11 @@ func TestEmojiForPhase_Default(t *testing.T) {
 		phase    string
 		expected string
 	}{
-		{reactionPhaseQueued, "\u23F3"},
-		{reactionPhaseThinking, "\U0001F914"},
-		{reactionPhaseTool, "\U0001F527"},
-		{reactionPhaseDone, "\u2705"},
-		{reactionPhaseError, "\u274C"},
+		{discord.ReactionPhaseQueued, "\u23F3"},
+		{discord.ReactionPhaseThinking, "\U0001F914"},
+		{discord.ReactionPhaseTool, "\U0001F527"},
+		{discord.ReactionPhaseDone, "\u2705"},
+		{discord.ReactionPhaseError, "\u274C"},
 	}
 	for _, tt := range tests {
 		got := rm.EmojiForPhase(tt.phase)
@@ -121,31 +121,31 @@ func TestEmojiForPhase_EmptyOverride(t *testing.T) {
 func TestSetPhase_TracksCurrentPhase(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 
-	rm.SetPhase("C1", "M1", reactionPhaseQueued)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseQueued)
 
 	got := rm.GetCurrentPhase("C1", "M1")
-	if got != reactionPhaseQueued {
-		t.Errorf("expected phase %q, got %q", reactionPhaseQueued, got)
+	if got != discord.ReactionPhaseQueued {
+		t.Errorf("expected phase %q, got %q", discord.ReactionPhaseQueued, got)
 	}
 }
 
 func TestSetPhase_TransitionUpdatesPhase(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 
-	rm.SetPhase("C1", "M1", reactionPhaseQueued)
-	rm.SetPhase("C1", "M1", reactionPhaseThinking)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseQueued)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseThinking)
 
 	got := rm.GetCurrentPhase("C1", "M1")
-	if got != reactionPhaseThinking {
-		t.Errorf("expected phase %q after transition, got %q", reactionPhaseThinking, got)
+	if got != discord.ReactionPhaseThinking {
+		t.Errorf("expected phase %q after transition, got %q", discord.ReactionPhaseThinking, got)
 	}
 }
 
 func TestSetPhase_IgnoresEmptyArgs(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 
-	rm.SetPhase("", "M1", reactionPhaseQueued)
-	rm.SetPhase("C1", "", reactionPhaseQueued)
+	rm.SetPhase("", "M1", discord.ReactionPhaseQueued)
+	rm.SetPhase("C1", "", discord.ReactionPhaseQueued)
 	rm.SetPhase("C1", "M1", "")
 
 	if got := rm.GetCurrentPhase("", "M1"); got != "" {
@@ -171,7 +171,7 @@ func TestSetPhase_UnknownPhaseIgnored(t *testing.T) {
 func TestClearPhase(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 
-	rm.SetPhase("C1", "M1", reactionPhaseQueued)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseQueued)
 	rm.ClearPhase("C1", "M1")
 
 	got := rm.GetCurrentPhase("C1", "M1")
@@ -190,14 +190,14 @@ func TestClearPhase_NonExistent(t *testing.T) {
 func TestReactQueued(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 	rm.ReactQueued("C1", "M1")
-	if got := rm.GetCurrentPhase("C1", "M1"); got != reactionPhaseQueued {
+	if got := rm.GetCurrentPhase("C1", "M1"); got != discord.ReactionPhaseQueued {
 		t.Errorf("expected queued, got %q", got)
 	}
 }
 
 func TestReactDone_ClearsTracking(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
-	rm.SetPhase("C1", "M1", reactionPhaseThinking)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseThinking)
 	rm.ReactDone("C1", "M1")
 	if got := rm.GetCurrentPhase("C1", "M1"); got != "" {
 		t.Errorf("expected empty after ReactDone, got %q", got)
@@ -206,7 +206,7 @@ func TestReactDone_ClearsTracking(t *testing.T) {
 
 func TestReactError_ClearsTracking(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
-	rm.SetPhase("C1", "M1", reactionPhaseThinking)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseThinking)
 	rm.ReactError("C1", "M1")
 	if got := rm.GetCurrentPhase("C1", "M1"); got != "" {
 		t.Errorf("expected empty after ReactError, got %q", got)
@@ -218,18 +218,18 @@ func TestReactError_ClearsTracking(t *testing.T) {
 func TestReactionLifecycle_FullTransition(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 
-	rm.SetPhase("C1", "M1", reactionPhaseQueued)
-	if got := rm.GetCurrentPhase("C1", "M1"); got != reactionPhaseQueued {
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseQueued)
+	if got := rm.GetCurrentPhase("C1", "M1"); got != discord.ReactionPhaseQueued {
 		t.Fatalf("step 1: expected queued, got %q", got)
 	}
 
-	rm.SetPhase("C1", "M1", reactionPhaseThinking)
-	if got := rm.GetCurrentPhase("C1", "M1"); got != reactionPhaseThinking {
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseThinking)
+	if got := rm.GetCurrentPhase("C1", "M1"); got != discord.ReactionPhaseThinking {
 		t.Fatalf("step 2: expected thinking, got %q", got)
 	}
 
-	rm.SetPhase("C1", "M1", reactionPhaseTool)
-	if got := rm.GetCurrentPhase("C1", "M1"); got != reactionPhaseTool {
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseTool)
+	if got := rm.GetCurrentPhase("C1", "M1"); got != discord.ReactionPhaseTool {
 		t.Fatalf("step 3: expected tool, got %q", got)
 	}
 
@@ -242,8 +242,8 @@ func TestReactionLifecycle_FullTransition(t *testing.T) {
 func TestReactionLifecycle_ErrorPath(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 
-	rm.SetPhase("C1", "M1", reactionPhaseQueued)
-	rm.SetPhase("C1", "M1", reactionPhaseThinking)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseQueued)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseThinking)
 	rm.ReactError("C1", "M1")
 
 	if got := rm.GetCurrentPhase("C1", "M1"); got != "" {
@@ -256,17 +256,17 @@ func TestReactionLifecycle_ErrorPath(t *testing.T) {
 func TestReactionManager_MultipleMessages(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 
-	rm.SetPhase("C1", "M1", reactionPhaseQueued)
-	rm.SetPhase("C1", "M2", reactionPhaseThinking)
-	rm.SetPhase("C2", "M3", reactionPhaseTool)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseQueued)
+	rm.SetPhase("C1", "M2", discord.ReactionPhaseThinking)
+	rm.SetPhase("C2", "M3", discord.ReactionPhaseTool)
 
-	if got := rm.GetCurrentPhase("C1", "M1"); got != reactionPhaseQueued {
+	if got := rm.GetCurrentPhase("C1", "M1"); got != discord.ReactionPhaseQueued {
 		t.Errorf("M1: expected queued, got %q", got)
 	}
-	if got := rm.GetCurrentPhase("C1", "M2"); got != reactionPhaseThinking {
+	if got := rm.GetCurrentPhase("C1", "M2"); got != discord.ReactionPhaseThinking {
 		t.Errorf("M2: expected thinking, got %q", got)
 	}
-	if got := rm.GetCurrentPhase("C2", "M3"); got != reactionPhaseTool {
+	if got := rm.GetCurrentPhase("C2", "M3"); got != discord.ReactionPhaseTool {
 		t.Errorf("M3: expected tool, got %q", got)
 	}
 }
@@ -274,7 +274,7 @@ func TestReactionManager_MultipleMessages(t *testing.T) {
 // --- Valid Phases ---
 
 func TestValidReactionPhases(t *testing.T) {
-	phases := validReactionPhases()
+	phases := discord.ValidReactionPhases()
 	if len(phases) != 5 {
 		t.Errorf("expected 5 phases, got %d", len(phases))
 	}
@@ -323,20 +323,20 @@ func TestDiscordReactionsConfigParse_Disabled(t *testing.T) {
 // --- Phase Constants ---
 
 func TestReactionPhaseConstants(t *testing.T) {
-	if reactionPhaseQueued != "queued" {
-		t.Errorf("expected 'queued', got %q", reactionPhaseQueued)
+	if discord.ReactionPhaseQueued != "queued" {
+		t.Errorf("expected 'queued', got %q", discord.ReactionPhaseQueued)
 	}
-	if reactionPhaseThinking != "thinking" {
-		t.Errorf("expected 'thinking', got %q", reactionPhaseThinking)
+	if discord.ReactionPhaseThinking != "thinking" {
+		t.Errorf("expected 'thinking', got %q", discord.ReactionPhaseThinking)
 	}
-	if reactionPhaseTool != "tool" {
-		t.Errorf("expected 'tool', got %q", reactionPhaseTool)
+	if discord.ReactionPhaseTool != "tool" {
+		t.Errorf("expected 'tool', got %q", discord.ReactionPhaseTool)
 	}
-	if reactionPhaseDone != "done" {
-		t.Errorf("expected 'done', got %q", reactionPhaseDone)
+	if discord.ReactionPhaseDone != "done" {
+		t.Errorf("expected 'done', got %q", discord.ReactionPhaseDone)
 	}
-	if reactionPhaseError != "error" {
-		t.Errorf("expected 'error', got %q", reactionPhaseError)
+	if discord.ReactionPhaseError != "error" {
+		t.Errorf("expected 'error', got %q", discord.ReactionPhaseError)
 	}
 }
 
@@ -345,11 +345,11 @@ func TestReactionPhaseConstants(t *testing.T) {
 func TestSetPhase_SamePhaseNoRemove(t *testing.T) {
 	rm := discord.NewReactionManager(nil, nil)
 
-	rm.SetPhase("C1", "M1", reactionPhaseQueued)
-	rm.SetPhase("C1", "M1", reactionPhaseQueued)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseQueued)
+	rm.SetPhase("C1", "M1", discord.ReactionPhaseQueued)
 
 	got := rm.GetCurrentPhase("C1", "M1")
-	if got != reactionPhaseQueued {
+	if got != discord.ReactionPhaseQueued {
 		t.Errorf("expected queued after re-set, got %q", got)
 	}
 }
@@ -359,8 +359,8 @@ func TestSetPhase_SamePhaseNoRemove(t *testing.T) {
 func TestReactionKeyContainsSeparator(t *testing.T) {
 	// reactionKey is unexported in internal/discord, test via SetPhase+GetCurrentPhase
 	rm := discord.NewReactionManager(nil, nil)
-	rm.SetPhase("C123", "M456", reactionPhaseQueued)
-	if got := rm.GetCurrentPhase("C123", "M456"); got != reactionPhaseQueued {
+	rm.SetPhase("C123", "M456", discord.ReactionPhaseQueued)
+	if got := rm.GetCurrentPhase("C123", "M456"); got != discord.ReactionPhaseQueued {
 		t.Error("expected phase tracking to work with specific channel/message IDs")
 	}
 	_ = strings.Contains("C123:M456", ":")

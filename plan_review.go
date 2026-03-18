@@ -10,6 +10,7 @@ import (
 
 	"tetora/internal/audit"
 	"tetora/internal/db"
+	"tetora/internal/discord"
 )
 
 // --- Plan Review System ---
@@ -221,7 +222,7 @@ func (s *Server) registerPlanReviewRoutes(mux *http.ServeMux) {
 // --- Discord Plan Review Formatting ---
 
 // buildPlanReviewEmbed creates a rich Discord embed for plan review.
-func buildPlanReviewEmbed(review *PlanReview) discordEmbed {
+func buildPlanReviewEmbed(review *PlanReview) discord.Embed {
 	color := 0x3498db // Blue for pending
 
 	// Truncate plan text for Discord embed (max 4096 chars for description).
@@ -230,23 +231,23 @@ func buildPlanReviewEmbed(review *PlanReview) discordEmbed {
 		planPreview = planPreview[:3500] + "\n\n... (truncated, see dashboard for full plan)"
 	}
 
-	embed := discordEmbed{
+	embed := discord.Embed{
 		Title:       "Plan Review Required",
 		Description: planPreview,
 		Color:       color,
-		Fields: []discordEmbedField{
+		Fields: []discord.EmbedField{
 			{Name: "Session", Value: truncate(review.SessionID, 36), Inline: true},
 		},
 		Timestamp: review.CreatedAt,
 	}
 
 	if review.Agent != "" {
-		embed.Fields = append(embed.Fields, discordEmbedField{
+		embed.Fields = append(embed.Fields, discord.EmbedField{
 			Name: "Agent", Value: review.Agent, Inline: true,
 		})
 	}
 	if review.WorkerName != "" {
-		embed.Fields = append(embed.Fields, discordEmbedField{
+		embed.Fields = append(embed.Fields, discord.EmbedField{
 			Name: "Worker", Value: review.WorkerName, Inline: true,
 		})
 	}
@@ -255,11 +256,11 @@ func buildPlanReviewEmbed(review *PlanReview) discordEmbed {
 }
 
 // buildPlanReviewComponents creates Approve/Reject/Request Changes buttons.
-func buildPlanReviewComponents(reviewID string) []discordComponent {
-	return []discordComponent{
+func buildPlanReviewComponents(reviewID string) []discord.Component {
+	return []discord.Component{
 		discordActionRow(
-			discordButton("plan_approve:"+reviewID, "Approve", buttonStyleSuccess),
-			discordButton("plan_reject:"+reviewID, "Reject", buttonStyleDanger),
+			discordButton("plan_approve:"+reviewID, "Approve", discord.ButtonStyleSuccess),
+			discordButton("plan_reject:"+reviewID, "Reject", discord.ButtonStyleDanger),
 		),
 	}
 }

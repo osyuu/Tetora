@@ -9,6 +9,7 @@ import (
 
 	"tetora/internal/log"
 	"tetora/internal/tmux"
+	"tetora/internal/discord"
 )
 
 // --- Discord Terminal Bridge ---
@@ -322,21 +323,21 @@ func (tb *terminalBridge) sendControlPanel(channelID, content, sessionID string,
 	prefix := "term_" + sessionID + "_"
 
 	row1 := discordActionRow(
-		discordButton(prefix+"up", "\u2b06 Up", buttonStyleSecondary),
-		discordButton(prefix+"down", "\u2b07 Down", buttonStyleSecondary),
-		discordButton(prefix+"enter", "\u23ce Enter", buttonStylePrimary),
-		discordButton(prefix+"tab", "Tab", buttonStyleSecondary),
-		discordButton(prefix+"esc", "Esc", buttonStyleSecondary),
+		discordButton(prefix+"up", "\u2b06 Up", discord.ButtonStyleSecondary),
+		discordButton(prefix+"down", "\u2b07 Down", discord.ButtonStyleSecondary),
+		discordButton(prefix+"enter", "\u23ce Enter", discord.ButtonStylePrimary),
+		discordButton(prefix+"tab", "Tab", discord.ButtonStyleSecondary),
+		discordButton(prefix+"esc", "Esc", discord.ButtonStyleSecondary),
 	)
 	row2 := discordActionRow(
-		discordButton(prefix+"type", "\u2328 Type", buttonStylePrimary),
-		discordButton(prefix+"y", "Y", buttonStyleSuccess),
-		discordButton(prefix+"n", "N", buttonStyleDanger),
-		discordButton(prefix+"ctrlc", "Ctrl+C", buttonStyleDanger),
-		discordButton(prefix+"stop", "Stop", buttonStyleDanger),
+		discordButton(prefix+"type", "\u2328 Type", discord.ButtonStylePrimary),
+		discordButton(prefix+"y", "Y", discord.ButtonStyleSuccess),
+		discordButton(prefix+"n", "N", discord.ButtonStyleDanger),
+		discordButton(prefix+"ctrlc", "Ctrl+C", discord.ButtonStyleDanger),
+		discordButton(prefix+"stop", "Stop", discord.ButtonStyleDanger),
 	)
 
-	components := []discordComponent{row1, row2}
+	components := []discord.Component{row1, row2}
 
 	body, err := tb.bot.discordRequestWithResponse("POST",
 		fmt.Sprintf("/channels/%s/messages", channelID),
@@ -380,7 +381,7 @@ func (tb *terminalBridge) registerControlButtons(sessionID string, allowedIDs []
 			CreatedAt:  time.Now(),
 			AllowedIDs: allowedIDs,
 			Reusable:   true,
-			Callback: func(data discordInteractionData) {
+			Callback: func(data discord.InteractionData) {
 				session := tb.getSessionByID(sessionID)
 				if session == nil {
 					return
@@ -403,7 +404,7 @@ func (tb *terminalBridge) registerControlButtons(sessionID string, allowedIDs []
 		CreatedAt:  time.Now(),
 		AllowedIDs: allowedIDs,
 		Reusable:   true,
-		ModalResponse: func() *discordInteractionResponse {
+		ModalResponse: func() *discord.InteractionResponse {
 			resp := discordBuildModal(modalCustomID, "Terminal Input",
 				discordParagraphInput("term_input", "Text to send", true),
 			)
@@ -417,7 +418,7 @@ func (tb *terminalBridge) registerControlButtons(sessionID string, allowedIDs []
 		CreatedAt:  time.Now(),
 		AllowedIDs: allowedIDs,
 		Reusable:   true,
-		Callback: func(data discordInteractionData) {
+		Callback: func(data discord.InteractionData) {
 			session := tb.getSessionByID(sessionID)
 			if session == nil {
 				return
@@ -443,7 +444,7 @@ func (tb *terminalBridge) registerControlButtons(sessionID string, allowedIDs []
 		CreatedAt:  time.Now(),
 		AllowedIDs: allowedIDs,
 		Reusable:   false,
-		Callback: func(data discordInteractionData) {
+		Callback: func(data discord.InteractionData) {
 			session := tb.getSessionByID(sessionID)
 			if session == nil {
 				return
@@ -483,7 +484,7 @@ func (tb *terminalBridge) signalCapture(session *terminalSession) {
 // --- /term Command Handling ---
 
 // handleTermCommand processes !term start|stop|status commands.
-func (tb *terminalBridge) handleTermCommand(msg discordMessage, args string) {
+func (tb *terminalBridge) handleTermCommand(msg discord.Message, args string) {
 	parts := strings.Fields(strings.TrimSpace(args))
 	cmd := "start"
 	if len(parts) > 0 {

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"tetora/internal/log"
+	"tetora/internal/discord"
 )
 
 // formatDurationMs converts milliseconds to a human-readable string (e.g. "11.9s", "320ms").
@@ -69,11 +70,11 @@ func (db *DiscordBot) sendMessage(channelID, content string) {
 	db.api.SendMessage(channelID, content)
 }
 
-func (db *DiscordBot) sendEmbed(channelID string, embed discordEmbed) {
+func (db *DiscordBot) sendEmbed(channelID string, embed discord.Embed) {
 	db.api.SendEmbed(channelID, embed)
 }
 
-func (db *DiscordBot) sendEmbedReply(channelID, replyToID string, embed discordEmbed) {
+func (db *DiscordBot) sendEmbedReply(channelID, replyToID string, embed discord.Embed) {
 	db.api.SendEmbedReply(channelID, replyToID, embed)
 }
 
@@ -216,7 +217,7 @@ func (db *DiscordBot) editMessage(channelID, messageID, content string) error {
 }
 
 // editMessageWithComponents edits an existing Discord message, replacing content and components.
-func (db *DiscordBot) editMessageWithComponents(channelID, messageID, content string, components []discordComponent) error {
+func (db *DiscordBot) editMessageWithComponents(channelID, messageID, content string, components []discord.Component) error {
 	return db.api.EditMessageWithComponents(channelID, messageID, content, components)
 }
 
@@ -228,17 +229,17 @@ func (db *DiscordBot) deleteMessage(channelID, messageID string) {
 // --- P14.1: Discord Components v2 ---
 
 // sendMessageWithComponents sends a message with interactive components (buttons, selects, etc.).
-func (db *DiscordBot) sendMessageWithComponents(channelID, content string, components []discordComponent) {
+func (db *DiscordBot) sendMessageWithComponents(channelID, content string, components []discord.Component) {
 	db.api.SendMessageWithComponents(channelID, content, components)
 }
 
 // sendMessageWithComponentsReturningID sends a message with components and returns the message ID.
-func (db *DiscordBot) sendMessageWithComponentsReturningID(channelID, content string, components []discordComponent) (string, error) {
+func (db *DiscordBot) sendMessageWithComponentsReturningID(channelID, content string, components []discord.Component) (string, error) {
 	return db.api.SendMessageWithComponentsReturningID(channelID, content, components)
 }
 
 // sendEmbedWithComponents sends an embed message with interactive components.
-func (db *DiscordBot) sendEmbedWithComponents(channelID string, embed discordEmbed, components []discordComponent) {
+func (db *DiscordBot) sendEmbedWithComponents(channelID string, embed discord.Embed, components []discord.Component) {
 	db.api.SendEmbedWithComponents(channelID, embed, components)
 }
 
@@ -292,12 +293,12 @@ func (g *discordApprovalGate) RequestApproval(ctx context.Context, req ApprovalR
 	}()
 
 	text := fmt.Sprintf("**Approval needed**\n\nTool: `%s`\n%s", req.Tool, req.Summary)
-	components := []discordComponent{{
-		Type: componentTypeActionRow,
-		Components: []discordComponent{
-			{Type: componentTypeButton, Style: buttonStyleSuccess, Label: "Approve", CustomID: "gate_approve:" + req.ID},
-			{Type: componentTypeButton, Style: buttonStylePrimary, Label: "Always", CustomID: "gate_always:" + req.ID + ":" + req.Tool},
-			{Type: componentTypeButton, Style: buttonStyleDanger, Label: "Reject", CustomID: "gate_reject:" + req.ID},
+	components := []discord.Component{{
+		Type: discord.ComponentTypeActionRow,
+		Components: []discord.Component{
+			{Type: discord.ComponentTypeButton, Style: discord.ButtonStyleSuccess, Label: "Approve", CustomID: "gate_approve:" + req.ID},
+			{Type: discord.ComponentTypeButton, Style: discord.ButtonStylePrimary, Label: "Always", CustomID: "gate_always:" + req.ID + ":" + req.Tool},
+			{Type: discord.ComponentTypeButton, Style: discord.ButtonStyleDanger, Label: "Reject", CustomID: "gate_reject:" + req.ID},
 		},
 	}}
 	g.bot.sendMessageWithComponents(g.channelID, text, components)

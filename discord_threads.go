@@ -257,10 +257,10 @@ func startThreadCleanup(ctx context.Context, store *threadBindingStore, parentCa
 
 // --- Channel Type Detection ---
 
-// discordMessageWithType extends discordMessage with channel type info
+// discordMessageWithType extends discord.Message with channel type info
 // used for thread detection during MESSAGE_CREATE dispatch.
 type discordMessageWithType struct {
-	discordMessage
+	discord.Message
 	ChannelType int `json:"channel_type,omitempty"`
 }
 
@@ -287,7 +287,7 @@ func (db *DiscordBot) availableRoleNames() []string {
 }
 
 // handleFocusCommand processes the /focus <agent> command to bind a thread to an agent.
-func (db *DiscordBot) handleFocusCommand(msg discordMessage, args string, channelType int) bool {
+func (db *DiscordBot) handleFocusCommand(msg discord.Message, args string, channelType int) bool {
 	if !isThreadChannel(channelType) {
 		db.sendMessage(msg.ChannelID, "The `/focus` command can only be used inside a thread.")
 		return true
@@ -315,7 +315,7 @@ func (db *DiscordBot) handleFocusCommand(msg discordMessage, args string, channe
 	sessionID := db.threads.bind(guildID, threadID, role, ttl)
 	log.Info("discord thread bound", "guild", guildID, "thread", threadID, "agent", role, "session", sessionID)
 
-	db.sendEmbed(msg.ChannelID, discordEmbed{
+	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Title:       fmt.Sprintf("Thread focused on %s", role),
 		Description: fmt.Sprintf("This thread is now bound to agent **%s**.\nSession: `%s`\nExpires in %d hours.", role, sessionID, int(ttl.Hours())),
 		Color:       0x57F287,
@@ -325,7 +325,7 @@ func (db *DiscordBot) handleFocusCommand(msg discordMessage, args string, channe
 }
 
 // handleUnfocusCommand processes the /unfocus command to unbind a thread.
-func (db *DiscordBot) handleUnfocusCommand(msg discordMessage, channelType int) bool {
+func (db *DiscordBot) handleUnfocusCommand(msg discord.Message, channelType int) bool {
 	if !isThreadChannel(channelType) {
 		db.sendMessage(msg.ChannelID, "The `/unfocus` command can only be used inside a thread.")
 		return true
@@ -343,7 +343,7 @@ func (db *DiscordBot) handleUnfocusCommand(msg discordMessage, channelType int) 
 	db.threads.unbind(guildID, threadID)
 	log.Info("discord thread unbound", "guild", guildID, "thread", threadID, "wasRole", existing.Agent)
 
-	db.sendEmbed(msg.ChannelID, discordEmbed{
+	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Title:       "Thread unfocused",
 		Description: fmt.Sprintf("Agent **%s** has been unbound from this thread.", existing.Agent),
 		Color:       0xFEE75C,
@@ -356,7 +356,7 @@ func (db *DiscordBot) handleUnfocusCommand(msg discordMessage, channelType int) 
 
 // handleThreadMessage checks if a message is in a bound thread and routes accordingly.
 // Returns true if the message was handled (bound thread routing), false for normal routing.
-func (db *DiscordBot) handleThreadMessage(msg discordMessage, channelType int) bool {
+func (db *DiscordBot) handleThreadMessage(msg discord.Message, channelType int) bool {
 	if db.threads == nil || !db.cfg.Discord.ThreadBindings.Enabled {
 		return false
 	}
@@ -425,7 +425,7 @@ func (db *DiscordBot) resolveThreadDefaultAgent(threadID, guildID string) string
 }
 
 // handleThreadRoute dispatches a message in a bound thread to the bound agent.
-func (db *DiscordBot) handleThreadRoute(msg discordMessage, prompt string, binding *threadBinding) {
+func (db *DiscordBot) handleThreadRoute(msg discord.Message, prompt string, binding *threadBinding) {
 	if prompt == "" {
 		return
 	}
@@ -535,8 +535,8 @@ func (db *DiscordBot) runDiscordProgressUpdater(
 	channelID, progressMsgID, taskID, sessionID string,
 	broker *sseBroker,
 	stopCh <-chan struct{},
-	builder *discordProgressBuilder,
-	components []discordComponent,
+	builder *discord.ProgressBuilder,
+	components []discord.Component,
 ) {
 	eventCh, unsub := broker.Subscribe(taskID)
 	defer unsub()

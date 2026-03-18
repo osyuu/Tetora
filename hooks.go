@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tetora/internal/log"
+	"tetora/internal/discord"
 )
 
 // --- Claude Code Hooks Event Receiver ---
@@ -847,23 +848,23 @@ func (s *Server) handlePlanGate(w http.ResponseWriter, r *http.Request) {
 		embed := buildPlanReviewEmbed(review)
 		customApprove := "pgate_approve:" + gateID
 		customReject := "pgate_reject:" + gateID
-		components := []discordComponent{
+		components := []discord.Component{
 			discordActionRow(
-				discordButton(customApprove, "Approve Plan", buttonStyleSuccess),
-				discordButton(customReject, "Reject Plan", buttonStyleDanger),
+				discordButton(customApprove, "Approve Plan", discord.ButtonStyleSuccess),
+				discordButton(customReject, "Reject Plan", discord.ButtonStyleDanger),
 			),
 		}
 
 		bot.interactions.register(&pendingInteraction{
 			CustomID:  customApprove,
 			CreatedAt: time.Now(),
-			Response: &discordInteractionResponse{
-				Type: interactionResponseUpdateMessage,
-				Data: &discordInteractionResponseData{
+			Response: &discord.InteractionResponse{
+				Type: discord.InteractionResponseUpdateMessage,
+				Data: &discord.InteractionResponseData{
 					Content: "✅ Plan approved.",
 				},
 			},
-			Callback: func(data discordInteractionData) {
+			Callback: func(data discord.InteractionData) {
 				if cfg.HistoryDB != "" {
 					updatePlanReviewStatus(cfg.HistoryDB, gateID, "approved", "discord", "")
 				}
@@ -876,13 +877,13 @@ func (s *Server) handlePlanGate(w http.ResponseWriter, r *http.Request) {
 		bot.interactions.register(&pendingInteraction{
 			CustomID:  customReject,
 			CreatedAt: time.Now(),
-			Response: &discordInteractionResponse{
-				Type: interactionResponseUpdateMessage,
-				Data: &discordInteractionResponseData{
+			Response: &discord.InteractionResponse{
+				Type: discord.InteractionResponseUpdateMessage,
+				Data: &discord.InteractionResponseData{
 					Content: "❌ Plan rejected.",
 				},
 			},
-			Callback: func(data discordInteractionData) {
+			Callback: func(data discord.InteractionData) {
 				if cfg.HistoryDB != "" {
 					updatePlanReviewStatus(cfg.HistoryDB, gateID, "rejected", "discord", "")
 				}
@@ -1009,7 +1010,7 @@ func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
 			cleanupBot = bot
 
 			// Build buttons for options.
-			var buttons []discordComponent
+			var buttons []discord.Component
 			for i, opt := range body.Options {
 				if i >= 4 {
 					break // Discord max 5 buttons per row, keep room for "Type" button
@@ -1019,7 +1020,7 @@ func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
 				bot.interactions.register(&pendingInteraction{
 					CustomID:  customID,
 					CreatedAt: time.Now(),
-					Callback: func(data discordInteractionData) {
+					Callback: func(data discord.InteractionData) {
 						select {
 						case ch <- answer:
 						default:
@@ -1027,7 +1028,7 @@ func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
 					},
 				})
 				cleanupIDs = append(cleanupIDs, customID)
-				buttons = append(buttons, discordButton(customID, truncate(opt, 80), buttonStylePrimary))
+				buttons = append(buttons, discordButton(customID, truncate(opt, 80), discord.ButtonStylePrimary))
 			}
 
 			// Add "Type" button for free-text input.
@@ -1045,7 +1046,7 @@ func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
 			bot.interactions.register(&pendingInteraction{
 				CustomID:  typeModalID,
 				CreatedAt: time.Now(),
-				Callback: func(data discordInteractionData) {
+				Callback: func(data discord.InteractionData) {
 					values := extractModalValues(data.Components)
 					text := values["answer_text"]
 					if text == "" {
@@ -1059,10 +1060,10 @@ func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
 			})
 			cleanupIDs = append(cleanupIDs, typeModalID)
 
-			buttons = append(buttons, discordButton(typeButtonID, "Type...", buttonStyleSecondary))
+			buttons = append(buttons, discordButton(typeButtonID, "Type...", discord.ButtonStyleSecondary))
 
 			content := fmt.Sprintf("**Question from Claude Code:**\n%s", body.Question)
-			components := []discordComponent{discordActionRow(buttons...)}
+			components := []discord.Component{discordActionRow(buttons...)}
 			bot.sendMessageWithComponents(notifyCh, content, components)
 
 			log.Info("ask-user: waiting for Discord answer", "qId", qID)

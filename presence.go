@@ -12,6 +12,7 @@ import (
 
 	"tetora/internal/log"
 	"tetora/internal/messaging"
+	"tetora/internal/discord"
 )
 
 // Ensure root PresenceSetter is compatible with messaging.PresenceSetter.
@@ -191,7 +192,7 @@ func (db *DiscordBot) SetTyping(ctx context.Context, channelRef string) error {
 	if channelRef == "" {
 		return nil
 	}
-	url := discordAPIBase + fmt.Sprintf("/channels/%s/typing", channelRef)
+	url := discord.APIBase + fmt.Sprintf("/channels/%s/typing", channelRef)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return err
