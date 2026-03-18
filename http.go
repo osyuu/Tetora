@@ -18,17 +18,22 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"tetora/internal/audit"
+	"tetora/internal/backup"
 	"tetora/internal/classify"
 	"tetora/internal/cli"
 	"tetora/internal/cost"
+	"tetora/internal/db"
+	"tetora/internal/discord"
 	"tetora/internal/history"
 	"tetora/internal/httpapi"
 	"tetora/internal/httputil"
 	"tetora/internal/knowledge"
 	"tetora/internal/log"
+	"tetora/internal/messaging/webhook"
 	"tetora/internal/pairing"
 	"tetora/internal/pwa"
 	"tetora/internal/quickaction"
@@ -36,6 +41,8 @@ import (
 	"tetora/internal/sprite"
 	"tetora/internal/store"
 	"tetora/internal/trace"
+	"tetora/internal/upload"
+	"tetora/internal/version"
 	"tetora/internal/voice"
 )
 
@@ -2667,4 +2674,3781 @@ func resolveAgentSprite(taskStatus, dispatchStatus, source string) string {
 	}
 
 	return SpriteIdle
+}
+
+func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
+	cfg := s.cfg
+	state := s.state
+	sem := s.sem
+	childSem := s.childSem
+
+	// --- Incoming Webhooks ---
+	mux.HandleFunc("/hooks/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/hooks/")
+		if name == "" {
+			http.Error(w, `{"error":"webhook name required"}`, http.StatusBadRequest)
+			return
+		}
+		ctx := r.Context()
+		result := handleIncomingWebhook(ctx, cfg, name, r, state, sem, childSem)
+		w.Header().Set("Content-Type", "application/json")
+		switch result.Status {
+		case "error":
+			w.WriteHeader(http.StatusBadRequest)
+		case "disabled":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+		json.NewEncoder(w).Encode(result)
+	})
+
+	mux.HandleFunc("/webhooks/incoming", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		type webhookInfo struct {
+			Name      string `json:"name"`
+			Agent      string `json:"agent"`
+			Enabled   bool   `json:"enabled"`
+			Template  string `json:"template,omitempty"`
+			Filter    string `json:"filter,omitempty"`
+			Workflow  string `json:"workflow,omitempty"`
+			HasSecret bool   `json:"hasSecret"`
+		}
+		var list []webhookInfo
+		for name, wh := range cfg.IncomingWebhooks {
+			list = append(list, webhookInfo{
+				Name:      name,
+				Agent:      wh.Agent,
+				Enabled:   wh.IsEnabled(),
+				Template:  wh.Template,
+				Filter:    wh.Filter,
+				Workflow:  wh.Workflow,
+				HasSecret: wh.Secret != "",
+			})
+		}
+		if list == nil {
+			list = []webhookInfo{}
+		}
+		json.NewEncoder(w).Encode(list)
+	})
+
+	mux.HandleFunc("/audit", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		limit := 50
+		offset := 0
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		if p := r.URL.Query().Get("page"); p != "" {
+			if n, err := strconv.Atoi(p); err == nil && n > 1 {
+				offset = (n - 1) * limit
+			}
+		}
+
+		entries, total, err := audit.Query(cfg.HistoryDB, limit, offset)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if entries == nil {
+			entries = []audit.Entry{}
+		}
+
+		page := (offset / limit) + 1
+		json.NewEncoder(w).Encode(map[string]any{
+			"entries": entries,
+			"total":   total,
+			"page":    page,
+			"limit":   limit,
+		})
+	})
+
+	// --- Retention & Data ---
+	mux.HandleFunc("/retention", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			stats := make(map[string]int)
+			if cfg.HistoryDB != "" {
+				stats = queryRetentionStats(cfg.HistoryDB)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"config": cfg.Retention,
+				"defaults": map[string]int{
+					"history":     retentionDays(cfg.Retention.History, 90),
+					"sessions":    retentionDays(cfg.Retention.Sessions, 30),
+					"auditLog":    retentionDays(cfg.Retention.AuditLog, 365),
+					"logs":        retentionDays(cfg.Retention.Logs, 14),
+					"workflows":   retentionDays(cfg.Retention.Workflows, 90),
+					"reflections": retentionDays(cfg.Retention.Reflections, 60),
+					"sla":         retentionDays(cfg.Retention.SLA, 90),
+					"trustEvents": retentionDays(cfg.Retention.TrustEvents, 90),
+					"handoffs":    retentionDays(cfg.Retention.Handoffs, 60),
+					"queue":       retentionDays(cfg.Retention.Queue, 7),
+					"versions":    retentionDays(cfg.Retention.Versions, 180),
+					"outputs":     retentionDays(cfg.Retention.Outputs, 30),
+					"uploads":     retentionDays(cfg.Retention.Uploads, 7),
+				},
+				"stats": stats,
+			})
+		default:
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/retention/cleanup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		audit.Log(cfg.HistoryDB, "retention.cleanup", "http", "", clientIP(r))
+		results := runRetention(cfg)
+		json.NewEncoder(w).Encode(map[string]any{"results": results})
+	})
+
+	mux.HandleFunc("/data/export", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		audit.Log(cfg.HistoryDB, "data.export", "http", "", clientIP(r))
+		data, err := exportData(cfg)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.Write(data)
+	})
+
+	mux.HandleFunc("/data/purge", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, `{"error":"DELETE only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		before := r.URL.Query().Get("before")
+		if before == "" {
+			http.Error(w, `{"error":"before parameter required (YYYY-MM-DD)"}`, http.StatusBadRequest)
+			return
+		}
+		confirm := r.Header.Get("X-Confirm-Purge")
+		if confirm != "true" {
+			http.Error(w, `{"error":"X-Confirm-Purge: true header required"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		audit.Log(cfg.HistoryDB, "data.purge", "http", "before="+before, clientIP(r))
+		results, err := purgeDataBefore(cfg, before)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"results": results})
+	})
+
+	// --- Backup ---
+	mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+
+		audit.Log(cfg.HistoryDB, "backup.download", "http", "", clientIP(r))
+
+		// Create temp backup.
+		tmpFile, err := os.CreateTemp("", "tetora-backup-*.tar.gz")
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"create temp: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		tmpPath := tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(tmpPath)
+
+		if err := backup.Create(cfg.BaseDir, tmpPath); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"create backup: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		data, err := os.ReadFile(tmpPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"read backup: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", "attachment; filename=tetora-backup.tar.gz")
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.Write(data)
+	})
+
+	// Dashboard login.
+	mux.HandleFunc("/dashboard/login", func(w http.ResponseWriter, r *http.Request) {
+		if !cfg.DashboardAuth.Enabled {
+			http.Redirect(w, r, "/dashboard", http.StatusFound)
+			return
+		}
+
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(dashboardLoginHTML))
+			return
+		}
+
+		if r.Method == http.MethodPost {
+			ip := clientIP(r)
+
+			// Rate limit check.
+			if s.limiter.isLocked(ip) {
+				audit.Log(cfg.HistoryDB, "dashboard.login.ratelimit", "http", "", ip)
+				if s.secMon != nil {
+					s.secMon.recordEvent(ip, "login.ratelimit")
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(dashboardLoginLockedHTML))
+				return
+			}
+
+			r.ParseForm()
+			password := r.FormValue("password")
+
+			expected := cfg.DashboardAuth.Password
+			if expected == "" {
+				expected = cfg.DashboardAuth.Token
+			}
+
+			if password != expected {
+				s.limiter.recordFailure(ip)
+				audit.Log(cfg.HistoryDB, "dashboard.login.fail", "http", "", ip)
+				if s.secMon != nil {
+					s.secMon.recordEvent(ip, "login.fail")
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(dashboardLoginFailHTML))
+				return
+			}
+
+			// Success — clear rate limit.
+			s.limiter.recordSuccess(ip)
+
+			// Set session cookie.
+			secret := expected
+			cookieVal := dashboardAuthCookie(secret)
+			cookie := &http.Cookie{
+				Name:     "tetora_session",
+				Value:    cookieVal,
+				Path:     "/dashboard",
+				MaxAge:   86400, // 24h
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			}
+			if cfg.TLSEnabled {
+				cookie.Secure = true
+			}
+			http.SetCookie(w, cookie)
+			audit.Log(cfg.HistoryDB, "dashboard.login", "http", "", ip)
+			http.Redirect(w, r, "/dashboard", http.StatusFound)
+			return
+		}
+
+		http.Error(w, "GET or POST only", http.StatusMethodNotAllowed)
+	})
+
+	// --- Config & Workflow Versioning ---
+	mux.HandleFunc("/config/versions", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			limit := 20
+			if l := r.URL.Query().Get("limit"); l != "" {
+				if n, err := strconv.Atoi(l); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			versions, err := version.QueryVersions(cfg.HistoryDB, "config", "config.json", limit)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			if versions == nil {
+				versions = []ConfigVersion{}
+			}
+			json.NewEncoder(w).Encode(versions)
+		case http.MethodPost:
+			// Manual snapshot.
+			var req struct {
+				Reason string `json:"reason"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			configPath := filepath.Join(cfg.BaseDir, "config.json")
+			if err := version.SnapshotConfig(cfg.HistoryDB, configPath, "api", req.Reason); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"status":"ok"}`))
+		default:
+			http.Error(w, "GET or POST only", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/config/versions/", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		path := strings.TrimPrefix(r.URL.Path, "/config/versions/")
+
+		// GET /config/versions/{id} — show version detail
+		if r.Method == http.MethodGet && !strings.Contains(path, "/") {
+			ver, err := version.QueryByID(cfg.HistoryDB, path)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(ver)
+			return
+		}
+
+		// POST /config/versions/{id}/restore
+		if r.Method == http.MethodPost && strings.HasSuffix(path, "/restore") {
+			versionID := strings.TrimSuffix(path, "/restore")
+			configPath := filepath.Join(cfg.BaseDir, "config.json")
+			if _, err := version.RestoreConfig(cfg.HistoryDB, configPath, versionID); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+				return
+			}
+			w.Write([]byte(`{"status":"restored","note":"restart daemon for changes to take effect"}`))
+			return
+		}
+
+		// GET /config/versions/{id}/diff/{id2}
+		if r.Method == http.MethodGet && strings.Contains(path, "/diff/") {
+			parts := strings.SplitN(path, "/diff/", 2)
+			if len(parts) != 2 {
+				http.Error(w, `{"error":"use GET /config/versions/{id}/diff/{id2}"}`, http.StatusBadRequest)
+				return
+			}
+			result, err := version.DiffDetail(cfg.HistoryDB, parts[0], parts[1])
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(result)
+			return
+		}
+
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+	})
+
+	mux.HandleFunc("/versions", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		entityType := r.URL.Query().Get("type")
+		entityName := r.URL.Query().Get("name")
+		limit := 20
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		if entityType == "" {
+			// List all versioned entities.
+			entities, err := version.QueryAllEntities(cfg.HistoryDB)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			if entities == nil {
+				entities = []ConfigVersion{}
+			}
+			json.NewEncoder(w).Encode(entities)
+			return
+		}
+		versions, err := version.QueryVersions(cfg.HistoryDB, entityType, entityName, limit)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if versions == nil {
+			versions = []ConfigVersion{}
+		}
+		json.NewEncoder(w).Encode(versions)
+	})
+
+	// --- P13.1: Plugin System --- Plugin API routes.
+	mux.HandleFunc("/api/plugins", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if s.pluginHost == nil {
+			json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		json.NewEncoder(w).Encode(s.pluginHost.List())
+	})
+
+	mux.HandleFunc("/api/plugins/", func(w http.ResponseWriter, r *http.Request) {
+		// Parse /api/plugins/{name}/{action}
+		path := strings.TrimPrefix(r.URL.Path, "/api/plugins/")
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) == 0 || parts[0] == "" {
+			http.Error(w, `{"error":"plugin name required"}`, http.StatusBadRequest)
+			return
+		}
+		name := parts[0]
+		action := ""
+		if len(parts) > 1 {
+			action = parts[1]
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if s.pluginHost == nil {
+			http.Error(w, `{"error":"plugin system not initialized"}`, http.StatusServiceUnavailable)
+			return
+		}
+
+		switch action {
+		case "start":
+			if r.Method != http.MethodPost {
+				http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+				return
+			}
+			if err := s.pluginHost.Start(name); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"status": "started", "name": name})
+
+		case "stop":
+			if r.Method != http.MethodPost {
+				http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+				return
+			}
+			if err := s.pluginHost.Stop(name); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"status": "stopped", "name": name})
+
+		case "health":
+			if r.Method != http.MethodGet {
+				http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+				return
+			}
+			json.NewEncoder(w).Encode(s.pluginHost.Health(name))
+
+		default:
+			http.Error(w, `{"error":"unknown action, use start, stop, or health"}`, http.StatusBadRequest)
+		}
+	})
+
+	// --- P18.4: Self-Improving Skills Store API ---
+	mux.HandleFunc("/api/skills/store", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			allMetas := loadAllFileSkillMetas(cfg)
+			pending := listPendingSkills(cfg)
+			json.NewEncoder(w).Encode(map[string]any{
+				"skills":  allMetas,
+				"pending": pending,
+				"total":   len(allMetas),
+			})
+		default:
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/skills/store/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		// Parse /api/skills/store/<name>/<action>
+		path := strings.TrimPrefix(r.URL.Path, "/api/skills/store/")
+		if path == "" {
+			http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
+			return
+		}
+		parts := strings.SplitN(path, "/", 2)
+		name := parts[0]
+		action := ""
+		if len(parts) > 1 {
+			action = parts[1]
+		}
+
+		switch r.Method {
+		case http.MethodPost:
+			switch action {
+			case "approve":
+				audit.Log(cfg.HistoryDB, "skill.approve", "http",
+					fmt.Sprintf("name=%s", name), clientIP(r))
+				if err := approveSkill(cfg, name); err != nil {
+					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+					return
+				}
+				if cfg.HistoryDB != "" {
+					recordSkillEvent(cfg.HistoryDB, name, "approved", "", "http")
+				}
+				json.NewEncoder(w).Encode(map[string]string{"status": "approved", "name": name})
+
+			case "reject":
+				audit.Log(cfg.HistoryDB, "skill.reject", "http",
+					fmt.Sprintf("name=%s", name), clientIP(r))
+				if err := rejectSkill(cfg, name); err != nil {
+					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+					return
+				}
+				if cfg.HistoryDB != "" {
+					recordSkillEvent(cfg.HistoryDB, name, "rejected", "", "http")
+				}
+				json.NewEncoder(w).Encode(map[string]string{"status": "rejected", "name": name})
+
+			default:
+				http.Error(w, `{"error":"unknown action, use approve or reject"}`, http.StatusBadRequest)
+			}
+
+		case http.MethodDelete:
+			if action != "" {
+				http.Error(w, `{"error":"DELETE /api/skills/store/<name>"}`, http.StatusBadRequest)
+				return
+			}
+			audit.Log(cfg.HistoryDB, "skill.delete", "http",
+				fmt.Sprintf("name=%s", name), clientIP(r))
+			if err := deleteFileSkill(cfg, name); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
+
+		default:
+			http.Error(w, `{"error":"POST or DELETE only"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/skills/usage", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		limit := 50
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 200 {
+				limit = n
+			}
+		}
+
+		rows, err := db.Query(cfg.HistoryDB,
+			fmt.Sprintf(`SELECT id, skill_name, event_type, task_prompt, role, created_at, status, duration_ms, source, session_id, error_msg FROM skill_usage ORDER BY id DESC LIMIT %d`, limit))
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"events": rows,
+			"count":  len(rows),
+		})
+	})
+
+	// --- P22.4: Integration Status ---
+	mux.HandleFunc("/api/integrations/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		type channelStatus struct {
+			Name    string `json:"name"`
+			Enabled bool   `json:"enabled"`
+			Status  string `json:"status"` // "connected", "not_configured", "error"
+		}
+		type integrationStatus struct {
+			Channels      []channelStatus    `json:"channels"`
+			OAuthServices []map[string]any   `json:"oauthServices,omitempty"`
+			RemindersActive int              `json:"remindersActive"`
+			TriggersActive  int              `json:"triggersActive"`
+			KnowledgeDocs   int              `json:"knowledgeDocs"`
+			BrowserRelay    string           `json:"browserRelay"`    // "connected", "not_configured", "no_clients"
+			HomeAssistant   string           `json:"homeAssistant"`   // "connected", "not_configured"
+		}
+
+		status := integrationStatus{}
+
+		// Channel statuses.
+		channels := []struct {
+			name    string
+			enabled bool
+			bot     any
+		}{
+			{"telegram", cfg.Telegram.Enabled && cfg.Telegram.BotToken != "", nil},
+			{"slack", cfg.Slack.Enabled, s.slackBot},
+			{"discord", cfg.Discord.Enabled, nil},
+			{"whatsapp", cfg.WhatsApp.Enabled, s.whatsappBot},
+			{"line", cfg.LINE.Enabled, s.lineBot},
+			{"teams", cfg.Teams.Enabled, s.teamsBot},
+			{"signal", cfg.Signal.Enabled, s.signalBot},
+			{"gchat", cfg.GoogleChat.Enabled, s.gchatBot},
+			{"imessage", cfg.IMessage.Enabled, s.imessageBot},
+		}
+		for _, ch := range channels {
+			cs := channelStatus{Name: ch.name, Enabled: ch.enabled}
+			if !ch.enabled {
+				cs.Status = "not_configured"
+			} else if ch.bot != nil {
+				cs.Status = "connected"
+			} else {
+				cs.Status = "connected" // enabled = assumed connected for webhook-based channels
+			}
+			status.Channels = append(status.Channels, cs)
+		}
+
+		// OAuth services — use listOAuthTokenStatuses directly.
+		if cfg.HistoryDB != "" {
+			statuses, err := listOAuthTokenStatuses(cfg.HistoryDB, cfg.OAuth.EncryptionKey)
+			if err == nil {
+				for _, st := range statuses {
+					svcMap := map[string]any{
+						"name":      st.ServiceName,
+						"connected": st.Connected,
+					}
+					if st.Scopes != "" {
+						svcMap["scopes"] = st.Scopes
+					}
+					status.OAuthServices = append(status.OAuthServices, svcMap)
+				}
+			}
+		}
+
+		// Reminders count — query DB directly.
+		if cfg.HistoryDB != "" {
+			rows, err := db.Query(cfg.HistoryDB, "SELECT COUNT(*) as cnt FROM reminders WHERE status='pending'")
+			if err == nil && len(rows) > 0 {
+				if cnt, ok := rows[0]["cnt"]; ok {
+					switch v := cnt.(type) {
+					case float64:
+						status.RemindersActive = int(v)
+					case string:
+						fmt.Sscanf(v, "%d", &status.RemindersActive)
+					}
+				}
+			}
+		}
+
+		// Triggers count.
+		triggers := cfg.WorkflowTriggers
+		activeCount := 0
+		for _, t := range triggers {
+			if t.IsEnabled() {
+				activeCount++
+			}
+		}
+		status.TriggersActive = activeCount
+
+		// Knowledge docs count.
+		if cfg.HistoryDB != "" {
+			rows, err := db.Query(cfg.HistoryDB, "SELECT COUNT(*) as cnt FROM knowledge_docs")
+			if err == nil && len(rows) > 0 {
+				if cnt, ok := rows[0]["cnt"]; ok {
+					switch v := cnt.(type) {
+					case float64:
+						status.KnowledgeDocs = int(v)
+					case string:
+						fmt.Sscanf(v, "%d", &status.KnowledgeDocs)
+					}
+				}
+			}
+		}
+
+		// Browser relay status.
+		if !cfg.BrowserRelay.Enabled {
+			status.BrowserRelay = "not_configured"
+		} else if s.app != nil && s.app.Browser != nil && s.app.Browser.Connected() {
+			status.BrowserRelay = "connected"
+		} else {
+			status.BrowserRelay = "no_clients"
+		}
+
+		// Home Assistant status.
+		if !cfg.HomeAssistant.Enabled {
+			status.HomeAssistant = "not_configured"
+		} else if s.app != nil && s.app.HA != nil {
+			status.HomeAssistant = "connected"
+		} else {
+			status.HomeAssistant = "not_configured"
+		}
+
+		json.NewEncoder(w).Encode(status)
+	})
+
+	// --- P22.5: Config Summary (sanitized) ---
+	mux.HandleFunc("/api/config/summary", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		cfg := s.Cfg() // Read latest config (may have been reloaded via SIGHUP).
+
+		maskSecret := func(s string) string {
+			if s == "" {
+				return "not set"
+			}
+			return "***configured***"
+		}
+
+		toolCount := 0
+		if cfg.Runtime.ToolRegistry != nil {
+			toolCount = len(cfg.Runtime.ToolRegistry.(*ToolRegistry).List())
+		}
+
+		summary := map[string]any{
+			"general": map[string]any{
+				"listenAddr":     cfg.ListenAddr,
+				"maxConcurrent":  cfg.MaxConcurrent,
+				"defaultModel":   cfg.DefaultModel,
+				"defaultTimeout": cfg.DefaultTimeout,
+				"apiToken":       maskSecret(cfg.APIToken),
+				"tlsEnabled":     cfg.TLSEnabled,
+			},
+			"channels": map[string]any{
+				"telegram":  cfg.Telegram.Enabled,
+				"slack":     cfg.Slack.Enabled,
+				"discord":   cfg.Discord.Enabled,
+				"whatsapp":  cfg.WhatsApp.Enabled,
+				"line":      cfg.LINE.Enabled,
+				"teams":     cfg.Teams.Enabled,
+				"signal":    cfg.Signal.Enabled,
+				"gchat":     cfg.GoogleChat.Enabled,
+				"imessage":  cfg.IMessage.Enabled,
+			},
+			"integrations": map[string]any{
+				"weather":       cfg.Weather.Enabled,
+				"currency":      cfg.Currency.Enabled,
+				"rss":           cfg.RSS.Enabled,
+				"translate":     map[string]any{"enabled": cfg.Translate.Enabled, "provider": cfg.Translate.Provider, "apiKey": maskSecret(cfg.Translate.APIKey)},
+				"imageGen":      map[string]any{"enabled": cfg.ImageGen.Enabled, "apiKey": maskSecret(cfg.ImageGen.APIKey), "model": cfg.ImageGen.Model, "dailyLimit": cfg.ImageGen.DailyLimit, "maxCostDay": cfg.ImageGen.MaxCostDay},
+				"homeAssistant": map[string]any{"enabled": cfg.HomeAssistant.Enabled, "url": cfg.HomeAssistant.BaseURL},
+				"gmail":         cfg.Gmail.Enabled,
+				"calendar":      cfg.Calendar.Enabled,
+				"twitter":       cfg.Twitter.Enabled,
+				"browserRelay":  cfg.BrowserRelay.Enabled,
+				"notebookLM":    cfg.NotebookLM.Enabled,
+			},
+			"tools": map[string]any{
+				"totalRegistered": toolCount,
+			},
+			"budgets": map[string]any{
+				"dailyLimit":  cfg.CostAlert.DailyLimit,
+				"weeklyLimit": cfg.CostAlert.WeeklyLimit,
+				"action":      cfg.CostAlert.Action,
+			},
+			"security": map[string]any{
+				"tlsEnabled":    cfg.TLSEnabled,
+				"rateLimit":     cfg.RateLimit.Enabled,
+				"rateLimitMax":  cfg.RateLimit.MaxPerMin,
+				"ipAllowlist":   len(cfg.AllowedIPs),
+				"dashboardAuth": cfg.DashboardAuth.Enabled,
+			},
+			"taskBoard": map[string]any{
+				"enabled":         cfg.TaskBoard.Enabled,
+				"autoDispatch":    cfg.TaskBoard.AutoDispatch.Enabled,
+				"maxRetries":      cfg.TaskBoard.MaxRetries,
+				"defaultWorkflow": cfg.TaskBoard.DefaultWorkflow,
+			},
+			"heartbeat": map[string]any{
+				"enabled":          cfg.Heartbeat.Enabled,
+				"interval":         cfg.Heartbeat.IntervalOrDefault().String(),
+				"stallThreshold":   cfg.Heartbeat.StallThresholdOrDefault().String(),
+				"timeoutWarnRatio": cfg.Heartbeat.TimeoutWarnRatioOrDefault(),
+				"autoCancel":       cfg.Heartbeat.AutoCancel,
+				"notifyOnStall":    cfg.Heartbeat.NotifyOnStallOrDefault(),
+			},
+		}
+
+		json.NewEncoder(w).Encode(summary)
+	})
+
+	// Toggle a config boolean via PATCH /api/config/toggle.
+	mux.HandleFunc("/api/config/toggle", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, `{"error":"PATCH only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		var req struct {
+			Key   string `json:"key"`
+			Value any    `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+			return
+		}
+
+		// Whitelist of settable keys: "bool" for toggles, "string" for text fields.
+		allowed := map[string]string{
+			"taskBoard.enabled":              "bool",
+			"taskBoard.autoDispatch.enabled":  "bool",
+			"taskBoard.defaultWorkflow":       "string",
+			"heartbeat.enabled":              "bool",
+			"heartbeat.autoCancel":           "bool",
+			"heartbeat.notifyOnStall":        "bool",
+		}
+		kind, ok := allowed[req.Key]
+		if !ok {
+			http.Error(w, fmt.Sprintf(`{"error":"key %q not settable"}`, req.Key), http.StatusBadRequest)
+			return
+		}
+		// Type-check the value.
+		switch kind {
+		case "bool":
+			if _, ok := req.Value.(bool); !ok {
+				http.Error(w, fmt.Sprintf(`{"error":"key %q requires bool value"}`, req.Key), http.StatusBadRequest)
+				return
+			}
+		case "string":
+			if _, ok := req.Value.(string); !ok {
+				http.Error(w, fmt.Sprintf(`{"error":"key %q requires string value"}`, req.Key), http.StatusBadRequest)
+				return
+			}
+		}
+
+		configPath := findConfigPath()
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		// Navigate dot path and set value.
+		parts := strings.Split(req.Key, ".")
+		target := raw
+		for i := 0; i < len(parts)-1; i++ {
+			sub, ok := target[parts[i]]
+			if !ok {
+				newMap := make(map[string]any)
+				target[parts[i]] = newMap
+				target = newMap
+				continue
+			}
+			subMap, ok := sub.(map[string]any)
+			if !ok {
+				http.Error(w, fmt.Sprintf(`{"error":"cannot traverse %q"}`, req.Key), http.StatusBadRequest)
+				return
+			}
+			target = subMap
+		}
+		target[parts[len(parts)-1]] = req.Value
+
+		out, err := json.MarshalIndent(raw, "", "  ")
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if err := os.WriteFile(configPath, append(out, '\n'), 0o644); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		// Reload config in-memory via SIGHUP.
+		signalSelfReload()
+
+		audit.Log(cfg.HistoryDB, "config.toggle", "dashboard",
+			fmt.Sprintf("%s=%v", req.Key, req.Value), "")
+
+		respVal, err := json.Marshal(req.Value)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"marshal: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(fmt.Sprintf(`{"status":"ok","key":"%s","value":%s}`, req.Key, respVal)))
+	})
+
+	// --- P18.2: OAuth 2.0 Framework ---
+	oauthMgr := newOAuthManager(cfg)
+	globalOAuthManager = oauthMgr // expose for Gmail/Calendar tools
+	mux.HandleFunc("/api/oauth/services", oauthMgr.HandleOAuthServices)
+	mux.HandleFunc("/api/oauth/", oauthMgr.HandleOAuthRoute)
+
+	// --- Drain: graceful shutdown (stop accepting new tasks, wait for running to finish) ---
+	mux.HandleFunc("/api/admin/drain", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		state.mu.Lock()
+		alreadyDraining := state.draining
+		state.draining = true
+		active := len(state.running)
+		state.mu.Unlock()
+
+		audit.Log(cfg.HistoryDB, "admin.drain", "http", fmt.Sprintf("active=%d", active), clientIP(r))
+		log.Info("drain requested via API", "activeAgents", active)
+
+		// Signal the main loop to begin draining (if channel is wired up).
+		if s.drainCh != nil && !alreadyDraining {
+			select {
+			case s.drainCh <- struct{}{}:
+			default:
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":   "draining",
+			"active":   active,
+			"message":  "daemon will stop accepting new tasks and exit after current tasks complete",
+		})
+	})
+
+	// --- Workspace File Browser ---
+	mux.HandleFunc("GET /api/workspace/files", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		wsDir := cfg.WorkspaceDir
+		if wsDir == "" {
+			json.NewEncoder(w).Encode(map[string]any{"files": []any{}})
+			return
+		}
+		type wsFile struct {
+			Path    string `json:"path"`
+			Folder  string `json:"folder"`
+			Name    string `json:"name"`
+			Size    int64  `json:"size"`
+			ModTime string `json:"modTime"`
+		}
+		var files []wsFile
+		for _, dir := range []string{"rules", "memory", "knowledge", "skills"} {
+			dirPath := filepath.Join(wsDir, dir)
+			entries, err := os.ReadDir(dirPath)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				info, _ := e.Info()
+				files = append(files, wsFile{
+					Path:    dir + "/" + e.Name(),
+					Folder:  dir,
+					Name:    e.Name(),
+					Size:    info.Size(),
+					ModTime: info.ModTime().Format(time.RFC3339),
+				})
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"files": files})
+	})
+
+	mux.HandleFunc("GET /api/workspace/file", func(w http.ResponseWriter, r *http.Request) {
+		wsDir := cfg.WorkspaceDir
+		p := r.URL.Query().Get("path")
+		if wsDir == "" || p == "" {
+			http.Error(w, `{"error":"missing path"}`, http.StatusBadRequest)
+			return
+		}
+		// Security: prevent path traversal
+		clean := filepath.Clean(p)
+		if strings.Contains(clean, "..") {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(wsDir, clean)
+		if !strings.HasPrefix(full, wsDir) {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"path": p, "content": string(data)})
+	})
+
+	mux.HandleFunc("PUT /api/workspace/file", func(w http.ResponseWriter, r *http.Request) {
+		wsDir := cfg.WorkspaceDir
+		if wsDir == "" {
+			http.Error(w, `{"error":"no workspace"}`, http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+		clean := filepath.Clean(req.Path)
+		if strings.Contains(clean, "..") {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(wsDir, clean)
+		if !strings.HasPrefix(full, wsDir) {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.WriteFile(full, []byte(req.Content), 0644); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// plan_review.go — Plan Review System.
+// Tracks plan mode approvals for rich Discord/Dashboard review experience.
+// ---------------------------------------------------------------------------
+
+// PlanReview represents a plan waiting for or having received review.
+type PlanReview struct {
+	ID         string `json:"id"`
+	SessionID  string `json:"sessionId"`
+	WorkerName string `json:"workerName,omitempty"`
+	Agent      string `json:"agent,omitempty"`
+	PlanText   string `json:"planText"`
+	Status     string `json:"status"` // pending, approved, rejected
+	Reviewer   string `json:"reviewer,omitempty"`
+	ReviewNote string `json:"reviewNote,omitempty"`
+	CreatedAt  string `json:"createdAt"`
+	ReviewedAt string `json:"reviewedAt,omitempty"`
+}
+
+// initPlanReviewDB creates the plan_reviews table if it doesn't exist.
+func initPlanReviewDB(dbPath string) error {
+	sql := `
+CREATE TABLE IF NOT EXISTS plan_reviews (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    worker_name TEXT DEFAULT '',
+    agent TEXT DEFAULT '',
+    plan_text TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    reviewer TEXT DEFAULT '',
+    review_note TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_plan_reviews_session ON plan_reviews(session_id);
+CREATE INDEX IF NOT EXISTS idx_plan_reviews_status ON plan_reviews(status);
+`
+	return db.Exec(dbPath, sql)
+}
+
+// insertPlanReview creates a new plan review record.
+func insertPlanReview(dbPath string, review *PlanReview) error {
+	sql := fmt.Sprintf(
+		`INSERT OR REPLACE INTO plan_reviews (id, session_id, worker_name, agent, plan_text, status, created_at)
+		 VALUES ('%s','%s','%s','%s','%s','pending','%s')`,
+		db.Escape(review.ID),
+		db.Escape(review.SessionID),
+		db.Escape(review.WorkerName),
+		db.Escape(review.Agent),
+		db.Escape(review.PlanText),
+		db.Escape(review.CreatedAt),
+	)
+	return db.Exec(dbPath, sql)
+}
+
+// updatePlanReviewStatus marks a plan review as approved or rejected.
+func updatePlanReviewStatus(dbPath, id, status, reviewer, note string) error {
+	sql := fmt.Sprintf(
+		`UPDATE plan_reviews SET status='%s', reviewer='%s', review_note='%s', reviewed_at='%s' WHERE id='%s'`,
+		db.Escape(status),
+		db.Escape(reviewer),
+		db.Escape(note),
+		db.Escape(time.Now().Format(time.RFC3339)),
+		db.Escape(id),
+	)
+	return db.Exec(dbPath, sql)
+}
+
+// listPendingPlanReviews returns all pending plan reviews.
+func listPendingPlanReviews(dbPath string) ([]PlanReview, error) {
+	sql := `SELECT id, session_id, worker_name, agent, plan_text, status, reviewer, review_note, created_at, reviewed_at FROM plan_reviews WHERE status='pending' ORDER BY created_at DESC`
+	return queryPlanReviews(dbPath, sql)
+}
+
+// listRecentPlanReviews returns recent plan reviews (all statuses).
+func listRecentPlanReviews(dbPath string, limit int) ([]PlanReview, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	sql := fmt.Sprintf(`SELECT id, session_id, worker_name, agent, plan_text, status, reviewer, review_note, created_at, reviewed_at FROM plan_reviews ORDER BY created_at DESC LIMIT %d`, limit)
+	return queryPlanReviews(dbPath, sql)
+}
+
+func queryPlanReviews(dbPath, sqlStr string) ([]PlanReview, error) {
+	rows, err := db.Query(dbPath, sqlStr)
+	if err != nil {
+		return nil, err
+	}
+	var reviews []PlanReview
+	for _, row := range rows {
+		reviews = append(reviews, PlanReview{
+			ID:         mapStr(row, "id"),
+			SessionID:  mapStr(row, "session_id"),
+			WorkerName: mapStr(row, "worker_name"),
+			Agent:      mapStr(row, "agent"),
+			PlanText:   mapStr(row, "plan_text"),
+			Status:     mapStr(row, "status"),
+			Reviewer:   mapStr(row, "reviewer"),
+			ReviewNote: mapStr(row, "review_note"),
+			CreatedAt:  mapStr(row, "created_at"),
+			ReviewedAt: mapStr(row, "reviewed_at"),
+		})
+	}
+	return reviews, nil
+}
+
+func mapStr(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// --- HTTP API ---
+
+// registerPlanReviewRoutes registers plan review API endpoints.
+func (s *Server) registerPlanReviewRoutes(mux *http.ServeMux) {
+	cfg := s.cfg
+
+	// GET /api/plan-reviews — list plan reviews.
+	mux.HandleFunc("/api/plan-reviews", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+
+		status := r.URL.Query().Get("status")
+		var reviews []PlanReview
+		var err error
+		if status == "pending" {
+			reviews, err = listPendingPlanReviews(cfg.HistoryDB)
+		} else {
+			reviews, err = listRecentPlanReviews(cfg.HistoryDB, 50)
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if reviews == nil {
+			reviews = []PlanReview{}
+		}
+		json.NewEncoder(w).Encode(reviews)
+	})
+
+	// POST /api/plan-reviews/{id}/approve — approve a plan.
+	// POST /api/plan-reviews/{id}/reject — reject a plan.
+	mux.HandleFunc("/api/plan-reviews/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+
+		path := strings.TrimPrefix(r.URL.Path, "/api/plan-reviews/")
+		parts := strings.Split(path, "/")
+		if len(parts) != 2 || parts[0] == "" {
+			http.Error(w, `{"error":"invalid path, use /api/plan-reviews/{id}/approve or /reject"}`, http.StatusBadRequest)
+			return
+		}
+
+		reviewID := parts[0]
+		action := parts[1]
+
+		if action != "approve" && action != "reject" {
+			http.Error(w, `{"error":"action must be approve or reject"}`, http.StatusBadRequest)
+			return
+		}
+
+		var body struct {
+			Reviewer string `json:"reviewer"`
+			Note     string `json:"note"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		status := "approved"
+		if action == "reject" {
+			status = "rejected"
+		}
+
+		if err := updatePlanReviewStatus(cfg.HistoryDB, reviewID, status, body.Reviewer, body.Note); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		// Publish review decision to SSE.
+		if s.hookReceiver != nil && s.hookReceiver.Broker() != nil {
+			s.hookReceiver.Broker().Publish(SSEDashboardKey, SSEEvent{
+				Type: SSEPlanReview,
+				Data: map[string]any{
+					"reviewId": reviewID,
+					"action":   action,
+					"reviewer": body.Reviewer,
+				},
+			})
+		}
+
+		audit.Log(cfg.HistoryDB, "plan_review."+action, "http",
+			fmt.Sprintf("id=%s reviewer=%s", reviewID, body.Reviewer), clientIP(r))
+
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": action})
+	})
+}
+
+// --- Discord Plan Review Formatting ---
+
+// buildPlanReviewEmbed creates a rich Discord embed for plan review.
+func buildPlanReviewEmbed(review *PlanReview) discord.Embed {
+	color := 0x3498db // Blue for pending
+
+	// Truncate plan text for Discord embed (max 4096 chars for description).
+	planPreview := review.PlanText
+	if len(planPreview) > 3500 {
+		planPreview = planPreview[:3500] + "\n\n... (truncated, see dashboard for full plan)"
+	}
+
+	embed := discord.Embed{
+		Title:       "Plan Review Required",
+		Description: planPreview,
+		Color:       color,
+		Fields: []discord.EmbedField{
+			{Name: "Session", Value: truncate(review.SessionID, 36), Inline: true},
+		},
+		Timestamp: review.CreatedAt,
+	}
+
+	if review.Agent != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{
+			Name: "Agent", Value: review.Agent, Inline: true,
+		})
+	}
+	if review.WorkerName != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{
+			Name: "Worker", Value: review.WorkerName, Inline: true,
+		})
+	}
+
+	return embed
+}
+
+// buildPlanReviewComponents creates Approve/Reject/Request Changes buttons.
+func buildPlanReviewComponents(reviewID string) []discord.Component {
+	return []discord.Component{
+		discordActionRow(
+			discordButton("plan_approve:"+reviewID, "Approve", discord.ButtonStyleSuccess),
+			discordButton("plan_reject:"+reviewID, "Reject", discord.ButtonStyleDanger),
+		),
+	}
+}
+
+func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
+	state := s.state
+	sem := s.sem
+	childSem := s.childSem
+	cron := s.cron
+
+	// --- Dashboard SSE Stream ---
+	mux.HandleFunc("/events/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if state.broker == nil {
+			http.Error(w, `{"error":"streaming not available"}`, http.StatusServiceUnavailable)
+			return
+		}
+		serveDashboardSSE(w, r, state.broker)
+	})
+
+	// --- Sprite Config + Assets ---
+	spritesDir := filepath.Join(s.cfg.BaseDir, "media", "sprites")
+	mux.HandleFunc("/api/sprites/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		cfg := s.Cfg()
+		var agentKeys []string
+		for k := range cfg.Agents {
+			agentKeys = append(agentKeys, k)
+		}
+		spriteCfg := loadSpriteConfig(spritesDir, agentKeys)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(spriteCfg)
+	})
+	mux.HandleFunc("/media/sprites/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		name := filepath.Base(r.URL.Path)
+		if name == "." || name == "/" || strings.Contains(name, "..") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		http.ServeFile(w, r, filepath.Join(spritesDir, name))
+	})
+
+	// --- Offline Queue ---
+	mux.HandleFunc("/queue", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		cfg := s.Cfg()
+		w.Header().Set("Content-Type", "application/json")
+		status := r.URL.Query().Get("status")
+		items := queryQueue(cfg.HistoryDB, status)
+		if items == nil {
+			items = []QueueItem{}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"items":   items,
+			"count":   len(items),
+			"pending": countPendingQueue(cfg.HistoryDB),
+		})
+	})
+
+	mux.HandleFunc("/queue/", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		w.Header().Set("Content-Type", "application/json")
+		path := strings.TrimPrefix(r.URL.Path, "/queue/")
+
+		// POST /queue/{id}/retry
+		if strings.HasSuffix(path, "/retry") {
+			if r.Method != http.MethodPost {
+				http.Error(w, "POST only", http.StatusMethodNotAllowed)
+				return
+			}
+			idStr := strings.TrimSuffix(path, "/retry")
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+				return
+			}
+			item := queryQueueItem(cfg.HistoryDB, id)
+			if item == nil {
+				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+				return
+			}
+			if item.Status != "pending" && item.Status != "failed" {
+				http.Error(w, fmt.Sprintf(`{"error":"item status is %q, must be pending or failed"}`, item.Status), http.StatusConflict)
+				return
+			}
+
+			// Deserialize and re-dispatch.
+			var task Task
+			if err := json.Unmarshal([]byte(item.TaskJSON), &task); err != nil {
+				http.Error(w, `{"error":"invalid task in queue"}`, http.StatusInternalServerError)
+				return
+			}
+			task.ID = newUUID()
+			task.SessionID = newUUID()
+			task.Source = "queue-retry:" + task.Source
+
+			updateQueueStatus(cfg.HistoryDB, id, "processing", "")
+			audit.Log(cfg.HistoryDB, "queue.retry", "http", fmt.Sprintf("queueId=%d", id), clientIP(r))
+
+			go func() {
+				ctx := trace.WithID(context.Background(), trace.NewID("queue"))
+				result := runSingleTask(ctx, cfg, task, sem, childSem, item.AgentName)
+				if result.Status == "success" {
+					updateQueueStatus(cfg.HistoryDB, id, "completed", "")
+				} else {
+					incrementQueueRetry(cfg.HistoryDB, id, "failed", result.Error)
+				}
+				startAt := time.Now().Add(-time.Duration(result.DurationMs) * time.Millisecond)
+				recordHistory(cfg.HistoryDB, task.ID, task.Name, task.Source, item.AgentName, task, result,
+					startAt.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
+			}()
+
+			w.Write([]byte(fmt.Sprintf(`{"status":"retrying","taskId":%q}`, task.ID)))
+			return
+		}
+
+		// GET /queue/{id} or DELETE /queue/{id}
+		id, err := strconv.Atoi(path)
+		if err != nil {
+			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			item := queryQueueItem(cfg.HistoryDB, id)
+			if item == nil {
+				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(item)
+
+		case http.MethodDelete:
+			item := queryQueueItem(cfg.HistoryDB, id)
+			if item == nil {
+				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+				return
+			}
+			if err := deleteQueueItem(cfg.HistoryDB, id); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			audit.Log(cfg.HistoryDB, "queue.delete", "http", fmt.Sprintf("queueId=%d", id), clientIP(r))
+			w.Write([]byte(`{"status":"deleted"}`))
+
+		default:
+			http.Error(w, "GET or DELETE only", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// --- Dispatch ---
+	mux.HandleFunc("/dispatch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		cfg := s.Cfg()
+
+		// Allow sub-agent dispatches to run concurrently with parent tasks.
+		// Only block duplicate batch dispatches from external callers.
+		isSubAgent := r.Header.Get("X-Tetora-Source") == "agent_dispatch"
+		if !isSubAgent {
+			state.mu.Lock()
+			busy := state.active
+			state.mu.Unlock()
+			if busy {
+				http.Error(w, `{"error":"dispatch already running"}`, http.StatusConflict)
+				return
+			}
+		}
+
+		var tasks []Task
+		if err := json.NewDecoder(r.Body).Decode(&tasks); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+			return
+		}
+		if len(tasks) == 0 {
+			http.Error(w, `{"error":"empty task list"}`, http.StatusBadRequest)
+			return
+		}
+
+		// --- Dispatch guardrails: validate payload before execution ---
+		for i, t := range tasks {
+			// Prompt is required — empty prompt wastes agent time.
+			if strings.TrimSpace(t.Prompt) == "" && strings.TrimSpace(t.Name) == "" {
+				http.Error(w, fmt.Sprintf(`{"error":"task[%d]: prompt is required"}`, i), http.StatusBadRequest)
+				return
+			}
+			// If agent is specified, verify it exists in config.
+			if t.Agent != "" {
+				if _, ok := cfg.Agents[t.Agent]; !ok {
+					http.Error(w, fmt.Sprintf(`{"error":"task[%d]: agent %q not found in config"}`, i, t.Agent), http.StatusBadRequest)
+					return
+				}
+			}
+		}
+
+		for i := range tasks {
+			fillDefaults(cfg, &tasks[i])
+			tasks[i].Source = "http"
+		}
+
+		// Log dispatch payload for audit trail.
+		for _, t := range tasks {
+			log.Info("dispatch: received task", "name", t.Name, "agent", t.Agent,
+				"source", "http", "prompt_len", len(t.Prompt), "model", t.Model)
+		}
+
+		// Reset stale "doing" tasks before dispatch to prevent blocking.
+		if s.taskBoardDispatcher != nil {
+			s.taskBoardDispatcher.ResetStuckDoing()
+		}
+
+		// Publish task_received to dashboard.
+		if state.broker != nil {
+			for _, t := range tasks {
+				state.broker.Publish(SSEDashboardKey, SSEEvent{
+					Type: SSETaskReceived,
+					Data: map[string]any{
+						"source": "http",
+						"prompt": truncate(t.Prompt, 200),
+					},
+				})
+			}
+		}
+
+		audit.Log(cfg.HistoryDB, "dispatch", "http",
+			fmt.Sprintf("%d tasks", len(tasks)), clientIP(r))
+
+		result := dispatch(r.Context(), cfg, tasks, state, sem, childSem)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
+	// --- Cancel ---
+	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		state.mu.Lock()
+		cancelFn := state.cancel
+		state.mu.Unlock()
+		if cancelFn == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"nothing to cancel"}`))
+			return
+		}
+		cancelFn()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"cancelling"}`))
+	})
+
+	// --- Cancel single task ---
+	mux.HandleFunc("/cancel/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		cfg := s.Cfg()
+		w.Header().Set("Content-Type", "application/json")
+
+		id := strings.TrimPrefix(r.URL.Path, "/cancel/")
+		if id == "" {
+			http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Try dispatch state first.
+		state.mu.Lock()
+		if ts, ok := state.running[id]; ok && ts.cancelFn != nil {
+			ts.cancelFn()
+			state.mu.Unlock()
+			audit.Log(cfg.HistoryDB, "task.cancel", "http",
+				fmt.Sprintf("id=%s (dispatch)", id), clientIP(r))
+			w.Write([]byte(`{"status":"cancelling"}`))
+			return
+		}
+		state.mu.Unlock()
+
+		// Try cron engine.
+		if cron != nil {
+			if err := cron.CancelJob(id); err == nil {
+				audit.Log(cfg.HistoryDB, "job.cancel", "http",
+					fmt.Sprintf("id=%s (cron)", id), clientIP(r))
+				w.Write([]byte(`{"status":"cancelling"}`))
+				return
+			}
+		}
+
+		http.Error(w, `{"error":"task not found or not running"}`, http.StatusNotFound)
+	})
+
+	// --- Running Tasks ---
+	mux.HandleFunc("/tasks/running", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		type runningTask struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Source   string `json:"source"`
+			Model    string `json:"model"`
+			Timeout  string `json:"timeout"`
+			Elapsed  string `json:"elapsed"`
+			Prompt   string `json:"prompt,omitempty"`
+			PID      int    `json:"pid,omitempty"`
+			PIDAlive bool   `json:"pidAlive"`
+			Agent     string `json:"agent,omitempty"`
+			ParentID string `json:"parentId,omitempty"`
+			Depth    int    `json:"depth,omitempty"`
+		}
+
+		var tasks []runningTask
+
+		// From dispatch state.
+		state.mu.Lock()
+		for _, ts := range state.running {
+			prompt := ts.task.Prompt
+			if len(prompt) > 100 {
+				prompt = prompt[:100] + "..."
+			}
+			pid := 0
+			pidAlive := false
+			if ts.cmd != nil && ts.cmd.Process != nil {
+				pid = ts.cmd.Process.Pid
+				// On Unix, sending signal 0 checks if process exists.
+				if ts.cmd.Process.Signal(syscall.Signal(0)) == nil {
+					pidAlive = true
+				}
+			}
+			tasks = append(tasks, runningTask{
+				ID:       ts.task.ID,
+				Name:     ts.task.Name,
+				Source:   ts.task.Source,
+				Model:    ts.task.Model,
+				Timeout:  ts.task.Timeout,
+				Elapsed:  time.Since(ts.startAt).Round(time.Second).String(),
+				Prompt:   prompt,
+				PID:      pid,
+				PIDAlive: pidAlive,
+				Agent:     ts.task.Agent,
+				ParentID: ts.task.ParentID,
+				Depth:    ts.task.Depth,
+			})
+		}
+		state.mu.Unlock()
+
+		// From cron engine.
+		if cron != nil {
+			for _, j := range cron.ListJobs() {
+				if !j.Running {
+					continue
+				}
+				tasks = append(tasks, runningTask{
+					ID:      j.ID,
+					Name:    j.Name,
+					Source:  "cron",
+					Model:   j.RunModel,
+					Timeout: j.RunTimeout,
+					Elapsed: j.RunElapsed,
+					Prompt:  j.RunPrompt,
+				})
+			}
+		}
+
+		if tasks == nil {
+			tasks = []runningTask{}
+		}
+		json.NewEncoder(w).Encode(tasks)
+	})
+
+	// --- Tasks (History DB) ---
+	mux.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			status := r.URL.Query().Get("status")
+			if status != "" {
+				tasks, err := db.GetTasksByStatus(cfg.HistoryDB, status)
+				if err != nil {
+					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(tasks)
+			} else {
+				stats, err := db.GetTaskStats(cfg.HistoryDB)
+				if err != nil {
+					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(stats)
+			}
+
+		case http.MethodPatch:
+			var body struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+				Error  string `json:"error"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+				return
+			}
+			if err := db.UpdateTaskStatus(cfg.HistoryDB, body.ID, body.Status, body.Error); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"ok"}`))
+
+		default:
+			http.Error(w, "GET or PATCH only", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// --- Output files ---
+	mux.HandleFunc("/outputs/", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		name := strings.TrimPrefix(r.URL.Path, "/outputs/")
+		// Strict filename validation: only allow alphanumeric, dash, underscore, dot.
+		if name == "" || !isValidOutputFilename(name) {
+			http.Error(w, `{"error":"invalid filename"}`, http.StatusBadRequest)
+			return
+		}
+		outputDir := filepath.Join(cfg.BaseDir, "outputs")
+		filePath := filepath.Join(outputDir, name)
+		// Verify resolved path is still within outputs dir (prevent symlink escape).
+		absPath, err := filepath.Abs(filePath)
+		if err != nil || !strings.HasPrefix(absPath, filepath.Join(cfg.BaseDir, "outputs")) {
+			http.Error(w, `{"error":"invalid filename"}`, http.StatusBadRequest)
+			return
+		}
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			} else {
+				http.Error(w, `{"error":"read error"}`, http.StatusInternalServerError)
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	})
+
+	// --- File Upload ---
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		cfg := s.Cfg()
+
+		// Parse multipart form (max 50MB).
+		if err := r.ParseMultipartForm(50 << 20); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"parse form: %s"}`, err), http.StatusBadRequest)
+			return
+		}
+
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"no file: %s"}`, err), http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		uploadDir := upload.InitDir(cfg.BaseDir)
+		uploaded, err := upload.Save(uploadDir, header.Filename, file, header.Size, "http")
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		audit.Log(cfg.HistoryDB, "file.upload", "http", uploaded.Name, clientIP(r))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(uploaded)
+	})
+
+	// --- Prompt Library ---
+	mux.HandleFunc("/prompts", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.Method {
+		case "GET":
+			prompts, err := listPrompts(cfg)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(prompts)
+
+		case "POST":
+			var body struct {
+				Name    string `json:"name"`
+				Content string `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+				return
+			}
+			if body.Name == "" || body.Content == "" {
+				http.Error(w, `{"error":"name and content are required"}`, http.StatusBadRequest)
+				return
+			}
+			if err := writePrompt(cfg, body.Name, body.Content); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
+				return
+			}
+			audit.Log(cfg.HistoryDB, "prompt.create", "http", body.Name, clientIP(r))
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "name": body.Name})
+
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/prompts/", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		name := strings.TrimPrefix(r.URL.Path, "/prompts/")
+		if name == "" {
+			http.Error(w, `{"error":"prompt name required"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.Method {
+		case "GET":
+			content, err := readPrompt(cfg, name)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"name": name, "content": content})
+
+		case "DELETE":
+			if err := deletePrompt(cfg, name); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusNotFound)
+				return
+			}
+			audit.Log(cfg.HistoryDB, "prompt.delete", "http", name, clientIP(r))
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
+	// --- Cost Estimate ---
+	mux.HandleFunc("/dispatch/estimate", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		var tasks []Task
+		if err := json.NewDecoder(r.Body).Decode(&tasks); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+			return
+		}
+		result := estimateTasks(cfg, tasks)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
+	// --- Failed Tasks + Retry/Reroute ---
+	mux.HandleFunc("/dispatch/failed", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		tasks := listFailedTasks(state)
+		if tasks == nil {
+			tasks = []failedTaskInfo{}
+		}
+		json.NewEncoder(w).Encode(tasks)
+	})
+
+	mux.HandleFunc("/dispatch/", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		// Parse /dispatch/{id}/{action}
+		path := strings.TrimPrefix(r.URL.Path, "/dispatch/")
+		if path == "failed" || path == "estimate" {
+			return // handled by dedicated handlers
+		}
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			http.Error(w, `{"error":"path must be /dispatch/{id}/{action}"}`, http.StatusBadRequest)
+			return
+		}
+		taskID, action := parts[0], parts[1]
+
+		// SSE stream endpoint: GET /dispatch/{id}/stream
+		if action == "stream" && r.Method == http.MethodGet {
+			if state.broker == nil {
+				http.Error(w, `{"error":"streaming not available"}`, http.StatusServiceUnavailable)
+				return
+			}
+			serveSSE(w, r, state.broker, taskID)
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		switch action {
+		case "retry":
+			result, err := retryTask(r.Context(), cfg, taskID, state, sem, childSem)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+				return
+			}
+			audit.Log(cfg.HistoryDB, "task.retry", "http",
+				fmt.Sprintf("original=%s status=%s", taskID, result.Status), clientIP(r))
+			json.NewEncoder(w).Encode(result)
+
+		case "reroute":
+			result, err := rerouteTask(r.Context(), cfg, taskID, state, sem, childSem)
+			if err != nil {
+				status := http.StatusNotFound
+				if strings.Contains(err.Error(), "not enabled") {
+					status = http.StatusBadRequest
+				}
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
+				return
+			}
+			audit.Log(cfg.HistoryDB, "task.reroute", "http",
+				fmt.Sprintf("original=%s role=%s status=%s", taskID, result.Route.Agent, result.Task.Status), clientIP(r))
+			json.NewEncoder(w).Encode(result)
+
+		default:
+			http.Error(w, `{"error":"unknown action, use retry, reroute, or stream"}`, http.StatusBadRequest)
+		}
+	})
+
+	// --- Smart Dispatch Route ---
+	mux.HandleFunc("/route/classify", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if !cfg.SmartDispatch.Enabled {
+			http.Error(w, `{"error":"smart dispatch not enabled"}`, http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Prompt string `json:"prompt"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Prompt == "" {
+			http.Error(w, `{"error":"prompt is required"}`, http.StatusBadRequest)
+			return
+		}
+		route := routeTask(r.Context(), cfg, RouteRequest{Prompt: body.Prompt, Source: "http"})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(route)
+	})
+
+	mux.HandleFunc("/route/", func(w http.ResponseWriter, r *http.Request) {
+		// Handle /route/classify separately (already registered above, but paths
+		// with trailing content after /route/ that aren't "classify" are async IDs).
+		path := strings.TrimPrefix(r.URL.Path, "/route/")
+		if path == "classify" {
+			return // handled by /route/classify handler
+		}
+
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+
+		// GET /route/{id} — check async route result.
+		id := path
+		if id == "" {
+			http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
+			return
+		}
+
+		routeResultsMu.Lock()
+		entry, ok := routeResults[id]
+		routeResultsMu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if !ok {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":        id,
+			"status":    entry.Status,
+			"error":     entry.Error,
+			"result":    entry.Result,
+			"createdAt": entry.CreatedAt.Format(time.RFC3339),
+		})
+	})
+
+	mux.HandleFunc("/route", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"enabled":     cfg.SmartDispatch.Enabled,
+				"coordinator": cfg.SmartDispatch.Coordinator,
+				"defaultAgent": cfg.SmartDispatch.DefaultAgent,
+				"rules":       cfg.SmartDispatch.Rules,
+			})
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"GET or POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if !cfg.SmartDispatch.Enabled {
+			http.Error(w, `{"error":"smart dispatch not enabled"}`, http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Prompt string `json:"prompt"`
+			Async  bool   `json:"async"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Prompt == "" {
+			http.Error(w, `{"error":"prompt is required"}`, http.StatusBadRequest)
+			return
+		}
+		audit.Log(cfg.HistoryDB, "route.request", "http",
+			truncate(body.Prompt, 100), clientIP(r))
+
+		if body.Async {
+			// Async mode: start in goroutine, return ID immediately.
+			id := newUUID()
+
+			routeResultsMu.Lock()
+			routeResults[id] = &routeResultEntry{
+				Status:    "running",
+				CreatedAt: time.Now(),
+			}
+			routeResultsMu.Unlock()
+
+			routeTraceID := trace.IDFromContext(r.Context())
+			go func() {
+				routeCtx := trace.WithID(context.Background(), routeTraceID)
+				result := smartDispatch(routeCtx, cfg, body.Prompt, "http", state, sem, childSem)
+				routeResultsMu.Lock()
+				entry := routeResults[id]
+				if entry != nil {
+					entry.Result = result
+					entry.Status = "done"
+					if result != nil && result.Task.Status != "success" {
+						entry.Error = result.Task.Error
+					}
+				}
+				routeResultsMu.Unlock()
+			}()
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":     id,
+				"status": "running",
+			})
+			return
+		}
+
+		// Sync mode: block until complete.
+		result := smartDispatch(r.Context(), cfg, body.Prompt, "http", state, sem, childSem)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+}
+
+// ============================================================
+// Merged from incoming_webhook.go
+// ============================================================
+
+// --- Incoming Webhook Types ---
+
+// IncomingWebhookResult is the response from processing an incoming webhook.
+type IncomingWebhookResult struct {
+	Name     string `json:"name"`
+	Status   string `json:"status"`   // "accepted", "filtered", "error", "disabled"
+	TaskID   string `json:"taskId,omitempty"`
+	Agent    string `json:"agent,omitempty"`
+	Workflow string `json:"workflow,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
+// --- Signature Verification (delegated to internal/messaging/webhook) ---
+
+// verifyWebhookSignature checks the request signature against the shared secret.
+func verifyWebhookSignature(r *http.Request, body []byte, secret string) bool {
+	return webhook.VerifySignature(r, body, secret)
+}
+
+// verifyHMACSHA256 checks HMAC-SHA256 signature.
+func verifyHMACSHA256(body []byte, secret, signatureHex string) bool {
+	return webhook.VerifyHMACSHA256(body, secret, signatureHex)
+}
+
+// --- Payload Template Expansion (delegated to internal/messaging/webhook) ---
+
+// expandPayloadTemplate replaces {{payload.xxx}} placeholders with payload values.
+func expandPayloadTemplate(tmpl string, payload map[string]any) string {
+	return webhook.ExpandTemplate(tmpl, payload)
+}
+
+// getNestedValue retrieves a value from a nested map using dot notation.
+func getNestedValue(m map[string]any, path string) any {
+	return webhook.GetNestedValue(m, path)
+}
+
+// --- Filter Evaluation (delegated to internal/messaging/webhook) ---
+
+// evaluateFilter checks if a payload matches a simple filter expression.
+func evaluateFilter(filter string, payload map[string]any) bool {
+	return webhook.EvaluateFilter(filter, payload)
+}
+
+func isTruthy(val any) bool {
+	return webhook.IsTruthy(val)
+}
+
+// --- Webhook Handler ---
+
+// handleIncomingWebhook processes an incoming webhook request.
+func handleIncomingWebhook(ctx context.Context, cfg *Config, name string, r *http.Request,
+	state *dispatchState, sem, childSem chan struct{}) IncomingWebhookResult {
+
+	whCfg, ok := cfg.IncomingWebhooks[name]
+	if !ok {
+		return IncomingWebhookResult{
+			Name: name, Status: "error",
+			Message: fmt.Sprintf("webhook %q not found", name),
+		}
+	}
+
+	if !whCfg.IsEnabled() {
+		return IncomingWebhookResult{Name: name, Status: "disabled"}
+	}
+
+	// Read body.
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB max
+	if err != nil {
+		return IncomingWebhookResult{
+			Name: name, Status: "error",
+			Message: fmt.Sprintf("read body: %v", err),
+		}
+	}
+
+	// Verify signature.
+	if !verifyWebhookSignature(r, body, whCfg.Secret) {
+		log.Warn("incoming webhook signature mismatch", "name", name)
+		audit.Log(cfg.HistoryDB, "webhook.incoming.auth_fail", "http", name, clientIP(r))
+		return IncomingWebhookResult{
+			Name: name, Status: "error",
+			Message: "signature verification failed",
+		}
+	}
+
+	// Parse payload.
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return IncomingWebhookResult{
+			Name: name, Status: "error",
+			Message: fmt.Sprintf("parse payload: %v", err),
+		}
+	}
+
+	// Apply filter.
+	if !evaluateFilter(whCfg.Filter, payload) {
+		log.DebugCtx(ctx, "incoming webhook filtered out", "name", name, "filter", whCfg.Filter)
+		return IncomingWebhookResult{Name: name, Status: "filtered"}
+	}
+
+	// Build prompt from template.
+	prompt := whCfg.Template
+	if prompt != "" {
+		prompt = expandPayloadTemplate(prompt, payload)
+	} else {
+		// Default: pretty-print the entire payload.
+		b, _ := json.MarshalIndent(payload, "", "  ")
+		prompt = fmt.Sprintf("Process this webhook event (%s):\n\n%s", name, string(b))
+	}
+
+	log.InfoCtx(ctx, "incoming webhook accepted", "name", name, "agent", whCfg.Agent)
+	audit.Log(cfg.HistoryDB, "webhook.incoming", "http",
+		fmt.Sprintf("name=%s agent=%s", name, whCfg.Agent), clientIP(r))
+
+	// Trigger workflow or dispatch.
+	if whCfg.Workflow != "" {
+		return triggerWebhookWorkflow(ctx, cfg, name, whCfg, payload, prompt, state, sem, childSem)
+	}
+	return triggerWebhookDispatch(ctx, cfg, name, whCfg, prompt, state, sem, childSem)
+}
+
+// triggerWebhookDispatch dispatches a task to the specified agent.
+func triggerWebhookDispatch(ctx context.Context, cfg *Config, name string, whCfg IncomingWebhookConfig,
+	prompt string, state *dispatchState, sem, childSem chan struct{}) IncomingWebhookResult {
+
+	task := Task{
+		Prompt: prompt,
+		Agent:   whCfg.Agent,
+		Source: "webhook:" + name,
+	}
+	fillDefaults(cfg, &task)
+
+	// Run async.
+	go func() {
+		result := runSingleTask(ctx, cfg, task, sem, childSem, whCfg.Agent)
+
+		// Record history.
+		start := time.Now().Add(-time.Duration(result.DurationMs) * time.Millisecond)
+		recordHistory(cfg.HistoryDB, task.ID, task.Name, task.Source, whCfg.Agent, task, result,
+			start.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
+
+		// Record session activity.
+		recordSessionActivity(cfg.HistoryDB, task, result, whCfg.Agent)
+
+		log.InfoCtx(ctx, "incoming webhook task done", "name", name, "taskId", task.ID[:8],
+			"status", result.Status, "cost", result.CostUSD)
+	}()
+
+	return IncomingWebhookResult{
+		Name:   name,
+		Status: "accepted",
+		TaskID: task.ID,
+		Agent:   whCfg.Agent,
+	}
+}
+
+// triggerWebhookWorkflow loads and executes a workflow.
+func triggerWebhookWorkflow(ctx context.Context, cfg *Config, name string, whCfg IncomingWebhookConfig,
+	payload map[string]any, prompt string, state *dispatchState, sem, childSem chan struct{}) IncomingWebhookResult {
+
+	wf, err := loadWorkflowByName(cfg, whCfg.Workflow)
+	if err != nil {
+		return IncomingWebhookResult{
+			Name: name, Status: "error",
+			Message: fmt.Sprintf("load workflow %q: %v", whCfg.Workflow, err),
+		}
+	}
+
+	// Build workflow variables from payload.
+	vars := map[string]string{
+		"input":        prompt,
+		"webhook_name": name,
+	}
+	// Flatten top-level payload keys as variables.
+	for k, v := range payload {
+		switch val := v.(type) {
+		case string:
+			vars["payload_"+k] = val
+		case float64:
+			if val == float64(int(val)) {
+				vars["payload_"+k] = fmt.Sprintf("%d", int(val))
+			} else {
+				vars["payload_"+k] = fmt.Sprintf("%g", val)
+			}
+		case bool:
+			vars["payload_"+k] = fmt.Sprintf("%v", val)
+		}
+	}
+
+	// Run async.
+	go func() {
+		run := executeWorkflow(ctx, cfg, wf, vars, state, sem, childSem)
+		log.InfoCtx(ctx, "incoming webhook workflow done", "name", name,
+			"workflow", whCfg.Workflow, "status", run.Status, "cost", run.TotalCost)
+	}()
+
+	return IncomingWebhookResult{
+		Name:     name,
+		Status:   "accepted",
+		Agent:     whCfg.Agent,
+		Workflow: whCfg.Workflow,
+	}
+}
+
+//go:embed apidocs.html
+var apiDocsHTML string
+
+// handleAPIDocs serves the embedded API documentation HTML page.
+func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write([]byte(apiDocsHTML))
+}
+
+// handleAPISpec returns the OpenAPI 3.0 spec as JSON, dynamically built from config.
+func handleAPISpec(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		spec := buildOpenAPISpec(cfg)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-cache")
+		json.NewEncoder(w).Encode(spec)
+	}
+}
+
+// buildOpenAPISpec constructs a full OpenAPI 3.0.3 specification for the Tetora API.
+func buildOpenAPISpec(cfg *Config) map[string]any {
+	spec := map[string]any{
+		"openapi": "3.0.3",
+		"info": map[string]any{
+			"title":       "Tetora API",
+			"description": "AI Agent Orchestrator API — zero-dependency multi-agent dispatch, session management, workflow orchestration, and cost governance.",
+			"version":     tetoraVersion,
+		},
+		"servers": []map[string]any{
+			{"url": "http://" + cfg.ListenAddr, "description": "Local"},
+		},
+		"paths":      buildPaths(),
+		"components": buildComponents(),
+		"tags":       buildTags(),
+	}
+
+	// Add security scheme if API token is configured.
+	if cfg.APIToken != "" {
+		spec["security"] = []map[string]any{{"bearerAuth": []string{}}}
+	}
+
+	return spec
+}
+
+// buildTags returns the tag definitions for grouping endpoints.
+func buildTags() []map[string]any {
+	return []map[string]any{
+		{"name": "Core", "description": "Task dispatch, cancellation, and status"},
+		{"name": "Health", "description": "Health check and diagnostics"},
+		{"name": "History", "description": "Execution history and cost statistics"},
+		{"name": "Sessions", "description": "Conversational session management"},
+		{"name": "Workflows", "description": "Workflow definition and execution"},
+		{"name": "Knowledge", "description": "Knowledge base files and search"},
+		{"name": "Infrastructure", "description": "Circuit breakers, queue, budget, and SLA"},
+		{"name": "Cron", "description": "Scheduled job management"},
+		{"name": "Agent", "description": "Agent messages, handoffs, and reflections"},
+		{"name": "Agents", "description": "Agent configuration"},
+		{"name": "Stats", "description": "Cost and performance statistics"},
+		{"name": "Audit", "description": "Audit log and backup"},
+	}
+}
+
+// buildPaths constructs the paths section of the OpenAPI spec.
+func buildPaths() map[string]any {
+	paths := map[string]any{}
+
+	// ---- Core ----
+
+	paths["/dispatch"] = map[string]any{
+		"post": opPost("Dispatch tasks", "Core",
+			"Submit one or more tasks for concurrent execution. Each task is routed to the appropriate agent and provider.",
+			reqBody(ref("TaskArray")),
+			resp200(ref("DispatchResult")),
+			resp400(), resp401(), resp409("dispatch already running"),
+		),
+	}
+
+	paths["/dispatch/estimate"] = map[string]any{
+		"post": opPost("Estimate dispatch cost", "Core",
+			"Estimate the cost of running tasks without executing them.",
+			reqBody(ref("TaskArray")),
+			resp200(ref("EstimateResult")),
+			resp400(), resp401(),
+		),
+	}
+
+	paths["/dispatch/failed"] = map[string]any{
+		"get": opGet("List failed tasks", "Core",
+			"List recently failed tasks available for retry or reroute.",
+			nil,
+			resp200(schemaArray(ref("FailedTask"))),
+			resp401(),
+		),
+	}
+
+	paths["/dispatch/{taskId}"] = map[string]any{
+		"post": opPost("Retry or reroute failed task", "Core",
+			"Retry a failed task with original params or reroute to a different agent.",
+			reqBody(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action": prop("string", "Action to perform: retry or reroute"),
+					"role":   prop("string", "Target agent for reroute (required if action=reroute)"),
+				},
+			}),
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", ""),
+				"taskId": prop("string", ""),
+			}}),
+			resp400(), resp401(), resp404(),
+		),
+	}
+
+	paths["/cancel"] = map[string]any{
+		"post": opPost("Cancel running dispatch", "Core",
+			"Cancel all currently running tasks in the active dispatch.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "cancelling or nothing to cancel"),
+			}}),
+			resp401(),
+		),
+	}
+
+	paths["/cancel/{taskId}"] = map[string]any{
+		"post": opPost("Cancel single task", "Core",
+			"Cancel a specific running task by ID.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", ""),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/tasks/running"] = map[string]any{
+		"get": opGet("List running tasks", "Core",
+			"List all currently running tasks from dispatch and cron.",
+			nil,
+			resp200(schemaArray(ref("RunningTask"))),
+			resp401(),
+		),
+	}
+
+	// ---- Health ----
+
+	paths["/healthz"] = map[string]any{
+		"get": opGet("Health check", "Health",
+			"Deep health check including DB, providers, disk, and uptime status.",
+			nil,
+			resp200(ref("HealthResult")),
+		),
+	}
+
+	// ---- History ----
+
+	paths["/history"] = map[string]any{
+		"get": opGet("List execution history", "History",
+			"Query execution history with filtering and pagination.",
+			[]map[string]any{
+				queryParam("job_id", "string", "Filter by job ID"),
+				queryParam("status", "string", "Filter by status (success, error, timeout)"),
+				queryParam("from", "string", "Start date (RFC3339)"),
+				queryParam("to", "string", "End date (RFC3339)"),
+				queryParam("limit", "integer", "Results per page (default 20)"),
+				queryParam("page", "integer", "Page number (default 1)"),
+				queryParam("offset", "integer", "Offset (overrides page)"),
+			},
+			resp200(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"runs":  schemaArray(ref("JobRun")),
+					"total": prop("integer", "Total matching records"),
+					"page":  prop("integer", "Current page"),
+					"limit": prop("integer", "Results per page"),
+				},
+			}),
+			resp401(),
+		),
+	}
+
+	paths["/history/{id}"] = map[string]any{
+		"get": opGet("Get history entry", "History",
+			"Get a single execution history entry by ID.",
+			[]map[string]any{pathParam("id", "integer", "History entry ID")},
+			resp200(ref("JobRun")),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/stats/cost"] = map[string]any{
+		"get": opGet("Cost statistics", "Stats",
+			"Get cost statistics summary (today, week, month, total).",
+			nil,
+			resp200(map[string]any{"type": "object"}),
+			resp401(),
+		),
+	}
+
+	paths["/stats/trend"] = map[string]any{
+		"get": opGet("Cost trend", "Stats",
+			"Get daily cost trend for the last N days.",
+			[]map[string]any{queryParam("days", "integer", "Number of days (default 30)")},
+			resp200(map[string]any{"type": "object"}),
+			resp401(),
+		),
+	}
+
+	paths["/stats/metrics"] = map[string]any{
+		"get": opGet("Performance metrics", "Stats",
+			"Get performance metrics (success rate, latency, throughput) per agent.",
+			[]map[string]any{queryParam("days", "integer", "Number of days (default 7)")},
+			resp200(map[string]any{"type": "object"}),
+			resp401(),
+		),
+	}
+
+	paths["/stats/routing"] = map[string]any{
+		"get": opGet("Routing statistics", "Stats",
+			"Get smart dispatch routing statistics by agent.",
+			[]map[string]any{queryParam("days", "integer", "Number of days (default 7)")},
+			resp200(map[string]any{"type": "object"}),
+			resp401(),
+		),
+	}
+
+	paths["/stats/sla"] = map[string]any{
+		"get": opGet("SLA statistics", "Stats",
+			"Get SLA metrics per agent (success rate, latency, cost).",
+			[]map[string]any{
+				queryParam("role", "string", "Filter by agent"),
+				queryParam("days", "integer", "Window in days (default from SLA config)"),
+			},
+			resp200(schemaArray(ref("SLAMetrics"))),
+			resp401(),
+		),
+	}
+
+	// ---- Sessions ----
+
+	paths["/sessions"] = map[string]any{
+		"get": opGet("List sessions", "Sessions",
+			"List conversational sessions with optional filtering.",
+			[]map[string]any{
+				queryParam("role", "string", "Filter by agent"),
+				queryParam("status", "string", "Filter by status (active, archived)"),
+				queryParam("source", "string", "Filter by source"),
+				queryParam("limit", "integer", "Results per page (default 20)"),
+				queryParam("offset", "integer", "Offset for pagination"),
+			},
+			resp200(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"sessions": schemaArray(ref("Session")),
+					"total":    prop("integer", "Total matching sessions"),
+				},
+			}),
+			resp401(),
+		),
+		"post": opPost("Create session", "Sessions",
+			"Create a new conversational session.",
+			reqBody(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"role":   prop("string", "Agent name"),
+					"title":  prop("string", "Session title"),
+					"source": prop("string", "Source identifier"),
+				},
+			}),
+			resp200(ref("Session")),
+			resp400(), resp401(),
+		),
+	}
+
+	paths["/sessions/{id}"] = map[string]any{
+		"get": opGet("Get session detail", "Sessions",
+			"Get session metadata and message history.",
+			[]map[string]any{pathParam("id", "string", "Session ID")},
+			resp200(ref("SessionDetail")),
+			resp401(), resp404(),
+		),
+		"delete": opDelete("Delete session", "Sessions",
+			"Delete a session and its messages.",
+			[]map[string]any{pathParam("id", "string", "Session ID")},
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "deleted"),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/sessions/{id}/message"] = map[string]any{
+		"post": opPost("Send message to session", "Sessions",
+			"Send a user message to a session and get an assistant response.",
+			reqBody(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"content": prop("string", "Message content"),
+					"model":   prop("string", "Override model for this message"),
+				},
+				"required": []string{"content"},
+			}),
+			resp200(ref("SessionMessage")),
+			resp400(), resp401(), resp404(),
+		),
+	}
+
+	paths["/sessions/{id}/compact"] = map[string]any{
+		"post": opPost("Compact session", "Sessions",
+			"Compact session history to reduce token usage.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status":          prop("string", ""),
+				"removedMessages": prop("integer", "Number of messages removed"),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/sessions/{id}/stream"] = map[string]any{
+		"get": opGet("Session SSE stream", "Sessions",
+			"Server-Sent Events stream for real-time session updates.",
+			[]map[string]any{pathParam("id", "string", "Session ID")},
+			resp200(map[string]any{"type": "string", "description": "SSE event stream"}),
+			resp401(), resp404(),
+		),
+	}
+
+	// ---- Workflows ----
+
+	paths["/workflows"] = map[string]any{
+		"get": opGet("List workflows", "Workflows",
+			"List all saved workflow definitions.",
+			nil,
+			resp200(schemaArray(ref("Workflow"))),
+			resp401(),
+		),
+		"post": opPost("Create workflow", "Workflows",
+			"Create or update a workflow definition.",
+			reqBody(ref("Workflow")),
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", ""),
+				"name":   prop("string", "Workflow name"),
+			}}),
+			resp400(), resp401(),
+		),
+	}
+
+	paths["/workflows/{name}"] = map[string]any{
+		"get": opGet("Get workflow", "Workflows",
+			"Get a single workflow definition by name.",
+			[]map[string]any{pathParam("name", "string", "Workflow name")},
+			resp200(ref("Workflow")),
+			resp401(), resp404(),
+		),
+		"delete": opDelete("Delete workflow", "Workflows",
+			"Delete a workflow definition.",
+			[]map[string]any{pathParam("name", "string", "Workflow name")},
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "deleted"),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/workflows/{name}/validate"] = map[string]any{
+		"post": opPost("Validate workflow", "Workflows",
+			"Validate a workflow definition (DAG, step references, etc.) without executing.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"valid":  map[string]any{"type": "boolean"},
+				"errors": schemaArray(prop("string", "")),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/workflows/{name}/run"] = map[string]any{
+		"post": opPost("Run workflow", "Workflows",
+			"Execute a workflow. Supports live, dry-run, and shadow modes.",
+			reqBody(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"variables": map[string]any{"type": "object", "additionalProperties": prop("string", "")},
+					"mode":      prop("string", "Execution mode: live (default), dry-run, shadow"),
+				},
+			}),
+			resp200(ref("WorkflowRun")),
+			resp400(), resp401(), resp404(),
+		),
+	}
+
+	paths["/workflow-runs"] = map[string]any{
+		"get": opGet("List workflow runs", "Workflows",
+			"List workflow execution runs with optional filtering.",
+			[]map[string]any{
+				queryParam("workflow", "string", "Filter by workflow name"),
+			},
+			resp200(schemaArray(ref("WorkflowRun"))),
+			resp401(),
+		),
+	}
+
+	paths["/workflow-runs/{id}"] = map[string]any{
+		"get": opGet("Get workflow run", "Workflows",
+			"Get workflow run details including step results, handoffs, and agent messages.",
+			[]map[string]any{pathParam("id", "string", "Workflow run ID")},
+			resp200(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run":      ref("WorkflowRun"),
+					"handoffs": schemaArray(ref("Handoff")),
+					"messages": schemaArray(ref("AgentMessage")),
+				},
+			}),
+			resp401(), resp404(),
+		),
+	}
+
+	// ---- Knowledge ----
+
+	paths["/knowledge"] = map[string]any{
+		"get": opGet("List knowledge files", "Knowledge",
+			"List all files in the knowledge base directory.",
+			nil,
+			resp200(schemaArray(ref("KnowledgeFile"))),
+			resp401(),
+		),
+	}
+
+	paths["/knowledge/search"] = map[string]any{
+		"get": opGet("Search knowledge base", "Knowledge",
+			"TF-IDF search across knowledge base files.",
+			[]map[string]any{
+				queryParam("q", "string", "Search query"),
+				queryParam("limit", "integer", "Max results (default 10)"),
+			},
+			resp200(schemaArray(ref("SearchResult"))),
+			resp401(),
+		),
+	}
+
+	// ---- Infrastructure ----
+
+	paths["/circuits"] = map[string]any{
+		"get": opGet("Circuit breaker status", "Infrastructure",
+			"Get the current state of all provider circuit breakers.",
+			nil,
+			resp200(map[string]any{"type": "object", "description": "Map of provider name to circuit state (closed, open, half-open)"}),
+			resp401(),
+		),
+	}
+
+	paths["/circuits/{provider}/reset"] = map[string]any{
+		"post": opPost("Reset circuit breaker", "Infrastructure",
+			"Reset a provider's circuit breaker to closed state.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"provider": prop("string", "Provider name"),
+				"state":    prop("string", "New state (closed)"),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/queue"] = map[string]any{
+		"get": opGet("List offline queue", "Infrastructure",
+			"List items in the offline task queue.",
+			[]map[string]any{
+				queryParam("status", "string", "Filter by status (pending, processing, completed, expired, failed)"),
+			},
+			resp200(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"items":   schemaArray(ref("QueueItem")),
+					"count":   prop("integer", "Number of items returned"),
+					"pending": prop("integer", "Total pending items"),
+				},
+			}),
+			resp401(),
+		),
+	}
+
+	paths["/queue/{id}"] = map[string]any{
+		"get": opGet("Get queue item", "Infrastructure",
+			"Get a single offline queue item by ID.",
+			[]map[string]any{pathParam("id", "integer", "Queue item ID")},
+			resp200(ref("QueueItem")),
+			resp401(), resp404(),
+		),
+		"delete": opDelete("Delete queue item", "Infrastructure",
+			"Remove an item from the offline queue.",
+			[]map[string]any{pathParam("id", "integer", "Queue item ID")},
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "deleted"),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/queue/{id}/retry"] = map[string]any{
+		"post": opPost("Retry queue item", "Infrastructure",
+			"Retry a pending or failed queue item.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "retrying"),
+				"taskId": prop("string", "New task ID"),
+			}}),
+			resp401(), resp404(), resp409("item not in retryable state"),
+		),
+	}
+
+	paths["/budget"] = map[string]any{
+		"get": opGet("Budget status", "Infrastructure",
+			"Get current budget utilization across global, agent, and workflow scopes.",
+			nil,
+			resp200(map[string]any{"type": "object", "description": "Budget status with daily/weekly/monthly usage and caps"}),
+			resp401(),
+		),
+	}
+
+	paths["/budget/pause"] = map[string]any{
+		"post": opPost("Pause all paid execution", "Infrastructure",
+			"Activate the kill switch to pause all paid LLM execution.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "paused"),
+			}}),
+			resp401(),
+		),
+	}
+
+	paths["/budget/resume"] = map[string]any{
+		"post": opPost("Resume paid execution", "Infrastructure",
+			"Deactivate the kill switch and resume paid LLM execution.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "active"),
+			}}),
+			resp401(),
+		),
+	}
+
+	// ---- Cron ----
+
+	paths["/cron"] = map[string]any{
+		"get": opGet("List cron jobs", "Cron",
+			"List all configured cron jobs with their status and schedule.",
+			nil,
+			resp200(schemaArray(ref("CronJob"))),
+			resp401(),
+		),
+	}
+
+	paths["/cron/{id}/trigger"] = map[string]any{
+		"post": opPost("Trigger cron job", "Cron",
+			"Manually trigger a cron job to run immediately.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "triggered"),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	// ---- Agent ----
+
+	paths["/agent-messages"] = map[string]any{
+		"get": opGet("List agent messages", "Agent",
+			"List inter-agent communication messages.",
+			[]map[string]any{
+				queryParam("workflowRun", "string", "Filter by workflow run ID"),
+				queryParam("role", "string", "Filter by agent"),
+				queryParam("limit", "integer", "Max results (default 50)"),
+			},
+			resp200(schemaArray(ref("AgentMessage"))),
+			resp401(),
+		),
+		"post": opPost("Send agent message", "Agent",
+			"Send an inter-agent communication message.",
+			reqBody(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"fromAgent":      prop("string", "Sender agent"),
+					"toAgent":        prop("string", "Recipient agent"),
+					"type":          prop("string", "Message type: handoff, request, response, note"),
+					"content":       prop("string", "Message content"),
+					"workflowRunId": prop("string", "Associated workflow run ID"),
+					"refId":         prop("string", "Reference to another message ID"),
+				},
+				"required": []string{"fromAgent", "toAgent", "content"},
+			}),
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "sent"),
+				"id":     prop("string", "Message ID"),
+			}}),
+			resp400(), resp401(),
+		),
+	}
+
+	paths["/handoffs"] = map[string]any{
+		"get": opGet("List handoffs", "Agent",
+			"List agent handoffs with optional workflow run filter.",
+			[]map[string]any{
+				queryParam("workflowRun", "string", "Filter by workflow run ID"),
+			},
+			resp200(schemaArray(ref("Handoff"))),
+			resp401(),
+		),
+	}
+
+	// ---- Agents ----
+
+	paths["/roles"] = map[string]any{
+		"get": opGet("List agents", "Agents",
+			"List all configured agents.",
+			nil,
+			resp200(map[string]any{"type": "object", "additionalProperties": ref("AgentConfig")}),
+			resp401(),
+		),
+		"post": opPost("Create agent", "Agents",
+			"Create or update an agent configuration.",
+			reqBody(ref("AgentConfig")),
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", ""),
+				"name":   prop("string", "Agent name"),
+			}}),
+			resp400(), resp401(),
+		),
+	}
+
+	paths["/roles/{name}"] = map[string]any{
+		"get": opGet("Get agent", "Agents",
+			"Get a single agent configuration by name.",
+			[]map[string]any{pathParam("name", "string", "Agent name")},
+			resp200(ref("AgentConfig")),
+			resp401(), resp404(),
+		),
+		"put": map[string]any{
+			"tags":        []string{"Agents"},
+			"summary":     "Update agent",
+			"description": "Update an existing agent configuration.",
+			"parameters":  []map[string]any{pathParam("name", "string", "Agent name")},
+			"requestBody": reqBody(ref("AgentConfig")),
+			"responses": mergeResponses(
+				resp200(map[string]any{"type": "object", "properties": map[string]any{
+					"status": prop("string", ""),
+					"name":   prop("string", "Agent name"),
+				}}),
+				resp400(), resp401(), resp404(),
+			),
+		},
+		"delete": opDelete("Delete agent", "Agents",
+			"Delete an agent.",
+			[]map[string]any{pathParam("name", "string", "Agent name")},
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"status": prop("string", "deleted"),
+			}}),
+			resp401(), resp404(),
+		),
+	}
+
+	paths["/roles/archetypes"] = map[string]any{
+		"get": opGet("List agent archetypes", "Agents",
+			"List available agent archetype templates.",
+			nil,
+			resp200(map[string]any{"type": "object"}),
+			resp401(),
+		),
+	}
+
+	paths["/api/agents/running"] = map[string]any{
+		"get": opGet("List running agents", "Agents",
+			"Return all tasks currently executing in dispatchState.",
+			nil,
+			resp200(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"running": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"id":       prop("string", "Task ID"),
+								"name":     prop("string", "Task name"),
+								"agent":    prop("string", "Agent name"),
+								"source":   prop("string", "Source identifier"),
+								"prompt":   prop("string", "Prompt (truncated to 100 chars)"),
+								"elapsed":  prop("string", "Elapsed time (e.g. 5s)"),
+								"parentId": prop("string", "Parent task ID (sub-tasks only)"),
+								"depth":    map[string]any{"type": "integer", "description": "Nesting depth (0 = top-level)"},
+							},
+						},
+					},
+					"count": map[string]any{"type": "integer", "description": "Number of running tasks"},
+				},
+			}),
+			resp401(),
+		),
+	}
+
+	// ---- Route (Smart Dispatch) ----
+
+	paths["/route"] = map[string]any{
+		"post": opPost("Smart dispatch", "Core",
+			"Send a natural language prompt for intelligent routing to the best agent.",
+			reqBody(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt": prop("string", "Natural language prompt"),
+					"async":  map[string]any{"type": "boolean", "description": "Run asynchronously (returns request ID)"},
+				},
+				"required": []string{"prompt"},
+			}),
+			resp200(ref("SmartDispatchResult")),
+			resp400(), resp401(),
+		),
+	}
+
+	paths["/route/classify"] = map[string]any{
+		"post": opPost("Classify prompt", "Core",
+			"Classify a prompt to determine which agent would handle it, without executing.",
+			reqBody(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt": prop("string", "Natural language prompt"),
+				},
+				"required": []string{"prompt"},
+			}),
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"role":       prop("string", "Matched agent"),
+				"confidence": prop("string", "Confidence level"),
+				"method":     prop("string", "Classification method (keyword, llm)"),
+			}}),
+			resp400(), resp401(),
+		),
+	}
+
+	paths["/route/{id}"] = map[string]any{
+		"get": opGet("Get async route result", "Core",
+			"Poll the result of an asynchronous smart dispatch request.",
+			[]map[string]any{pathParam("id", "string", "Request ID from async route")},
+			resp200(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"status": prop("string", "running, done, or error"),
+					"result": ref("SmartDispatchResult"),
+					"error":  prop("string", "Error message if failed"),
+				},
+			}),
+			resp401(), resp404(),
+		),
+	}
+
+	// ---- Audit / Backup ----
+
+	paths["/audit"] = map[string]any{
+		"get": opGet("Audit log", "Audit",
+			"Query the audit log with pagination.",
+			[]map[string]any{
+				queryParam("limit", "integer", "Results per page (default 50)"),
+				queryParam("page", "integer", "Page number (default 1)"),
+			},
+			resp200(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"entries": schemaArray(ref("AuditEntry")),
+					"total":   prop("integer", "Total entries"),
+					"page":    prop("integer", "Current page"),
+					"limit":   prop("integer", "Results per page"),
+				},
+			}),
+			resp401(),
+		),
+	}
+
+	// --- Retention & Data ---
+
+	paths["/retention"] = map[string]any{
+		"get": opGet("Get retention config & stats", "Data",
+			"Returns the retention configuration (effective days per table) and current row counts.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"config":   map[string]any{"type": "object", "description": "Configured retention days"},
+				"defaults": map[string]any{"type": "object", "description": "Effective retention days (config or fallback)"},
+				"stats":    map[string]any{"type": "object", "description": "Row count per table"},
+			}}),
+			resp401(),
+		),
+	}
+
+	paths["/retention/cleanup"] = map[string]any{
+		"post": opPost("Run retention cleanup", "Data",
+			"Triggers an immediate retention cleanup across all tables.",
+			nil,
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"results": schemaArray(map[string]any{"type": "object", "properties": map[string]any{
+					"table": prop("string", "Table name"), "deleted": prop("integer", "Rows deleted"),
+					"error": prop("string", "Error message if any"),
+				}}),
+			}}),
+			resp401(),
+		),
+	}
+
+	paths["/data/export"] = map[string]any{
+		"get": opGet("Export all data", "Data",
+			"Exports all user data as JSON (GDPR right of access). Includes history, sessions, memory, audit log, and reflections.",
+			nil,
+			resp200(map[string]any{"type": "object", "description": "Full data export"}),
+			resp401(),
+		),
+	}
+
+	paths["/data/purge"] = map[string]any{
+		"delete": opDelete("Purge data before date", "Data",
+			"Permanently deletes all data before the specified date. Requires X-Confirm-Purge: true header.",
+			[]map[string]any{{
+				"name": "before", "in": "query", "required": true,
+				"description": "Date cutoff (YYYY-MM-DD)",
+				"schema":      map[string]any{"type": "string", "format": "date"},
+			}},
+			resp200(map[string]any{"type": "object", "properties": map[string]any{
+				"results": schemaArray(map[string]any{"type": "object"}),
+			}}),
+			resp401(),
+		),
+	}
+
+	paths["/backup"] = map[string]any{
+		"get": opGet("Download backup", "Audit",
+			"Download a tar.gz backup of the Tetora data directory.",
+			nil,
+			map[string]any{
+				"200": map[string]any{
+					"description": "Backup archive",
+					"content": map[string]any{
+						"application/gzip": map[string]any{
+							"schema": map[string]any{"type": "string", "format": "binary"},
+						},
+					},
+				},
+			},
+			resp401(),
+		),
+	}
+
+	return paths
+}
+
+// buildComponents constructs the components/schemas section.
+func buildComponents() map[string]any {
+	schemas := map[string]any{}
+
+	schemas["Task"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":             prop("string", "Task ID (auto-generated if empty)"),
+			"name":           prop("string", "Human-readable task name"),
+			"prompt":         prop("string", "Task prompt for the agent"),
+			"workdir":        prop("string", "Working directory"),
+			"model":          prop("string", "LLM model to use"),
+			"provider":       prop("string", "Provider name override"),
+			"docker":         map[string]any{"type": "boolean", "description": "Run in Docker sandbox"},
+			"timeout":        prop("string", "Timeout duration (e.g. 5m, 1h)"),
+			"budget":         prop("number", "Max cost in USD"),
+			"permissionMode": prop("string", "Permission mode for the agent"),
+			"mcp":            prop("string", "MCP config name"),
+			"addDirs":        schemaArray(prop("string", "")),
+			"systemPrompt":   prop("string", "System prompt override"),
+			"sessionId":      prop("string", "Session ID to continue"),
+			"role":           prop("string", "Agent name"),
+			"source":         prop("string", "Request source identifier"),
+		},
+		"required": []string{"prompt"},
+	}
+
+	schemas["TaskArray"] = schemaArray(ref("Task"))
+
+	schemas["TaskResult"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":         prop("string", "Task ID"),
+			"name":       prop("string", "Task name"),
+			"status":     prop("string", "Execution status: success, error, timeout, cancelled"),
+			"exitCode":   prop("integer", "Process exit code"),
+			"output":     prop("string", "Agent output text"),
+			"error":      prop("string", "Error message if failed"),
+			"durationMs": prop("integer", "Execution duration in milliseconds"),
+			"costUsd":    prop("number", "Actual cost in USD"),
+			"model":      prop("string", "Model used"),
+			"sessionId":  prop("string", "Session ID"),
+			"outputFile": prop("string", "Output file path (if any)"),
+			"tokensIn":   prop("integer", "Input tokens consumed"),
+			"tokensOut":  prop("integer", "Output tokens generated"),
+			"providerMs": prop("integer", "Provider-side latency in ms"),
+			"traceId":    prop("string", "Trace ID for request correlation"),
+			"provider":   prop("string", "Provider used"),
+		},
+	}
+
+	schemas["DispatchResult"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"startedAt":    prop("string", "Start time (RFC3339)"),
+			"finishedAt":   prop("string", "Finish time (RFC3339)"),
+			"durationMs":   prop("integer", "Total duration in milliseconds"),
+			"totalCostUsd": prop("number", "Total cost in USD"),
+			"tasks":        schemaArray(ref("TaskResult")),
+			"summary":      prop("string", "Execution summary"),
+		},
+	}
+
+	schemas["EstimateResult"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tasks":                 schemaArray(ref("CostEstimate")),
+			"totalEstimatedCostUsd": prop("number", "Total estimated cost"),
+			"classifyCostUsd":       prop("number", "Cost of LLM classification (if smart dispatch)"),
+		},
+	}
+
+	schemas["CostEstimate"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":               prop("string", "Task name"),
+			"provider":           prop("string", "Resolved provider"),
+			"model":              prop("string", "Resolved model"),
+			"estimatedCostUsd":   prop("number", "Estimated cost in USD"),
+			"estimatedTokensIn":  prop("integer", "Estimated input tokens"),
+			"estimatedTokensOut": prop("integer", "Estimated output tokens"),
+			"breakdown":          prop("string", "Cost breakdown description"),
+		},
+	}
+
+	schemas["Session"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":             prop("string", "Session ID"),
+			"role":           prop("string", "Agent name"),
+			"source":         prop("string", "Source channel"),
+			"status":         prop("string", "Status: active, archived"),
+			"title":          prop("string", "Session title"),
+			"channelKey":     prop("string", "Channel session key"),
+			"totalCost":      prop("number", "Total cost for session"),
+			"totalTokensIn":  prop("integer", "Total input tokens"),
+			"totalTokensOut": prop("integer", "Total output tokens"),
+			"messageCount":   prop("integer", "Number of messages"),
+			"createdAt":      prop("string", "Created timestamp (RFC3339)"),
+			"updatedAt":      prop("string", "Updated timestamp (RFC3339)"),
+		},
+	}
+
+	schemas["SessionMessage"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":        prop("integer", "Message ID"),
+			"sessionId": prop("string", "Session ID"),
+			"role":      prop("string", "Message role: user, assistant, system"),
+			"content":   prop("string", "Message content"),
+			"costUsd":   prop("number", "Cost for this message"),
+			"tokensIn":  prop("integer", "Input tokens"),
+			"tokensOut": prop("integer", "Output tokens"),
+			"model":     prop("string", "Model used"),
+			"taskId":    prop("string", "Associated task ID"),
+			"createdAt": prop("string", "Timestamp (RFC3339)"),
+		},
+	}
+
+	schemas["SessionDetail"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"session":  ref("Session"),
+			"messages": schemaArray(ref("SessionMessage")),
+		},
+	}
+
+	schemas["Workflow"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":        prop("string", "Workflow name (unique identifier)"),
+			"description": prop("string", "Human-readable description"),
+			"steps":       schemaArray(ref("WorkflowStep")),
+			"variables":   map[string]any{"type": "object", "additionalProperties": prop("string", ""), "description": "Input variables with default values"},
+			"timeout":     prop("string", "Overall workflow timeout (e.g. 30m)"),
+			"onSuccess":   prop("string", "Notification template on success"),
+			"onFailure":   prop("string", "Notification template on failure"),
+		},
+		"required": []string{"name", "steps"},
+	}
+
+	schemas["WorkflowStep"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":             prop("string", "Step ID (unique within workflow)"),
+			"type":           prop("string", "Step type: dispatch, skill, condition, parallel"),
+			"role":           prop("string", "Agent name for dispatch steps"),
+			"prompt":         prop("string", "Prompt for dispatch steps (supports {{variable}} substitution)"),
+			"skill":          prop("string", "Skill name for skill steps"),
+			"skillArgs":      schemaArray(prop("string", "")),
+			"dependsOn":      schemaArray(prop("string", "Step IDs that must complete first")),
+			"model":          prop("string", "Model override"),
+			"provider":       prop("string", "Provider override"),
+			"timeout":        prop("string", "Per-step timeout"),
+			"budget":         prop("number", "Per-step budget cap"),
+			"permissionMode": prop("string", "Permission mode override"),
+			"if":             prop("string", "Condition expression"),
+			"then":           prop("string", "Step ID on condition true"),
+			"else":           prop("string", "Step ID on condition false"),
+			"handoffFrom":    prop("string", "Source step ID whose output becomes context"),
+			"parallel":       schemaArray(ref("WorkflowStep")),
+			"retryMax":       prop("integer", "Max retries on failure"),
+			"retryDelay":     prop("string", "Delay between retries"),
+			"onError":        prop("string", "Error handling: stop (default), skip, retry"),
+		},
+		"required": []string{"id"},
+	}
+
+	schemas["WorkflowRun"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":           prop("string", "Run ID"),
+			"workflowName": prop("string", "Workflow name"),
+			"status":       prop("string", "Status: running, success, error, cancelled, timeout"),
+			"startedAt":    prop("string", "Start time (RFC3339)"),
+			"finishedAt":   prop("string", "Finish time (RFC3339)"),
+			"durationMs":   prop("integer", "Duration in milliseconds"),
+			"totalCostUsd": prop("number", "Total cost in USD"),
+			"variables":    map[string]any{"type": "object", "additionalProperties": prop("string", "")},
+			"stepResults":  map[string]any{"type": "object", "additionalProperties": ref("StepRunResult")},
+			"error":        prop("string", "Error message if failed"),
+		},
+	}
+
+	schemas["StepRunResult"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"stepId":     prop("string", "Step ID"),
+			"status":     prop("string", "Status: pending, running, success, error, skipped, timeout"),
+			"output":     prop("string", "Step output"),
+			"error":      prop("string", "Error message"),
+			"startedAt":  prop("string", "Start time"),
+			"finishedAt": prop("string", "Finish time"),
+			"durationMs": prop("integer", "Duration in ms"),
+			"costUsd":    prop("number", "Cost in USD"),
+			"taskId":     prop("string", "Task ID"),
+			"sessionId":  prop("string", "Session ID"),
+			"retries":    prop("integer", "Number of retries"),
+		},
+	}
+
+	schemas["KnowledgeFile"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":    prop("string", "Filename"),
+			"size":    prop("integer", "File size in bytes"),
+			"modTime": prop("string", "Last modification time (RFC3339)"),
+		},
+	}
+
+	schemas["SearchResult"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"filename":  prop("string", "Source filename"),
+			"snippet":   prop("string", "Matched text snippet"),
+			"score":     prop("number", "Relevance score"),
+			"lineStart": prop("integer", "Starting line number of snippet"),
+		},
+	}
+
+	schemas["Handoff"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":            prop("string", "Handoff ID"),
+			"workflowRunId": prop("string", "Workflow run ID"),
+			"fromAgent":      prop("string", "Source agent name"),
+			"toAgent":        prop("string", "Target agent name"),
+			"fromStepId":    prop("string", "Source step ID"),
+			"toStepId":      prop("string", "Target step ID"),
+			"fromSessionId": prop("string", "Source session ID"),
+			"toSessionId":   prop("string", "Target session ID"),
+			"context":       prop("string", "Output from source agent"),
+			"instruction":   prop("string", "Instructions for target agent"),
+			"status":        prop("string", "Status: pending, active, completed, error"),
+			"createdAt":     prop("string", "Timestamp (RFC3339)"),
+		},
+	}
+
+	schemas["AgentMessage"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":            prop("string", "Message ID"),
+			"workflowRunId": prop("string", "Workflow run ID"),
+			"fromAgent":      prop("string", "Sender agent"),
+			"toAgent":        prop("string", "Recipient agent"),
+			"type":          prop("string", "Message type: handoff, request, response, note"),
+			"content":       prop("string", "Message content"),
+			"refId":         prop("string", "Reference to another message"),
+			"createdAt":     prop("string", "Timestamp (RFC3339)"),
+		},
+	}
+
+	schemas["QueueItem"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":         prop("integer", "Queue item ID"),
+			"taskJson":   prop("string", "Serialized task JSON"),
+			"role":       prop("string", "Target agent"),
+			"source":     prop("string", "Source identifier"),
+			"priority":   prop("integer", "Priority (higher = sooner)"),
+			"status":     prop("string", "Status: pending, processing, completed, expired, failed"),
+			"retryCount": prop("integer", "Number of retries"),
+			"createdAt":  prop("string", "Created timestamp (RFC3339)"),
+			"updatedAt":  prop("string", "Updated timestamp (RFC3339)"),
+			"error":      prop("string", "Error message"),
+		},
+	}
+
+	schemas["SLAMetrics"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"role":         prop("string", "Agent name"),
+			"total":        prop("integer", "Total executions"),
+			"success":      prop("integer", "Successful executions"),
+			"fail":         prop("integer", "Failed executions"),
+			"successRate":  prop("number", "Success rate (0.0-1.0)"),
+			"avgLatencyMs": prop("integer", "Average latency in ms"),
+			"p95LatencyMs": prop("integer", "P95 latency in ms"),
+			"totalCost":    prop("number", "Total cost in USD"),
+			"avgCost":      prop("number", "Average cost per execution"),
+		},
+	}
+
+	schemas["HealthResult"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"status":    prop("string", "Overall status: ok, degraded, error"),
+			"version":   prop("string", "Tetora version"),
+			"uptime":    prop("string", "Server uptime"),
+			"uptimeSec": prop("integer", "Server uptime in seconds"),
+			"db":        map[string]any{"type": "object", "description": "Database health details"},
+			"providers": map[string]any{"type": "object", "description": "Provider availability"},
+			"disk":      map[string]any{"type": "object", "description": "Disk usage information"},
+			"cron":      map[string]any{"type": "object", "description": "Cron engine status"},
+		},
+	}
+
+	schemas["CronJob"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":       prop("string", "Job ID"),
+			"name":     prop("string", "Job name"),
+			"schedule": prop("string", "Cron schedule expression"),
+			"role":     prop("string", "Agent name"),
+			"enabled":  map[string]any{"type": "boolean", "description": "Whether job is active"},
+			"running":  map[string]any{"type": "boolean", "description": "Whether job is currently running"},
+			"lastRun":  prop("string", "Last run timestamp"),
+			"nextRun":  prop("string", "Next scheduled run"),
+		},
+	}
+
+	schemas["AgentConfig"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":              prop("string", "Agent name"),
+			"soulFile":          prop("string", "System prompt file path"),
+			"model":             prop("string", "Default model for this agent"),
+			"description":       prop("string", "Agent description"),
+			"keywords":          schemaArray(prop("string", "Routing keywords")),
+			"permissionMode":    prop("string", "Permission mode"),
+			"allowedDirs":       schemaArray(prop("string", "Allowed directories")),
+			"provider":          prop("string", "Preferred provider"),
+			"docker":            map[string]any{"type": "boolean", "description": "Docker sandbox override"},
+			"fallbackProviders": schemaArray(prop("string", "Failover chain")),
+		},
+	}
+
+	schemas["SmartDispatchResult"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"role":       prop("string", "Selected agent name"),
+			"method":     prop("string", "Classification method (keyword, llm)"),
+			"confidence": prop("string", "Classification confidence"),
+			"taskResult": ref("TaskResult"),
+		},
+	}
+
+	schemas["FailedTask"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":       prop("string", "Task ID"),
+			"name":     prop("string", "Task name"),
+			"role":     prop("string", "Original agent"),
+			"error":    prop("string", "Failure error message"),
+			"failedAt": prop("string", "Failure timestamp (RFC3339)"),
+		},
+	}
+
+	schemas["RunningTask"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":       prop("string", "Task ID"),
+			"name":     prop("string", "Task name"),
+			"source":   prop("string", "Source (dispatch, cron)"),
+			"model":    prop("string", "Model in use"),
+			"timeout":  prop("string", "Timeout setting"),
+			"elapsed":  prop("string", "Elapsed time"),
+			"prompt":   prop("string", "Prompt (truncated)"),
+			"pid":      prop("integer", "Process ID"),
+			"pidAlive": map[string]any{"type": "boolean", "description": "Whether process is alive"},
+		},
+	}
+
+	schemas["JobRun"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":         prop("integer", "Record ID"),
+			"taskId":     prop("string", "Task ID"),
+			"jobName":    prop("string", "Job/task name"),
+			"source":     prop("string", "Source identifier"),
+			"role":       prop("string", "Agent name"),
+			"status":     prop("string", "Execution status"),
+			"model":      prop("string", "Model used"),
+			"provider":   prop("string", "Provider used"),
+			"costUsd":    prop("number", "Cost in USD"),
+			"durationMs": prop("integer", "Duration in ms"),
+			"tokensIn":   prop("integer", "Input tokens"),
+			"tokensOut":  prop("integer", "Output tokens"),
+			"startedAt":  prop("string", "Start time (RFC3339)"),
+			"finishedAt": prop("string", "Finish time (RFC3339)"),
+			"outputFile": prop("string", "Output file path"),
+			"error":      prop("string", "Error message"),
+		},
+	}
+
+	schemas["AuditEntry"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":        prop("integer", "Entry ID"),
+			"event":     prop("string", "Event type"),
+			"source":    prop("string", "Source"),
+			"detail":    prop("string", "Event detail"),
+			"ip":        prop("string", "Client IP"),
+			"createdAt": prop("string", "Timestamp (RFC3339)"),
+		},
+	}
+
+	schemas["Error"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"error": prop("string", "Error message"),
+		},
+		"required": []string{"error"},
+	}
+
+	components := map[string]any{
+		"schemas": schemas,
+	}
+
+	// Security scheme (always defined, applied conditionally in spec root).
+	components["securitySchemes"] = map[string]any{
+		"bearerAuth": map[string]any{
+			"type":         "http",
+			"scheme":       "bearer",
+			"bearerFormat": "token",
+			"description":  "API token configured in config.json (apiToken field)",
+		},
+	}
+
+	return components
+}
+
+// --- OpenAPI builder helpers ---
+
+// prop creates a simple property schema.
+func prop(typeName, description string) map[string]any {
+	p := map[string]any{"type": typeName}
+	if description != "" {
+		p["description"] = description
+	}
+	return p
+}
+
+// ref creates a $ref to a component schema.
+func ref(name string) map[string]any {
+	return map[string]any{"$ref": "#/components/schemas/" + name}
+}
+
+// schemaArray creates an array schema wrapping an item schema.
+func schemaArray(items map[string]any) map[string]any {
+	return map[string]any{"type": "array", "items": items}
+}
+
+// queryParam creates a query parameter definition.
+func queryParam(name, typeName, description string) map[string]any {
+	return map[string]any{
+		"name":        name,
+		"in":          "query",
+		"required":    false,
+		"description": description,
+		"schema":      map[string]any{"type": typeName},
+	}
+}
+
+// pathParam creates a path parameter definition.
+func pathParam(name, typeName, description string) map[string]any {
+	return map[string]any{
+		"name":        name,
+		"in":          "path",
+		"required":    true,
+		"description": description,
+		"schema":      map[string]any{"type": typeName},
+	}
+}
+
+// reqBody creates a requestBody definition with JSON content type.
+// Pass nil for endpoints with no body.
+func reqBody(schema map[string]any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+	return map[string]any{
+		"required": true,
+		"content": map[string]any{
+			"application/json": map[string]any{
+				"schema": schema,
+			},
+		},
+	}
+}
+
+// resp200 creates a 200 response with a JSON schema.
+func resp200(schema map[string]any) map[string]any {
+	return map[string]any{
+		"200": map[string]any{
+			"description": "Success",
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": schema,
+				},
+			},
+		},
+	}
+}
+
+// resp400 creates a 400 Bad Request response.
+func resp400() map[string]any {
+	return map[string]any{
+		"400": map[string]any{
+			"description": "Bad Request",
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": ref("Error"),
+				},
+			},
+		},
+	}
+}
+
+// resp401 creates a 401 Unauthorized response.
+func resp401() map[string]any {
+	return map[string]any{
+		"401": map[string]any{
+			"description": "Unauthorized",
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": ref("Error"),
+				},
+			},
+		},
+	}
+}
+
+// resp404 creates a 404 Not Found response.
+func resp404() map[string]any {
+	return map[string]any{
+		"404": map[string]any{
+			"description": "Not Found",
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": ref("Error"),
+				},
+			},
+		},
+	}
+}
+
+// resp409 creates a 409 Conflict response.
+func resp409(detail string) map[string]any {
+	desc := "Conflict"
+	if detail != "" {
+		desc = "Conflict: " + detail
+	}
+	return map[string]any{
+		"409": map[string]any{
+			"description": desc,
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": ref("Error"),
+				},
+			},
+		},
+	}
+}
+
+// mergeResponses combines multiple response maps into one.
+func mergeResponses(maps ...map[string]any) map[string]any {
+	merged := map[string]any{}
+	for _, m := range maps {
+		for k, v := range m {
+			merged[k] = v
+		}
+	}
+	return merged
+}
+
+// opGet creates a GET operation definition.
+func opGet(summary, tag, description string, params []map[string]any, responses ...map[string]any) map[string]any {
+	op := map[string]any{
+		"tags":        []string{tag},
+		"summary":     summary,
+		"description": description,
+		"responses":   mergeResponses(responses...),
+	}
+	if len(params) > 0 {
+		op["parameters"] = params
+	}
+	return op
+}
+
+// opPost creates a POST operation definition.
+func opPost(summary, tag, description string, body map[string]any, responses ...map[string]any) map[string]any {
+	op := map[string]any{
+		"tags":        []string{tag},
+		"summary":     summary,
+		"description": description,
+		"responses":   mergeResponses(responses...),
+	}
+	if body != nil {
+		op["requestBody"] = body
+	}
+	return op
+}
+
+// opDelete creates a DELETE operation definition.
+func opDelete(summary, tag, description string, params []map[string]any, responses ...map[string]any) map[string]any {
+	op := map[string]any{
+		"tags":        []string{tag},
+		"summary":     summary,
+		"description": description,
+		"responses":   mergeResponses(responses...),
+	}
+	if len(params) > 0 {
+		op["parameters"] = params
+	}
+	return op
 }
