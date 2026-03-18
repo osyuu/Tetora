@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"tetora/internal/classify"
+	dtypes "tetora/internal/dispatch"
+	"tetora/internal/prompt"
 	"tetora/internal/tool"
 	"tetora/internal/tools"
 )
@@ -544,4 +547,39 @@ func saveMemoryAccessLog(cfg *Config, accessLog map[string]string) {
 // initMemoryDB is a no-op kept for backward compatibility.
 func initMemoryDB(dbPath string) error {
 	return nil
+}
+
+// ============================================================
+// Merged shims: slot_pressure, prompt_tier
+// ============================================================
+
+// --- Slot Pressure (from slot_pressure.go) ---
+
+type SlotPressureGuard = dtypes.SlotPressureGuard
+type AcquireResult = dtypes.AcquireResult
+
+func isInteractiveSource(source string) bool { return dtypes.IsInteractiveSource(source) }
+
+// --- Prompt Tier (from prompt_tier.go) ---
+
+func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity classify.Complexity) {
+	prompt.BuildTieredPrompt(cfg, task, agentName, complexity, prompt.Deps{
+		ResolveProviderName:    resolveProviderName,
+		LoadSoulFile:           loadSoulFile,
+		LoadAgentPrompt:        loadAgentPrompt,
+		ResolveWorkspace:       resolveWorkspace,
+		BuildReflectionContext: buildReflectionContext,
+		LoadWritingStyle:       loadWritingStyle,
+		BuildSkillsPrompt:      buildSkillsPrompt,
+		InjectWorkspaceContent: injectWorkspaceContent,
+		EstimateDirSize:        estimateDirSize,
+	})
+}
+
+func truncateToChars(s string, maxChars int) string {
+	return prompt.TruncateToChars(s, maxChars)
+}
+
+func truncateLessonsToRecent(content string, n int) string {
+	return prompt.TruncateLessonsToRecent(content, n)
 }

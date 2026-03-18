@@ -1,4 +1,4 @@
-package main
+package reflection
 
 import (
 	"context"
@@ -8,18 +8,15 @@ import (
 	"strings"
 	"time"
 
-
+	"tetora/internal/config"
 	"tetora/internal/db"
+	"tetora/internal/dispatch"
 )
 
-// --- Reflection Config ---
-
-// --- Reflection Result ---
-
-// ReflectionResult holds the reflection output.
-type ReflectionResult struct {
+// Result holds the reflection output.
+type Result struct {
 	TaskID      string  `json:"taskId"`
-	Agent        string  `json:"agent"`
+	Agent       string  `json:"agent"`
 	Score       int     `json:"score"`
 	Feedback    string  `json:"feedback"`
 	Improvement string  `json:"improvement"`
@@ -27,10 +24,19 @@ type ReflectionResult struct {
 	CreatedAt   string  `json:"createdAt"`
 }
 
-// --- DB Init ---
+// Deps holds root-package callbacks needed by performReflection.
+// Using a struct avoids import cycles: this package does not import package main.
+type Deps struct {
+	// Executor runs a single task (wraps root runSingleTask).
+	Executor dispatch.TaskExecutor
+	// NewID generates a new unique ID.
+	NewID func() string
+	// FillDefaults populates default values for a task.
+	FillDefaults func(cfg *config.Config, t *dispatch.Task)
+}
 
-// initReflectionDB creates the reflections table and index.
-func initReflectionDB(dbPath string) error {
+// InitDB creates the reflections table and index.
+func InitDB(dbPath string) error {
 	// Create table first (so subsequent ALTER TABLE migration has a target).
 	if err := db.Exec(dbPath, `CREATE TABLE IF NOT EXISTS reflections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,12 +62,8 @@ func initReflectionDB(dbPath string) error {
 	return nil
 }
 
-// --- MinCost Default ---
-
-// --- Should Reflect ---
-
-// shouldReflect determines if a reflection should be performed after task execution.
-func shouldReflect(cfg *Config, task Task, result TaskResult) bool {
+// ShouldReflect determines if a reflection should be performed after task execution.
+func ShouldReflect(cfg *config.Config, task dispatch.Task, result dispatch.TaskResult) bool {
 	if cfg == nil || !cfg.Reflection.Enabled {
 		return false
 	}
@@ -83,17 +85,9 @@ func shouldReflect(cfg *Config, task Task, result TaskResult) bool {
 	return true
 }
 
-// --- Perform Reflection ---
-
-// performReflection runs a cheap LLM call to evaluate task output quality.
-func performReflection(ctx context.Context, cfg *Config, task Task, result TaskResult, sem ...chan struct{}) (*ReflectionResult, error) {
-	// Use provided sem or create a temporary one.
-	var taskSem chan struct{}
-	if len(sem) > 0 && sem[0] != nil {
-		taskSem = sem[0]
-	} else {
-		taskSem = make(chan struct{}, 1)
-	}
+// Perform runs a cheap LLM call to evaluate task output quality.
+// The executor in deps is responsible for any semaphore management.
+func Perform(ctx context.Context, cfg *config.Config, task dispatch.Task, result dispatch.TaskResult, deps Deps) (*Result, error) {
 	// Truncate prompt and output for the reflection prompt.
 	promptSnippet := task.Prompt
 	if len(promptSnippet) > 500 {
@@ -114,31 +108,40 @@ Status: %s
 Output: %s`,
 		promptSnippet, task.Agent, result.Status, outputSnippet)
 
-	budget := reflectionBudgetOrDefault(cfg)
+	budget := BudgetOrDefault(cfg)
 
-	reflTask := Task{
-		ID:             newUUID(),
+	reflTask := dispatch.Task{
 		Name:           "reflection-" + task.ID[:8],
 		Prompt:         reflPrompt,
 		Model:          "haiku",
 		Budget:         budget,
 		Timeout:        "30s",
 		PermissionMode: "plan",
-		Agent:           task.Agent,
+		Agent:          task.Agent,
 		Source:         "reflection",
 	}
-	fillDefaults(cfg, &reflTask)
-	// Override model back to haiku after fillDefaults may have set it.
+	if deps.NewID != nil {
+		reflTask.ID = deps.NewID()
+	}
+	if deps.FillDefaults != nil {
+		deps.FillDefaults(cfg, &reflTask)
+	}
+	// Override model back to haiku after FillDefaults may have set it.
 	reflTask.Model = "haiku"
 	reflTask.Budget = budget
 
-	reflResult := runSingleTask(ctx, cfg, reflTask, taskSem, nil, "")
+	var reflResult dispatch.TaskResult
+	if deps.Executor != nil {
+		reflResult = deps.Executor.RunTask(ctx, reflTask, task.Agent)
+	} else {
+		return nil, fmt.Errorf("reflection: no executor provided")
+	}
 
 	if reflResult.Status != "success" {
 		return nil, fmt.Errorf("reflection failed: %s", reflResult.Error)
 	}
 
-	ref, err := parseReflectionOutput(reflResult.Output)
+	ref, err := ParseOutput(reflResult.Output)
 	if err != nil {
 		return nil, fmt.Errorf("parse reflection: %w", err)
 	}
@@ -151,13 +154,11 @@ Output: %s`,
 	return ref, nil
 }
 
-// --- Parse Reflection Output ---
-
-// parseReflectionOutput extracts a ReflectionResult from LLM output.
+// ParseOutput extracts a Result from LLM output.
 // Handles raw JSON as well as JSON wrapped in markdown code blocks.
-func parseReflectionOutput(output string) (*ReflectionResult, error) {
+func ParseOutput(output string) (*Result, error) {
 	// Try to find JSON object in the output.
-	jsonStr := extractJSON(output)
+	jsonStr := ExtractJSON(output)
 	if jsonStr == "" {
 		return nil, fmt.Errorf("no JSON found in reflection output")
 	}
@@ -176,16 +177,16 @@ func parseReflectionOutput(output string) (*ReflectionResult, error) {
 		return nil, fmt.Errorf("score %d out of range 1-5", parsed.Score)
 	}
 
-	return &ReflectionResult{
+	return &Result{
 		Score:       parsed.Score,
 		Feedback:    parsed.Feedback,
 		Improvement: parsed.Improvement,
 	}, nil
 }
 
-// extractJSON finds the first JSON object in the string.
+// ExtractJSON finds the first JSON object in the string.
 // Handles markdown code blocks like ```json {...} ```.
-func extractJSON(s string) string {
+func ExtractJSON(s string) string {
 	// Strip markdown code fences if present.
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "```") {
@@ -222,10 +223,8 @@ func extractJSON(s string) string {
 	return ""
 }
 
-// --- Store Reflection ---
-
-// storeReflection persists a reflection result to the database.
-func storeReflection(dbPath string, ref *ReflectionResult) error {
+// Store persists a reflection result to the database.
+func Store(dbPath string, ref *Result) error {
 	sql := fmt.Sprintf(
 		`INSERT INTO reflections (task_id, agent, score, feedback, improvement, cost_usd, created_at)
 		 VALUES ('%s','%s',%d,'%s','%s',%f,'%s')`,
@@ -245,10 +244,8 @@ func storeReflection(dbPath string, ref *ReflectionResult) error {
 	return nil
 }
 
-// --- Query Reflections ---
-
-// queryReflections returns recent reflections, optionally filtered by agent.
-func queryReflections(dbPath, agent string, limit int) ([]ReflectionResult, error) {
+// Query returns recent reflections, optionally filtered by agent.
+func Query(dbPath, agent string, limit int) ([]Result, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -268,9 +265,9 @@ func queryReflections(dbPath, agent string, limit int) ([]ReflectionResult, erro
 		return nil, err
 	}
 
-	var results []ReflectionResult
+	var results []Result
 	for _, row := range rows {
-		results = append(results, ReflectionResult{
+		results = append(results, Result{
 			TaskID:      jsonStr(row["task_id"]),
 			Agent:       jsonStr(row["agent"]),
 			Score:       jsonInt(row["score"]),
@@ -283,11 +280,9 @@ func queryReflections(dbPath, agent string, limit int) ([]ReflectionResult, erro
 	return results, nil
 }
 
-// --- Build Reflection Context ---
-
-// buildReflectionContext formats recent reflections as a text block suitable
+// BuildContext formats recent reflections as a text block suitable
 // for injection into agent prompts. Returns empty string if no reflections exist.
-func buildReflectionContext(dbPath, role string, limit int) string {
+func BuildContext(dbPath, role string, limit int) string {
 	if dbPath == "" || role == "" {
 		return ""
 	}
@@ -295,7 +290,7 @@ func buildReflectionContext(dbPath, role string, limit int) string {
 		limit = 5
 	}
 
-	refs, err := queryReflections(dbPath, role, limit)
+	refs, err := Query(dbPath, role, limit)
 	if err != nil || len(refs) == 0 {
 		return ""
 	}
@@ -308,12 +303,68 @@ func buildReflectionContext(dbPath, role string, limit int) string {
 	return b.String()
 }
 
-// --- Budget Helper ---
-
-// reflectionBudgetOrDefault returns the configured reflection budget or the default of $0.05.
-func reflectionBudgetOrDefault(cfg *Config) float64 {
+// BudgetOrDefault returns the configured reflection budget or the default of $0.05.
+func BudgetOrDefault(cfg *config.Config) float64 {
 	if cfg != nil && cfg.Reflection.Budget > 0 {
 		return cfg.Reflection.Budget
 	}
 	return 0.05
+}
+
+// --- JSON field helpers (package-local) ---
+
+func jsonStr(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch x := v.(type) {
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func jsonInt(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case string:
+		var i int
+		fmt.Sscanf(x, "%d", &i)
+		return i
+	default:
+		return 0
+	}
+}
+
+func jsonFloat(v any) float64 {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case float64:
+		return x
+	case float32:
+		return float64(x)
+	case int:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case string:
+		var f float64
+		fmt.Sscanf(x, "%f", &f)
+		return f
+	default:
+		return 0
+	}
 }

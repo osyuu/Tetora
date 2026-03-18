@@ -30,7 +30,10 @@ import (
 	"tetora/internal/integration/podcast"
 	"tetora/internal/integration/spotify"
 	"tetora/internal/integration/twitter"
+	"tetora/internal/mcp"
 	"tetora/internal/storage"
+	"tetora/internal/tools"
+	"tetora/internal/voice"
 )
 
 // --- Service type aliases ---
@@ -1660,4 +1663,113 @@ func toolFileStore(ctx context.Context, cfg *Config, input json.RawMessage) (str
 	}
 	out, _ := json.MarshalIndent(mf, "", "  ")
 	return fmt.Sprintf("File %s (%s):\n%s", status, args.Filename, string(out)), nil
+}
+
+// ============================================================
+// Merged shims: voice, mcp_host
+// ============================================================
+
+// --- Voice (from voice.go) ---
+
+type STTProvider = voice.STTProvider
+type STTOptions = voice.STTOptions
+type STTResult = voice.STTResult
+type TTSProvider = voice.TTSProvider
+type TTSOptions = voice.TTSOptions
+type OpenAISTTProvider = voice.OpenAISTTProvider
+type OpenAITTSProvider = voice.OpenAITTSProvider
+type ElevenLabsTTSProvider = voice.ElevenLabsTTSProvider
+type VoiceEngine = voice.VoiceEngine
+
+func newVoiceEngine(cfg *Config) *VoiceEngine {
+	return voice.NewVoiceEngine(voice.VoiceConfig{
+		STT: voice.STTConfig{
+			Enabled:  cfg.Voice.STT.Enabled,
+			Provider: cfg.Voice.STT.Provider,
+			Model:    cfg.Voice.STT.Model,
+			Endpoint: cfg.Voice.STT.Endpoint,
+			APIKey:   cfg.Voice.STT.APIKey,
+			Language: cfg.Voice.STT.Language,
+		},
+		TTS: voice.TTSConfig{
+			Enabled:  cfg.Voice.TTS.Enabled,
+			Provider: cfg.Voice.TTS.Provider,
+			Model:    cfg.Voice.TTS.Model,
+			Endpoint: cfg.Voice.TTS.Endpoint,
+			APIKey:   cfg.Voice.TTS.APIKey,
+			Voice:    cfg.Voice.TTS.Voice,
+			Format:   cfg.Voice.TTS.Format,
+		},
+		Wake: voice.VoiceWakeConfig{
+			Enabled:   cfg.Voice.Wake.Enabled,
+			WakeWords: cfg.Voice.Wake.WakeWords,
+			Threshold: cfg.Voice.Wake.Threshold,
+		},
+		Realtime: voice.VoiceRealtimeConfig{
+			Enabled:  cfg.Voice.Realtime.Enabled,
+			Provider: cfg.Voice.Realtime.Provider,
+			Model:    cfg.Voice.Realtime.Model,
+			APIKey:   cfg.Voice.Realtime.APIKey,
+			Voice:    cfg.Voice.Realtime.Voice,
+		},
+	})
+}
+
+var _ interface {
+	Transcribe(ctx context.Context, audio io.Reader, opts STTOptions) (*STTResult, error)
+	Synthesize(ctx context.Context, text string, opts TTSOptions) (io.ReadCloser, error)
+} = (*VoiceEngine)(nil)
+
+// --- MCP Host (from mcp_host.go) ---
+
+type MCPHost = mcp.Host
+type MCPServer = mcp.Server
+type MCPServerStatus = mcp.ServerStatus
+
+type jsonRPCRequest = mcp.JSONRPCRequest
+type jsonRPCResponse = mcp.JSONRPCResponse
+type jsonRPCError = mcp.JSONRPCError
+
+const mcpProtocolVersion = mcp.ProtocolVersion
+
+type initializeResult struct {
+	ProtocolVersion string                 `json:"protocolVersion"`
+	Capabilities    map[string]interface{} `json:"capabilities"`
+	ServerInfo      struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"serverInfo"`
+}
+
+type toolsListResult struct {
+	Tools []struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		InputSchema []byte `json:"inputSchema"`
+	} `json:"tools"`
+}
+
+type toolsCallResult struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	} `json:"content"`
+}
+
+type initializeParams struct {
+	ProtocolVersion string                 `json:"protocolVersion"`
+	Capabilities    map[string]interface{} `json:"capabilities"`
+	ClientInfo      struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"clientInfo"`
+}
+
+type toolsCallParams struct {
+	Name      string `json:"name"`
+	Arguments []byte `json:"arguments"`
+}
+
+func newMCPHost(cfg *Config, toolReg *tools.Registry) *MCPHost {
+	return mcp.NewHost(cfg, toolReg)
 }

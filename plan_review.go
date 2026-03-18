@@ -201,8 +201,8 @@ func (s *Server) registerPlanReviewRoutes(mux *http.ServeMux) {
 		}
 
 		// Publish review decision to SSE.
-		if s.hookReceiver != nil && s.hookReceiver.broker != nil {
-			s.hookReceiver.broker.Publish(SSEDashboardKey, SSEEvent{
+		if s.hookReceiver != nil && s.hookReceiver.Broker() != nil {
+			s.hookReceiver.Broker().Publish(SSEDashboardKey, SSEEvent{
 				Type: SSEPlanReview,
 				Data: map[string]any{
 					"reviewId": reviewID,

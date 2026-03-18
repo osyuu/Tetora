@@ -13,9 +13,17 @@ import (
 
 	"tetora/internal/automation/insights"
 	"tetora/internal/db"
+	idispatch "tetora/internal/dispatch"
 	"tetora/internal/log"
 	"tetora/internal/nlp"
+	"tetora/internal/notify"
+	"tetora/internal/project"
+	"tetora/internal/push"
+	"tetora/internal/reflection"
+	"tetora/internal/review"
+	"tetora/internal/roles"
 	"tetora/internal/tool"
+	"tetora/internal/workspace"
 
 	"tetora/internal/life/calendar"
 	"tetora/internal/life/contacts"
@@ -471,3 +479,151 @@ func insightsDBPath(cfg *Config) string {
 	}
 	return filepath.Join(cfg.BaseDir, "history.db")
 }
+
+// ============================================================
+// Merged shims: review, push, roles, projects, workspace, notify, reflection
+// ============================================================
+
+// --- Review (from review.go) ---
+
+func buildReviewDigest(cfg *Config, days int) string {
+	return review.BuildDigest(cfg, days)
+}
+
+// --- Push (from push.go) ---
+
+type PushSubscription = push.Subscription
+type PushKeys = push.SubscriptionKeys
+type PushNotification = push.Notification
+type PushManager = push.Manager
+
+func newPushManager(cfg *Config) *PushManager {
+	return push.NewManager(push.Config{
+		HistoryDB:       cfg.HistoryDB,
+		VAPIDPrivateKey: cfg.Push.VAPIDPrivateKey,
+		VAPIDEmail:      cfg.Push.VAPIDEmail,
+		TTL:             cfg.Push.TTL,
+	})
+}
+
+// --- Roles (from roles.go) ---
+
+type AgentArchetype = roles.AgentArchetype
+
+var builtinArchetypes = roles.BuiltinArchetypes
+
+func loadAgentPrompt(cfg *Config, agentName string) (string, error) {
+	return roles.LoadAgentPrompt(cfg, agentName)
+}
+
+func generateSoulContent(archetype *AgentArchetype, agentName string) string {
+	return roles.GenerateSoulContent(archetype, agentName)
+}
+
+func getArchetypeByName(name string) *AgentArchetype {
+	return roles.GetArchetypeByName(name)
+}
+
+func writeSoulFile(cfg *Config, agentName, content string) error {
+	return roles.WriteSoulFile(cfg, agentName, content)
+}
+
+// --- Projects (from projects.go) ---
+
+type Project = project.Project
+type WorkspaceProjectEntry = project.WorkspaceProjectEntry
+
+func initProjectsDB(dbPath string) error   { return project.InitDB(dbPath) }
+func listProjects(dbPath, status string) ([]Project, error) { return project.List(dbPath, status) }
+func getProject(dbPath, id string) (*Project, error) { return project.Get(dbPath, id) }
+func createProject(dbPath string, p Project) error   { return project.Create(dbPath, p) }
+func updateProject(dbPath string, p Project) error    { return project.Update(dbPath, p) }
+func deleteProject(dbPath, id string) error           { return project.Delete(dbPath, id) }
+func parseProjectsMD(path string) ([]WorkspaceProjectEntry, error) { return project.ParseProjectsMD(path) }
+func generateProjectID() string { return project.GenerateID() }
+
+// --- Workspace (from workspace.go) ---
+
+type SessionScope = workspace.SessionScope
+
+func resolveWorkspace(cfg *Config, agentName string) WorkspaceConfig { return workspace.ResolveWorkspace(cfg, agentName) }
+func defaultWorkspace(cfg *Config) WorkspaceConfig                   { return workspace.DefaultWorkspace(cfg) }
+func initDirectories(cfg *Config) error                              { return workspace.InitDirectories(cfg) }
+func resolveSessionScope(cfg *Config, agentName string, sessionType string) SessionScope {
+	return workspace.ResolveSessionScope(cfg, agentName, sessionType)
+}
+func defaultToolProfile(cfg *Config) string                  { return workspace.DefaultToolProfile(cfg) }
+func minTrust(a, b string) string                            { return workspace.MinTrust(a, b) }
+func resolveMCPServers(cfg *Config, agentName string) []string { return workspace.ResolveMCPServers(cfg, agentName) }
+func loadSoulFile(cfg *Config, agentName string) string      { return workspace.LoadSoulFile(cfg, agentName) }
+func getWorkspaceMemoryPath(cfg *Config) string              { return workspace.GetWorkspaceMemoryPath(cfg) }
+func getWorkspaceSkillsPath(cfg *Config) string              { return workspace.GetWorkspaceSkillsPath(cfg) }
+
+// --- Notify (from notify.go) ---
+
+type Notifier = notify.Notifier
+type SlackNotifier = notify.SlackNotifier
+type DiscordNotifier = notify.DiscordNotifier
+type MultiNotifier = notify.MultiNotifier
+type WhatsAppNotifier = notify.WhatsAppNotifier
+type NotifyMessage = notify.Message
+type NotificationEngine = notify.Engine
+
+const (
+	PriorityCritical = notify.PriorityCritical
+	PriorityHigh     = notify.PriorityHigh
+	PriorityNormal   = notify.PriorityNormal
+	PriorityLow      = notify.PriorityLow
+)
+
+func buildNotifiers(cfg *Config) []Notifier              { return notify.BuildNotifiers(cfg) }
+func buildDiscordNotifierByName(cfg *Config, name string) *DiscordNotifier {
+	return notify.BuildDiscordNotifierByName(cfg, name)
+}
+func NewNotificationEngine(cfg *Config, notifiers []Notifier, fallbackFn func(string)) *NotificationEngine {
+	return notify.NewEngine(cfg, notifiers, fallbackFn)
+}
+func wrapNotifyFn(ne *NotificationEngine, defaultPriority string) func(string) {
+	return notify.WrapNotifyFn(ne, defaultPriority)
+}
+func priorityRank(p string) int            { return notify.PriorityRank(p) }
+func priorityFromRank(rank int) string     { return notify.PriorityFromRank(rank) }
+func isValidPriority(p string) bool        { return notify.IsValidPriority(p) }
+func newDiscordNotifier(webhookURL string, timeout time.Duration) *DiscordNotifier {
+	return notify.NewDiscordNotifier(webhookURL, timeout)
+}
+
+// --- Reflection (from reflection.go) ---
+
+type ReflectionResult = reflection.Result
+
+func initReflectionDB(dbPath string) error { return reflection.InitDB(dbPath) }
+func shouldReflect(cfg *Config, task Task, result TaskResult) bool {
+	return reflection.ShouldReflect(cfg, task, result)
+}
+func performReflection(ctx context.Context, cfg *Config, task Task, result TaskResult, sem ...chan struct{}) (*ReflectionResult, error) {
+	var taskSem chan struct{}
+	if len(sem) > 0 && sem[0] != nil {
+		taskSem = sem[0]
+	} else {
+		taskSem = make(chan struct{}, 1)
+	}
+	deps := reflection.Deps{
+		Executor: idispatch.TaskExecutorFunc(func(ctx context.Context, t idispatch.Task, agentName string) idispatch.TaskResult {
+			return runSingleTask(ctx, cfg, t, taskSem, nil, agentName)
+		}),
+		NewID:        newUUID,
+		FillDefaults: fillDefaults,
+	}
+	return reflection.Perform(ctx, cfg, task, result, deps)
+}
+func parseReflectionOutput(output string) (*ReflectionResult, error) { return reflection.ParseOutput(output) }
+func extractJSON(s string) string                                    { return reflection.ExtractJSON(s) }
+func storeReflection(dbPath string, ref *ReflectionResult) error     { return reflection.Store(dbPath, ref) }
+func queryReflections(dbPath, agent string, limit int) ([]ReflectionResult, error) {
+	return reflection.Query(dbPath, agent, limit)
+}
+func buildReflectionContext(dbPath, role string, limit int) string {
+	return reflection.BuildContext(dbPath, role, limit)
+}
+func reflectionBudgetOrDefault(cfg *Config) float64 { return reflection.BudgetOrDefault(cfg) }
