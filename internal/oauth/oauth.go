@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/config"
 	"tetora/internal/db"
 )
 
@@ -27,26 +28,10 @@ var EncryptFn func(plaintext, key string) (string, error)
 // DecryptFn decrypts ciphertext after DB retrieval. Nil = no decryption.
 var DecryptFn func(ciphertext, key string) (string, error)
 
-// --- Config Types ---
+// --- Config Types (aliased from internal/config) ---
 
-// OAuthConfig holds top-level OAuth settings.
-type OAuthConfig struct {
-	Services      map[string]OAuthServiceConfig `json:"services,omitempty"`
-	EncryptionKey string                        `json:"encryptionKey,omitempty"` // $ENV_VAR supported
-	RedirectBase  string                        `json:"redirectBase,omitempty"` // e.g. "https://my.domain.com"
-}
-
-// OAuthServiceConfig configures a single OAuth 2.0 service.
-type OAuthServiceConfig struct {
-	Name         string            `json:"name"`
-	ClientID     string            `json:"clientId"`              // supports $ENV_VAR
-	ClientSecret string            `json:"clientSecret"`          // supports $ENV_VAR
-	AuthURL      string            `json:"authUrl"`
-	TokenURL     string            `json:"tokenUrl"`
-	Scopes       []string          `json:"scopes"`
-	RedirectURL  string            `json:"redirectUrl,omitempty"` // default: {redirectBase}/api/oauth/{name}/callback
-	ExtraParams  map[string]string `json:"extraParams,omitempty"`
-}
+type OAuthConfig = config.OAuthConfig
+type OAuthServiceConfig = config.OAuthServiceConfig
 
 // OAuthToken represents a stored token.
 type OAuthToken struct {
@@ -267,7 +252,11 @@ func ListOAuthTokenStatuses(dbPath, encKey string) ([]OAuthTokenStatus, error) {
 
 // --- Token Refresh ---
 
-// refreshTokenIfNeeded checks token expiry and refreshes if needed.
+// RefreshTokenIfNeeded checks token expiry and refreshes if needed.
+func (m *OAuthManager) RefreshTokenIfNeeded(serviceName string) (*OAuthToken, error) {
+	return m.refreshTokenIfNeeded(serviceName)
+}
+
 func (m *OAuthManager) refreshTokenIfNeeded(serviceName string) (*OAuthToken, error) {
 	token, err := LoadOAuthToken(m.dbPath, serviceName, m.encryptionKey)
 	if err != nil {

@@ -6,44 +6,19 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"strings"
 
-	"tetora/internal/db"
 	"tetora/internal/telemetry"
+	"tetora/internal/usage"
 )
 
 // UsageSummary is the aggregate cost/token summary for a time period.
-type UsageSummary struct {
-	Period      string       `json:"period"`
-	TotalCost   float64      `json:"totalCostUsd"`
-	TotalTasks  int          `json:"totalTasks"`
-	TokensIn    int          `json:"totalTokensIn"`
-	TokensOut   int          `json:"totalTokensOut"`
-	BudgetLimit float64      `json:"budgetLimit,omitempty"`
-	BudgetPct   float64      `json:"budgetPct,omitempty"`
-	ByModel     []ModelUsage `json:"byModel,omitempty"`
-	ByRole      []AgentUsage `json:"byRole,omitempty"`
-}
+type UsageSummary = usage.UsageSummary
 
 // ModelUsage is cost/token usage breakdown for a single model.
-type ModelUsage struct {
-	Model     string  `json:"model"`
-	Tasks     int     `json:"tasks"`
-	Cost      float64 `json:"costUsd"`
-	TokensIn  int     `json:"tokensIn"`
-	TokensOut int     `json:"tokensOut"`
-	Pct       float64 `json:"pct"`
-}
+type ModelUsage = usage.ModelUsage
 
 // AgentUsage is cost/token usage breakdown for a single agent.
-type AgentUsage struct {
-	Agent     string  `json:"agent"`
-	Tasks     int     `json:"tasks"`
-	Cost      float64 `json:"costUsd"`
-	TokensIn  int     `json:"tokensIn"`
-	TokensOut int     `json:"tokensOut"`
-	Pct       float64 `json:"pct"`
-}
+type AgentUsage = usage.AgentUsage
 
 // TokenSummaryRow and TokenAgentRow are aliases for the telemetry package types.
 type TokenSummaryRow = telemetry.SummaryRow
@@ -119,7 +94,7 @@ func tryUsageFromAPI(api *APIClient, period string, showModel, showRole bool, da
 		return false
 	}
 
-	fmt.Println(formatUsageSummary(&summary))
+	fmt.Println(usage.FormatSummary(&summary))
 	fmt.Println()
 
 	if showModel {
@@ -130,7 +105,7 @@ func tryUsageFromAPI(api *APIClient, period string, showModel, showRole bool, da
 			var models []ModelUsage
 			if json.Unmarshal(body2, &models) == nil {
 				fmt.Println("By Model:")
-				fmt.Println(formatModelBreakdown(models))
+				fmt.Println(usage.FormatModelBreakdown(models))
 				fmt.Println()
 			}
 		}
@@ -144,7 +119,7 @@ func tryUsageFromAPI(api *APIClient, period string, showModel, showRole bool, da
 			var roles []AgentUsage
 			if json.Unmarshal(body3, &roles) == nil {
 				fmt.Println("By Agent:")
-				fmt.Println(formatAgentBreakdown(roles))
+				fmt.Println(usage.FormatAgentBreakdown(roles))
 				fmt.Println()
 			}
 		}
@@ -160,7 +135,7 @@ func usageFromDB(cfg *CLIConfig, period string, showModel, showRole bool, days i
 		os.Exit(1)
 	}
 
-	summary, err := queryUsageSummary(cfg.HistoryDB, period)
+	summary, err := usage.QuerySummary(cfg.HistoryDB, period)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -191,27 +166,27 @@ func usageFromDB(cfg *CLIConfig, period string, showModel, showRole bool, days i
 		}
 	}
 
-	fmt.Println(formatUsageSummary(summary))
+	fmt.Println(usage.FormatSummary(summary))
 	fmt.Println()
 
 	if showModel {
-		models, err := queryUsageByModel(cfg.HistoryDB, days)
+		models, err := usage.QueryByModel(cfg.HistoryDB, days)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error querying model breakdown: %v\n", err)
 		} else {
 			fmt.Println("By Model:")
-			fmt.Println(formatModelBreakdown(models))
+			fmt.Println(usage.FormatModelBreakdown(models))
 			fmt.Println()
 		}
 	}
 
 	if showRole {
-		roles, err := queryUsageByAgent(cfg.HistoryDB, days)
+		roles, err := usage.QueryByAgent(cfg.HistoryDB, days)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error querying agent breakdown: %v\n", err)
 		} else {
 			fmt.Println("By Agent:")
-			fmt.Println(formatAgentBreakdown(roles))
+			fmt.Println(usage.FormatAgentBreakdown(roles))
 			fmt.Println()
 		}
 	}
@@ -291,208 +266,4 @@ func cmdUsageTokens(args []string) {
 	}
 	fmt.Println("By Agent:")
 	fmt.Println(telemetry.FormatByRole(telemetry.ParseAgentRows(roleRows)))
-}
-
-// --- DB query helpers (replicated from root usage.go) ---
-
-func queryUsageSummary(dbPath, period string) (*UsageSummary, error) {
-	if dbPath == "" {
-		return &UsageSummary{Period: period}, nil
-	}
-
-	var dateFilter string
-	switch period {
-	case "today":
-		dateFilter = "date(started_at,'localtime') = date('now','localtime')"
-	case "week":
-		dateFilter = "date(started_at,'localtime') >= date('now','localtime','-7 days')"
-	case "month":
-		dateFilter = "date(started_at,'localtime') >= date('now','localtime','-30 days')"
-	case "prev_today":
-		dateFilter = "date(started_at,'localtime') = date('now','localtime','-1 day')"
-	case "prev_week":
-		dateFilter = "date(started_at,'localtime') >= date('now','localtime','-14 days') AND date(started_at,'localtime') < date('now','localtime','-7 days')"
-	case "prev_month":
-		dateFilter = "date(started_at,'localtime') >= date('now','localtime','-60 days') AND date(started_at,'localtime') < date('now','localtime','-30 days')"
-	default:
-		dateFilter = "date(started_at,'localtime') = date('now','localtime')"
-		period = "today"
-	}
-
-	sql := fmt.Sprintf(
-		`SELECT
-			COALESCE(SUM(cost_usd), 0) as total_cost,
-			COUNT(*) as total_tasks,
-			COALESCE(SUM(tokens_in), 0) as total_tokens_in,
-			COALESCE(SUM(tokens_out), 0) as total_tokens_out
-		 FROM job_runs WHERE %s`, dateFilter)
-
-	rows, err := db.Query(dbPath, sql)
-	if err != nil {
-		return nil, fmt.Errorf("query usage summary: %w", err)
-	}
-
-	summary := &UsageSummary{Period: period}
-	if len(rows) > 0 {
-		summary.TotalCost = db.Float(rows[0]["total_cost"])
-		summary.TotalTasks = db.Int(rows[0]["total_tasks"])
-		summary.TokensIn = db.Int(rows[0]["total_tokens_in"])
-		summary.TokensOut = db.Int(rows[0]["total_tokens_out"])
-	}
-
-	return summary, nil
-}
-
-func queryUsageByModel(dbPath string, days int) ([]ModelUsage, error) {
-	if dbPath == "" {
-		return nil, nil
-	}
-	if days <= 0 {
-		days = 30
-	}
-
-	sql := fmt.Sprintf(
-		`SELECT
-			model,
-			COUNT(*) as tasks,
-			COALESCE(SUM(cost_usd), 0) as cost,
-			COALESCE(SUM(tokens_in), 0) as tokens_in,
-			COALESCE(SUM(tokens_out), 0) as tokens_out
-		 FROM job_runs
-		 WHERE date(started_at,'localtime') >= date('now','localtime','-%d days')
-		   AND model != ''
-		 GROUP BY model
-		 ORDER BY cost DESC`, days)
-
-	rows, err := db.Query(dbPath, sql)
-	if err != nil {
-		return nil, fmt.Errorf("query usage by model: %w", err)
-	}
-
-	var totalCost float64
-	for _, row := range rows {
-		totalCost += db.Float(row["cost"])
-	}
-
-	var result []ModelUsage
-	for _, row := range rows {
-		cost := db.Float(row["cost"])
-		pct := 0.0
-		if totalCost > 0 {
-			pct = cost / totalCost * 100
-		}
-		result = append(result, ModelUsage{
-			Model:     db.Str(row["model"]),
-			Tasks:     db.Int(row["tasks"]),
-			Cost:      cost,
-			TokensIn:  db.Int(row["tokens_in"]),
-			TokensOut: db.Int(row["tokens_out"]),
-			Pct:       pct,
-		})
-	}
-
-	return result, nil
-}
-
-func queryUsageByAgent(dbPath string, days int) ([]AgentUsage, error) {
-	if dbPath == "" {
-		return nil, nil
-	}
-	if days <= 0 {
-		days = 30
-	}
-
-	sql := fmt.Sprintf(
-		`SELECT
-			CASE WHEN agent = '' THEN '(unassigned)' ELSE agent END as agent,
-			COUNT(*) as tasks,
-			COALESCE(SUM(cost_usd), 0) as cost,
-			COALESCE(SUM(tokens_in), 0) as tokens_in,
-			COALESCE(SUM(tokens_out), 0) as tokens_out
-		 FROM job_runs
-		 WHERE date(started_at,'localtime') >= date('now','localtime','-%d days')
-		 GROUP BY agent
-		 ORDER BY cost DESC`, days)
-
-	rows, err := db.Query(dbPath, sql)
-	if err != nil {
-		return nil, fmt.Errorf("query usage by agent: %w", err)
-	}
-
-	var totalCost float64
-	for _, row := range rows {
-		totalCost += db.Float(row["cost"])
-	}
-
-	var result []AgentUsage
-	for _, row := range rows {
-		cost := db.Float(row["cost"])
-		pct := 0.0
-		if totalCost > 0 {
-			pct = cost / totalCost * 100
-		}
-		result = append(result, AgentUsage{
-			Agent:     db.Str(row["agent"]),
-			Tasks:     db.Int(row["tasks"]),
-			Cost:      cost,
-			TokensIn:  db.Int(row["tokens_in"]),
-			TokensOut: db.Int(row["tokens_out"]),
-			Pct:       pct,
-		})
-	}
-
-	return result, nil
-}
-
-// --- Formatting helpers ---
-
-func formatUsageSummary(summary *UsageSummary) string {
-	var lines []string
-	lines = append(lines, fmt.Sprintf("Usage (%s):", summary.Period))
-	lines = append(lines, fmt.Sprintf("  Cost:      $%.4f", summary.TotalCost))
-	lines = append(lines, fmt.Sprintf("  Tasks:     %d", summary.TotalTasks))
-	lines = append(lines, fmt.Sprintf("  Tokens In: %d", summary.TokensIn))
-	lines = append(lines, fmt.Sprintf("  Tokens Out:%d", summary.TokensOut))
-	if summary.BudgetLimit > 0 {
-		lines = append(lines, fmt.Sprintf("  Budget:    $%.2f / $%.2f (%.1f%%)",
-			summary.TotalCost, summary.BudgetLimit, summary.BudgetPct))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func formatModelBreakdown(models []ModelUsage) string {
-	if len(models) == 0 {
-		return "  (no data)"
-	}
-	var lines []string
-	lines = append(lines, fmt.Sprintf("  %-20s %6s %10s %10s %10s %6s",
-		"Model", "Tasks", "Cost", "Tokens In", "Tokens Out", "Pct"))
-	lines = append(lines, fmt.Sprintf("  %s", strings.Repeat("-", 68)))
-	for _, m := range models {
-		lines = append(lines, fmt.Sprintf("  %-20s %6d $%9.4f %10d %10d %5.1f%%",
-			truncateStr(m.Model, 20), m.Tasks, m.Cost, m.TokensIn, m.TokensOut, m.Pct))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func formatAgentBreakdown(roles []AgentUsage) string {
-	if len(roles) == 0 {
-		return "  (no data)"
-	}
-	var lines []string
-	lines = append(lines, fmt.Sprintf("  %-20s %6s %10s %10s %10s %6s",
-		"Agent", "Tasks", "Cost", "Tokens In", "Tokens Out", "Pct"))
-	lines = append(lines, fmt.Sprintf("  %s", strings.Repeat("-", 68)))
-	for _, r := range roles {
-		lines = append(lines, fmt.Sprintf("  %-20s %6d $%9.4f %10d %10d %5.1f%%",
-			truncateStr(r.Agent, 20), r.Tasks, r.Cost, r.TokensIn, r.TokensOut, r.Pct))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
 }

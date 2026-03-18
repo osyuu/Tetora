@@ -9,6 +9,7 @@ import (
 	"tetora/internal/automation/insights"
 	"tetora/internal/messaging/gchat"
 	"tetora/internal/messaging/groupchat"
+	"tetora/internal/scheduling"
 	imessagebot "tetora/internal/messaging/imessage"
 	"tetora/internal/messaging/line"
 	"tetora/internal/messaging/matrix"
@@ -57,7 +58,7 @@ type App struct {
 	Family      *FamilyService
 	Contacts    *ContactsService
 	Insights    *insights.Engine
-	Scheduling  *SchedulingService
+	Scheduling  *scheduling.Service
 	Habits      *HabitsService
 	Goals       *GoalsService
 	Briefing    *briefing.Service

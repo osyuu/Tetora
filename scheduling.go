@@ -1,13 +1,13 @@
 package main
 
-// scheduling.go is a thin facade wrapping internal/scheduling.
-// Business logic lives in internal/scheduling/; this file bridges globals.
+// scheduling.go wires internal/scheduling into the root package.
+// It provides adapters that bridge root globals to the scheduling.Service
+// interfaces, and the tool handler functions registered in wire_tools.go.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"tetora/internal/log"
 	"tetora/internal/scheduling"
@@ -20,48 +20,17 @@ type DaySchedule = scheduling.DaySchedule
 type ScheduleEvent = scheduling.ScheduleEvent
 type ScheduleSuggestion = scheduling.ScheduleSuggestion
 
-// --- Service wrapper ---
+// --- Global ---
 
-// SchedulingService wraps internal/scheduling.Service, bridging globals.
-type SchedulingService struct {
-	svc *scheduling.Service
-}
+var globalSchedulingService *scheduling.Service
 
-var globalSchedulingService *SchedulingService
-
-// newSchedulingService creates a new SchedulingService.
-func newSchedulingService(cfg *Config) *SchedulingService {
-	var calProv scheduling.CalendarProvider
-	var taskProv scheduling.TaskProvider
-
-	calProv = &schedulingCalendarAdapter{}
-	taskProv = &schedulingTaskAdapter{}
-
-	svc := scheduling.New(calProv, taskProv, log.Warn)
-	return &SchedulingService{svc: svc}
-}
-
-// --- Delegated methods ---
-
-func (s *SchedulingService) ViewSchedule(date string, days int) ([]DaySchedule, error) {
-	return s.svc.ViewSchedule(date, days)
-}
-
-func (s *SchedulingService) SuggestSlots(duration int, preferMorning bool, days int) ([]ScheduleSuggestion, error) {
-	return s.svc.SuggestSlots(duration, preferMorning, days)
-}
-
-func (s *SchedulingService) PlanWeek(userID string) (map[string]any, error) {
-	return s.svc.PlanWeek(userID)
-}
-
-func (s *SchedulingService) FindFreeSlots(start, end time.Time, minMinutes int) ([]TimeSlot, error) {
-	return s.svc.FindFreeSlots(start, end, minMinutes)
-}
-
-// mergeEvents delegates to the internal package.
-func mergeEvents(events []ScheduleEvent) []ScheduleEvent {
-	return scheduling.MergeEvents(events)
+// newSchedulingService constructs a scheduling.Service wired to root globals.
+func newSchedulingService(cfg *Config) *scheduling.Service {
+	return scheduling.New(
+		&schedulingCalendarAdapter{},
+		&schedulingTaskAdapter{},
+		log.Warn,
+	)
 }
 
 // --- Adapter types ---

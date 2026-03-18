@@ -949,8 +949,8 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	// --- P18.2: OAuth 2.0 Framework ---
 	oauthMgr := newOAuthManager(cfg)
 	globalOAuthManager = oauthMgr // expose for Gmail/Calendar tools
-	mux.HandleFunc("/api/oauth/services", oauthMgr.handleOAuthServices)
-	mux.HandleFunc("/api/oauth/", oauthMgr.handleOAuthRoute)
+	mux.HandleFunc("/api/oauth/services", oauthMgr.HandleOAuthServices)
+	mux.HandleFunc("/api/oauth/", oauthMgr.HandleOAuthRoute)
 
 	// --- Drain: graceful shutdown (stop accepting new tasks, wait for running to finish) ---
 	mux.HandleFunc("/api/admin/drain", func(w http.ResponseWriter, r *http.Request) {

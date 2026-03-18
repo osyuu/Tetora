@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"tetora/internal/scheduling"
 )
 
-// setupSchedulingTest creates a SchedulingService for testing and returns
+// setupSchedulingTest creates a scheduling.Service for testing and returns
 // a cleanup function that restores the original global state.
-func setupSchedulingTest(t *testing.T) (*SchedulingService, func()) {
+func setupSchedulingTest(t *testing.T) (*scheduling.Service, func()) {
 	t.Helper()
 
 	cfg := &Config{}
@@ -316,7 +318,7 @@ func TestMergeEvents(t *testing.T) {
 		{Title: "C", Start: base.Add(120 * time.Minute), End: base.Add(150 * time.Minute)},
 	}
 
-	merged := mergeEvents(events)
+	merged := scheduling.MergeEvents(events)
 	if len(merged) != 2 {
 		t.Fatalf("expected 2 merged events, got %d", len(merged))
 	}
@@ -331,7 +333,7 @@ func TestMergeEvents(t *testing.T) {
 }
 
 func TestMergeEvents_Empty(t *testing.T) {
-	merged := mergeEvents(nil)
+	merged := scheduling.MergeEvents(nil)
 	if merged != nil {
 		t.Errorf("expected nil for empty input, got %v", merged)
 	}
@@ -346,7 +348,7 @@ func TestMergeEvents_Adjacent(t *testing.T) {
 		{Title: "B", Start: base.Add(60 * time.Minute), End: base.Add(120 * time.Minute)},
 	}
 
-	merged := mergeEvents(events)
+	merged := scheduling.MergeEvents(events)
 	// Adjacent events should be merged.
 	if len(merged) != 1 {
 		t.Fatalf("expected 1 merged event for adjacent, got %d", len(merged))
