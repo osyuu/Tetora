@@ -886,7 +886,7 @@ func runMockMCPServer() {
 				Tools: []struct {
 					Name        string          `json:"name"`
 					Description string          `json:"description"`
-					InputSchema []byte `json:"inputSchema"`
+					InputSchema json.RawMessage `json:"inputSchema"`
 				}{
 					{
 						Name:        "mock_tool",
