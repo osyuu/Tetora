@@ -1229,6 +1229,10 @@ func main() {
 
 		log.Info("tetora ready", "healthz", fmt.Sprintf("http://%s/healthz", cfg.ListenAddr))
 
+		// Self-liveness watchdog: pings /healthz and exits if unresponsive,
+		// letting launchd/systemd restart the process.
+		startWatchdog(ctx, cfg.Watchdog, cfg.ListenAddr)
+
 		// Wait for shutdown signal or drain request.
 		select {
 		case <-sigCh:

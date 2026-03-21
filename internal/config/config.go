@@ -190,6 +190,7 @@ type Config struct {
 	CronNotify            *bool                            `json:"cronNotify,omitempty"`
 	CronReplayHours       int                              `json:"cronReplayHours,omitempty"`
 	Heartbeat             HeartbeatConfig                  `json:"heartbeat,omitempty"`
+	Watchdog              WatchdogConfig                   `json:"watchdog,omitempty"`
 	Hooks                 HooksConfig                      `json:"hooks,omitempty"`
 	PlanGate              PlanGateConfig                   `json:"planGate,omitempty"`
 	MCPBridge             MCPBridgeConfig                  `json:"mcpBridge,omitempty"`

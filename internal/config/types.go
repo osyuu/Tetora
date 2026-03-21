@@ -1238,6 +1238,38 @@ type UsageConfig struct {
 	FooterTemplate string `json:"footerTemplate,omitempty"`
 }
 
+type WatchdogConfig struct {
+	Enabled        bool   `json:"enabled,omitempty"`
+	Interval       string `json:"interval,omitempty"`       // check interval, default "30s"
+	FailureLimit   int    `json:"failureLimit,omitempty"`   // consecutive failures before exit, default 3
+	TimeoutPerPing string `json:"timeoutPerPing,omitempty"` // per-request timeout, default "5s"
+}
+
+func (c WatchdogConfig) IntervalOrDefault() time.Duration {
+	if c.Interval != "" {
+		if d, err := time.ParseDuration(c.Interval); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 30 * time.Second
+}
+
+func (c WatchdogConfig) FailureLimitOrDefault() int {
+	if c.FailureLimit > 0 {
+		return c.FailureLimit
+	}
+	return 3
+}
+
+func (c WatchdogConfig) TimeoutPerPingOrDefault() time.Duration {
+	if c.TimeoutPerPing != "" {
+		if d, err := time.ParseDuration(c.TimeoutPerPing); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 5 * time.Second
+}
+
 type HeartbeatConfig struct {
 	Enabled          bool    `json:"enabled,omitempty"`
 	Interval         string  `json:"interval,omitempty"`
