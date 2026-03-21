@@ -1138,6 +1138,20 @@ func main() {
 			cleanupZombieSessions(cfg.HistoryDB)
 		}()
 
+		// Periodic cleanup of stale hook workers.
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					hookRecv.CleanupStaleHookWorkers()
+				}
+			}
+		}()
+
 		// Report degraded services.
 		if len(degradedServices) > 0 {
 			log.Warn("starting in degraded mode", "failedServices", strings.Join(degradedServices, ", "))
