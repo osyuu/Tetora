@@ -879,6 +879,9 @@ func main() {
 			}
 		}
 
+		// Wire notifyFn into config for skill install scan notifications.
+		cfg.RuntimeNotifyFn = notifyFn
+
 		// Proactive engine — initialized after Discord so notifyFn includes Discord delivery.
 		var proactiveEngine *ProactiveEngine
 		if cfg.Proactive.Enabled {

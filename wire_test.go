@@ -8301,12 +8301,19 @@ func setupMetricsTestDB(t *testing.T) string {
 	}
 
 	// Insert test records spanning multiple days and statuses.
+	// Use time.Now()-relative dates so the 30-day window filter never expires.
+	now := time.Now().UTC()
+	d0 := now.AddDate(0, 0, -10).Format("2006-01-02") + "T10:00:00Z"
+	d0b := now.AddDate(0, 0, -10).Format("2006-01-02") + "T11:00:00Z"
+	d1 := now.AddDate(0, 0, -5).Format("2006-01-02") + "T09:00:00Z"
+	d1b := now.AddDate(0, 0, -5).Format("2006-01-02") + "T14:00:00Z"
+	d2 := now.AddDate(0, 0, -2).Format("2006-01-02") + "T08:00:00Z"
 	runs := []JobRun{
-		{JobID: "j1", Name: "task-a", Source: "cron", StartedAt: "2026-02-20T10:00:00Z", FinishedAt: "2026-02-20T10:01:00Z", Status: "success", CostUSD: 0.10, Model: "opus", TokensIn: 1000, TokensOut: 500},
-		{JobID: "j2", Name: "task-b", Source: "cron", StartedAt: "2026-02-20T11:00:00Z", FinishedAt: "2026-02-20T11:02:00Z", Status: "error", CostUSD: 0.05, Model: "opus", Error: "fail", TokensIn: 800, TokensOut: 200},
-		{JobID: "j3", Name: "task-c", Source: "http", StartedAt: "2026-02-21T09:00:00Z", FinishedAt: "2026-02-21T09:00:30Z", Status: "success", CostUSD: 0.08, Model: "sonnet", TokensIn: 500, TokensOut: 300},
-		{JobID: "j4", Name: "task-d", Source: "http", StartedAt: "2026-02-21T14:00:00Z", FinishedAt: "2026-02-21T14:05:00Z", Status: "timeout", CostUSD: 0.20, Model: "sonnet", TokensIn: 2000, TokensOut: 1000},
-		{JobID: "j5", Name: "task-e", Source: "cron", StartedAt: "2026-02-22T08:00:00Z", FinishedAt: "2026-02-22T08:00:15Z", Status: "success", CostUSD: 0.03, Model: "opus", TokensIn: 300, TokensOut: 150},
+		{JobID: "j1", Name: "task-a", Source: "cron", StartedAt: d0, FinishedAt: d0, Status: "success", CostUSD: 0.10, Model: "opus", TokensIn: 1000, TokensOut: 500},
+		{JobID: "j2", Name: "task-b", Source: "cron", StartedAt: d0b, FinishedAt: d0b, Status: "error", CostUSD: 0.05, Model: "opus", Error: "fail", TokensIn: 800, TokensOut: 200},
+		{JobID: "j3", Name: "task-c", Source: "http", StartedAt: d1, FinishedAt: d1, Status: "success", CostUSD: 0.08, Model: "sonnet", TokensIn: 500, TokensOut: 300},
+		{JobID: "j4", Name: "task-d", Source: "http", StartedAt: d1b, FinishedAt: d1b, Status: "timeout", CostUSD: 0.20, Model: "sonnet", TokensIn: 2000, TokensOut: 1000},
+		{JobID: "j5", Name: "task-e", Source: "cron", StartedAt: d2, FinishedAt: d2, Status: "success", CostUSD: 0.03, Model: "opus", TokensIn: 300, TokensOut: 150},
 	}
 	for _, run := range runs {
 		if err := history.InsertRun(dbPath, run); err != nil {

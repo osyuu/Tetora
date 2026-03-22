@@ -6707,6 +6707,16 @@ var dangerousOpsPatterns = []struct {
 	{"mkfs", regexp.MustCompile(`(?i)\bmkfs\b`)},
 	{"fdisk", regexp.MustCompile(`(?i)\bfdisk\b`)},
 	{"chmod 777", regexp.MustCompile(`\bchmod\s+777\b`)},
+	// Self-operation guard: agent must not kill its own daemon.
+	{"tetora stop", regexp.MustCompile(`(?i)\btetora\s+stop\b`)},
+	{"tetora drain", regexp.MustCompile(`(?i)\btetora\s+drain\b`)},
+	{"tetora restart", regexp.MustCompile(`(?i)\btetora\s+restart\b`)},
+	{"tetora serve", regexp.MustCompile(`(?i)\btetora\s+serve\b`)},
+	{"tetora upgrade", regexp.MustCompile(`(?i)\btetora\s+upgrade\b`)},
+	{"make bump", regexp.MustCompile(`(?i)\bmake\s+bump\b`)},
+	{"make reload", regexp.MustCompile(`(?i)\bmake\s+reload\b`)},
+	{"kill daemon", regexp.MustCompile(`(?i)\bkill\s+.*tetora\b`)},
+	{"launchctl bootout tetora", regexp.MustCompile(`(?i)\blaunchctl\s+(bootout|unload).*tetora`)},
 }
 
 // checkDangerousOps scans prompt text for destructive operation patterns.
@@ -8477,6 +8487,7 @@ func toSkillAppConfig(cfg *Config) *skill.AppConfig {
 		MaxSkillsPerTask: maxSkills,
 		SkillsMax:        skillsMax,
 		Browser:          globalBrowserRelay,
+		NotifyFn:         cfg.RuntimeNotifyFn,
 	}
 }
 

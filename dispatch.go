@@ -1115,6 +1115,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 			TaskID:    task.ID,
 			SessionID: task.SessionID,
 			Data: map[string]any{
+				"name":       task.Name,
 				"status":     result.Status,
 				"durationMs": result.DurationMs,
 				"costUsd":    result.CostUSD,

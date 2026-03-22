@@ -231,6 +231,25 @@ func ToolSentoriScan(ctx context.Context, cfg *AppConfig, input json.RawMessage)
 	return string(b), nil
 }
 
+// notifySentoriResult sends a notification when a scan finds dangerous or review-worthy results.
+func notifySentoriResult(cfg *AppConfig, report *SentoriReport) {
+	if cfg.NotifyFn == nil {
+		return
+	}
+	switch report.OverallRisk {
+	case "dangerous":
+		cfg.NotifyFn(fmt.Sprintf(
+			"🚨 [Sentori] Skill %q blocked — DANGEROUS (score: %d)\n%d findings",
+			report.SkillName, report.Score, len(report.Findings),
+		))
+	case "review":
+		cfg.NotifyFn(fmt.Sprintf(
+			"⚠️ [Sentori] Skill %q needs review (score: %d)\n%d findings — pending approval",
+			report.SkillName, report.Score, len(report.Findings),
+		))
+	}
+}
+
 // skillInstallMaxSize is the maximum size for a downloaded skill package (1MB).
 const skillInstallMaxSize = 1 << 20
 
@@ -299,6 +318,7 @@ func ToolSkillInstall(ctx context.Context, cfg *AppConfig, input json.RawMessage
 	// If dangerous, refuse installation.
 	if report.OverallRisk == "dangerous" {
 		logWarn("skill install refused: dangerous", "name", pkg.Name, "score", report.Score)
+		notifySentoriResult(cfg, report)
 		reportJSON, _ := json.MarshalIndent(report, "", "  ")
 		result := map[string]any{
 			"status": "refused",
@@ -348,6 +368,7 @@ func ToolSkillInstall(ctx context.Context, cfg *AppConfig, input json.RawMessage
 		}
 	}
 
+	notifySentoriResult(cfg, report)
 	logInfo("skill installed", "name", pkg.Name, "risk", report.OverallRisk, "approved", approved)
 
 	status := "installed (pending approval)"

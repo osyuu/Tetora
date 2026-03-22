@@ -32,10 +32,21 @@ const (
 	reviewEscalate reviewVerdict = "escalate" // needs human judgment → assign to user
 )
 
+// reviewActionableItem represents a follow-up improvement suggested by the reviewer.
+type reviewActionableItem struct {
+	Action   string `json:"action"`
+	Type     string `json:"type"`     // fix/refactor/feat/chore
+	Priority string `json:"priority"` // low/normal/high
+	Adopt    bool   `json:"adopt"`
+	Reason   string `json:"reason"`   // why adopted or not
+	Assignee string `json:"assignee"` // suggested agent name
+}
+
 type reviewResult struct {
-	Verdict reviewVerdict
-	Comment string
-	CostUSD float64
+	Verdict         reviewVerdict
+	Comment         string
+	CostUSD         float64
+	ActionableItems []reviewActionableItem
 }
 
 // triageResult holds the commander's delegation decision.
@@ -231,7 +242,7 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 
 	taskID := t.ID
 	task := dispatch.Task{
-		Name:   "board:" + t.ID,
+		Name:   t.Title,
 		Prompt: prompt,
 		Agent:  t.Assignee,
 		Source: "taskboard",
@@ -556,6 +567,7 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 		case reviewApprove:
 			log.Info("taskboard dispatch: auto-review approved", "id", t.ID, "comment", rv.Comment)
 			d.engine.AddComment(t.ID, reviewer, fmt.Sprintf("[review] Approved: %s", rv.Comment))
+			d.spawnReviewSubtasks(t, rv.ActionableItems, reviewer)
 			if needsThought {
 				d.engine.AddComment(t.ID, "system",
 					fmt.Sprintf("[needs-thought] Approved but agent had concerns: %s", result.Concerns))
@@ -589,6 +601,7 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 					result.CostUSD += rv2.CostUSD
 					if rv2.Verdict == reviewApprove {
 						d.engine.AddComment(t.ID, reviewer, fmt.Sprintf("[review] Approved after fix: %s", rv2.Comment))
+						d.spawnReviewSubtasks(t, rv2.ActionableItems, reviewer)
 					} else if rv2.Verdict == reviewEscalate {
 						d.engine.AddComment(t.ID, reviewer, fmt.Sprintf("[review] Escalating: %s", rv2.Comment))
 						newStatus = "review"
@@ -1090,6 +1103,47 @@ func (d *Dispatcher) recordTriageHandoff(t TaskBoard, tr *triageResult, triageAg
 	return id
 }
 
+// spawnReviewSubtasks creates follow-up tasks from adopted review suggestions
+// and logs rejected ones as comments on the parent task.
+func (d *Dispatcher) spawnReviewSubtasks(parentTask TaskBoard, items []reviewActionableItem, reviewer string) {
+	for _, item := range items {
+		if !item.Adopt {
+			d.engine.AddComment(parentTask.ID, "system",
+				fmt.Sprintf("[review-suggestion] Rejected: %s\nReason: %s", item.Action, item.Reason))
+			continue
+		}
+		assignee := item.Assignee
+		if assignee == "" {
+			assignee = d.engine.config.AutoDispatch.DefaultAgent
+		}
+		priority := item.Priority
+		if priority == "" {
+			priority = "low"
+		}
+		taskType := item.Type
+		if taskType == "" {
+			taskType = "chore"
+		}
+		child := TaskBoard{
+			ParentID:    parentTask.ID,
+			Project:     parentTask.Project,
+			Title:       item.Action,
+			Description: fmt.Sprintf("Follow-up from review of task %s.\n\nReason: %s", parentTask.ID, item.Reason),
+			Status:      "todo",
+			Assignee:    assignee,
+			Priority:    priority,
+			Type:        taskType,
+		}
+		created, err := d.engine.CreateTask(child)
+		if err != nil {
+			log.Error("review subtask creation failed", "err", err, "action", item.Action)
+			continue
+		}
+		d.engine.AddComment(parentTask.ID, reviewer,
+			fmt.Sprintf("[review-followup] Created: %s → %s", created.ID, item.Action))
+	}
+}
+
 func (d *Dispatcher) thoroughReview(ctx context.Context, originalPrompt, output, agentRole, reviewer string, completionCtx *string) reviewResult {
 	truncate := func(s string, n int) string {
 		if d.deps.Truncate != nil {
@@ -1127,10 +1181,19 @@ Evaluate ALL of the following:
 - **fix**: Issues found that the original agent CAN fix autonomously (bugs, missing error handling, code quality). Give specific, actionable feedback.
 - **escalate**: ONLY use this when you genuinely cannot determine correctness — e.g., the spec is ambiguous, critical domain knowledge is missing, or the change could break production in ways you can't verify. Do NOT escalate for fixable code issues.
 
+## Actionable Items (optional)
+If you notice improvements that do NOT affect the verdict (i.e., the code is approvable but could be better later), list them in "actionable_items". Rules:
+- Only include follow-up improvements, NOT bugs blocking the current verdict (those go in "comment" with verdict "fix").
+- Be conservative: 0-3 items max. Omit if nothing meaningful.
+- Each item needs "adopt" (true/false). Set adopt=false with a "reason" if the suggestion is debatable.
+- "assignee" hint: "kokuyou" (backend/arch), "hisui" (research/docs), "kohaku" (product/UX), or "" (let system decide).
+- "type": one of "fix", "refactor", "feat", "chore".
+- "priority": one of "low", "normal", "high".
+
 Reply with ONLY a JSON object:
-{"verdict":"approve","comment":"brief summary"}
-{"verdict":"fix","comment":"specific issues the agent must fix (be actionable)"}
-{"verdict":"escalate","comment":"why human judgment is needed (be specific)"}`,
+{"verdict":"approve","comment":"brief summary","actionable_items":[{"action":"description","type":"chore","priority":"low","adopt":true,"reason":"","assignee":"kokuyou"}]}
+{"verdict":"fix","comment":"specific issues the agent must fix","actionable_items":[]}
+{"verdict":"escalate","comment":"why human judgment is needed","actionable_items":[]}`,
 		truncate(originalPrompt, 2000),
 		agentRole,
 		truncate(output, 6000),
@@ -1181,23 +1244,27 @@ Reply with ONLY a JSON object:
 	end := strings.LastIndex(result.Output, "}")
 	if start >= 0 && end > start {
 		var parsed struct {
-			Verdict string `json:"verdict"`
-			Comment string `json:"comment"`
-			OK      bool   `json:"ok"`
+			Verdict         string                 `json:"verdict"`
+			Comment         string                 `json:"comment"`
+			OK              bool                   `json:"ok"`
+			ActionableItems []reviewActionableItem `json:"actionable_items"`
 		}
 		if json.Unmarshal([]byte(result.Output[start:end+1]), &parsed) == nil {
+			mkResult := func(v reviewVerdict) reviewResult {
+				return reviewResult{Verdict: v, Comment: parsed.Comment, CostUSD: result.CostUSD, ActionableItems: parsed.ActionableItems}
+			}
 			switch parsed.Verdict {
 			case "approve":
-				return reviewResult{Verdict: reviewApprove, Comment: parsed.Comment, CostUSD: result.CostUSD}
+				return mkResult(reviewApprove)
 			case "fix":
-				return reviewResult{Verdict: reviewFix, Comment: parsed.Comment, CostUSD: result.CostUSD}
+				return mkResult(reviewFix)
 			case "escalate":
-				return reviewResult{Verdict: reviewEscalate, Comment: parsed.Comment, CostUSD: result.CostUSD}
+				return mkResult(reviewEscalate)
 			default:
 				if parsed.OK {
-					return reviewResult{Verdict: reviewApprove, Comment: parsed.Comment, CostUSD: result.CostUSD}
+					return mkResult(reviewApprove)
 				}
-				return reviewResult{Verdict: reviewFix, Comment: parsed.Comment, CostUSD: result.CostUSD}
+				return mkResult(reviewFix)
 			}
 		}
 	}

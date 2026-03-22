@@ -15,6 +15,7 @@ type AppConfig struct {
 	MaxSkillsPerTask int
 	SkillsMax        int
 	Browser          BrowserRelay
+	NotifyFn         func(string) // optional: called after scan if findings warrant notification
 }
 
 func (c *AppConfig) maxSkillsPerTaskOrDefault() int {

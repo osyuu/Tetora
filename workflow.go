@@ -431,6 +431,7 @@ func (e *workflowExecutor) executeDAG(ctx context.Context) error {
 								StepID:     id,
 								Status:     "error",
 								Error:      fmt.Sprintf("panic: %v", r),
+								StartedAt:  time.Now().Format(time.RFC3339),
 								FinishedAt: time.Now().Format(time.RFC3339),
 							},
 						}
@@ -447,6 +448,11 @@ func (e *workflowExecutor) executeDAG(ctx context.Context) error {
 
 			e.mu.Lock()
 			sr := e.run.StepResults[msg.id]
+			if sr == nil {
+				log.Error("workflow: step result not found in map", "stepId", msg.id)
+				sr = &StepRunResult{StepID: msg.id}
+				e.run.StepResults[msg.id] = sr
+			}
 			sr.Status = msg.result.Status
 			sr.Output = msg.result.Output
 			sr.Error = msg.result.Error
@@ -939,6 +945,14 @@ func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowSt
 
 	task := buildStepTask(step, wCtx, e.workflow.Name)
 	fillDefaults(e.cfg, &task)
+
+	if task.Model == "" {
+		log.Error("workflow dispatch: model still empty after defaults",
+			"workflow", e.workflow.Name, "step", step.ID, "agent", task.Agent)
+		result.Status = "error"
+		result.Error = "model is required but not configured"
+		return
+	}
 
 	// Override workdir with worktree path when isolation is active.
 	if e.worktreeDir != "" {

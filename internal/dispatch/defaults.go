@@ -12,6 +12,9 @@ import (
 	"tetora/internal/trace"
 )
 
+// DefaultFallbackModel is the model used when no model is configured anywhere.
+const DefaultFallbackModel = "claude-sonnet-4-6"
+
 // FillDefaults populates empty Task fields with sensible defaults from config.
 func FillDefaults(cfg *config.Config, t *Task) {
 	if t.ID == "" {
@@ -57,6 +60,12 @@ func FillDefaults(cfg *config.Config, t *Task) {
 	}
 	// Apply agent-specific overrides.
 	ApplyAgentDefaults(cfg, t)
+
+	// Final safety fallback: model must never be empty.
+	if t.Model == "" {
+		log.Warn("task model empty after defaults, falling back to sonnet", "agent", t.Agent)
+		t.Model = DefaultFallbackModel
+	}
 }
 
 // ApplyAgentDefaults applies agent-specific model and permission overrides to a task,

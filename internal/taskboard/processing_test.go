@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -64,6 +65,17 @@ func newTestDispatcher(t *testing.T, tbCfg config.TaskBoardConfig, deps Dispatch
 // reviewJSON builds a review JSON response string.
 func reviewJSON(verdict, comment string) string {
 	b, _ := json.Marshal(map[string]string{"verdict": verdict, "comment": comment})
+	return string(b)
+}
+
+// reviewJSONWithItems builds a review JSON response with actionable items.
+func reviewJSONWithItems(verdict, comment string, items []reviewActionableItem) string {
+	payload := struct {
+		Verdict         string                 `json:"verdict"`
+		Comment         string                 `json:"comment"`
+		ActionableItems []reviewActionableItem `json:"actionable_items"`
+	}{verdict, comment, items}
+	b, _ := json.Marshal(payload)
 	return string(b)
 }
 
@@ -503,4 +515,233 @@ func TestThoroughReview_EmptyCompletionContext(t *testing.T) {
 	if rv.Verdict != reviewEscalate {
 		t.Errorf("expected reviewEscalate, got %q", rv.Verdict)
 	}
+}
+
+// =============================================================================
+// Section: Review actionable items tests
+// =============================================================================
+
+func TestThoroughReview_ActionableItemsParsed(t *testing.T) {
+	items := []reviewActionableItem{
+		{Action: "add unit tests for edge case", Type: "chore", Priority: "normal", Adopt: true, Assignee: "kokuyou"},
+		{Action: "extract helper func", Type: "refactor", Priority: "low", Adopt: false, Reason: "too minor"},
+	}
+	ex := &mockExecutor{
+		results: []dispatch.TaskResult{
+			{Status: "success", Output: reviewJSONWithItems("approve", "looks good", items)},
+		},
+	}
+
+	tbCfg := config.TaskBoardConfig{}
+	d := newTestDispatcher(t, tbCfg, DispatcherDeps{
+		Executor:     ex,
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	ctx := context.Background()
+	rv := d.thoroughReview(ctx, "task", "output", "kokuyou", "ruri", nil)
+
+	if rv.Verdict != reviewApprove {
+		t.Fatalf("expected reviewApprove, got %q", rv.Verdict)
+	}
+	if len(rv.ActionableItems) != 2 {
+		t.Fatalf("expected 2 actionable items, got %d", len(rv.ActionableItems))
+	}
+	if rv.ActionableItems[0].Action != "add unit tests for edge case" {
+		t.Errorf("unexpected action: %s", rv.ActionableItems[0].Action)
+	}
+	if rv.ActionableItems[1].Adopt != false {
+		t.Errorf("expected second item adopt=false")
+	}
+}
+
+func TestThoroughReview_EmptyActionableItems(t *testing.T) {
+	ex := &mockExecutor{
+		results: []dispatch.TaskResult{
+			{Status: "success", Output: reviewJSONWithItems("approve", "all good", nil)},
+		},
+	}
+
+	tbCfg := config.TaskBoardConfig{}
+	d := newTestDispatcher(t, tbCfg, DispatcherDeps{
+		Executor:     ex,
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	rv := d.thoroughReview(context.Background(), "task", "output", "agent", "ruri", nil)
+
+	if rv.Verdict != reviewApprove {
+		t.Fatalf("expected reviewApprove, got %q", rv.Verdict)
+	}
+	if len(rv.ActionableItems) != 0 {
+		t.Errorf("expected 0 actionable items, got %d", len(rv.ActionableItems))
+	}
+}
+
+func TestThoroughReview_OldFormatBackwardCompat(t *testing.T) {
+	// Old format without actionable_items field — should still parse fine.
+	ex := &mockExecutor{
+		results: []dispatch.TaskResult{
+			{Status: "success", Output: reviewJSON("approve", "lgtm")},
+		},
+	}
+
+	tbCfg := config.TaskBoardConfig{}
+	d := newTestDispatcher(t, tbCfg, DispatcherDeps{
+		Executor:     ex,
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	rv := d.thoroughReview(context.Background(), "task", "output", "agent", "ruri", nil)
+
+	if rv.Verdict != reviewApprove {
+		t.Fatalf("expected reviewApprove, got %q", rv.Verdict)
+	}
+	if rv.ActionableItems != nil {
+		t.Errorf("expected nil actionable items for old format, got %v", rv.ActionableItems)
+	}
+}
+
+func TestSpawnReviewSubtasks_AdoptedCreatesTask(t *testing.T) {
+	tbCfg := config.TaskBoardConfig{}
+	d := newTestDispatcher(t, tbCfg, DispatcherDeps{
+		Executor:     &mockExecutor{},
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	// Create a parent task first.
+	parent := TaskBoard{
+		Title:   "parent task",
+		Project: "test-project",
+		Status:  "done",
+	}
+	parent, err := d.engine.CreateTask(parent)
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	items := []reviewActionableItem{
+		{Action: "add error handling to foo()", Type: "fix", Priority: "normal", Adopt: true, Assignee: "kokuyou"},
+	}
+
+	d.spawnReviewSubtasks(parent, items, "ruri")
+
+	// Verify child task was created.
+	children, _ := d.engine.ListTasks("todo", "", "")
+	found := false
+	for _, c := range children {
+		if c.ParentID == parent.ID && c.Title == "add error handling to foo()" {
+			found = true
+			if c.Assignee != "kokuyou" {
+				t.Errorf("expected assignee kokuyou, got %s", c.Assignee)
+			}
+			if c.Priority != "normal" {
+				t.Errorf("expected priority normal, got %s", c.Priority)
+			}
+			if c.Type != "fix" {
+				t.Errorf("expected type fix, got %s", c.Type)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("child task not found in todo list")
+	}
+}
+
+func TestSpawnReviewSubtasks_RejectedOnlyComment(t *testing.T) {
+	tbCfg := config.TaskBoardConfig{}
+	d := newTestDispatcher(t, tbCfg, DispatcherDeps{
+		Executor:     &mockExecutor{},
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	parent := TaskBoard{
+		Title:   "parent task",
+		Project: "test-project",
+		Status:  "done",
+	}
+	parent, err := d.engine.CreateTask(parent)
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	items := []reviewActionableItem{
+		{Action: "refactor X", Type: "refactor", Priority: "low", Adopt: false, Reason: "not worth it"},
+	}
+
+	d.spawnReviewSubtasks(parent, items, "ruri")
+
+	// No child tasks should be created.
+	children, _ := d.engine.ListTasks("todo", "", "")
+	for _, c := range children {
+		if c.ParentID == parent.ID {
+			t.Errorf("unexpected child task created for rejected item: %s", c.Title)
+		}
+	}
+
+	// A rejection comment must be written on the parent task.
+	thread, err := d.engine.GetThread(parent.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	found := false
+	for _, c := range thread {
+		if strings.Contains(c.Content, "Rejected") && strings.Contains(c.Content, "refactor X") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected rejection comment on parent task, got %d comments", len(thread))
+	}
+}
+
+func TestSpawnReviewSubtasks_EmptyItems(t *testing.T) {
+	tbCfg := config.TaskBoardConfig{}
+	d := newTestDispatcher(t, tbCfg, DispatcherDeps{
+		Executor:     &mockExecutor{},
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	parent := TaskBoard{Title: "parent", Status: "done"}
+	parent, _ = d.engine.CreateTask(parent)
+
+	// Should not panic or error with nil/empty items.
+	d.spawnReviewSubtasks(parent, nil, "ruri")
+	d.spawnReviewSubtasks(parent, []reviewActionableItem{}, "ruri")
+}
+
+func TestSpawnReviewSubtasks_DefaultAssigneeAndPriority(t *testing.T) {
+	tbCfg := config.TaskBoardConfig{}
+	tbCfg.AutoDispatch.DefaultAgent = "spinel"
+	d := newTestDispatcher(t, tbCfg, DispatcherDeps{
+		Executor:     &mockExecutor{},
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	parent := TaskBoard{Title: "parent", Project: "proj", Status: "done"}
+	parent, _ = d.engine.CreateTask(parent)
+
+	items := []reviewActionableItem{
+		{Action: "add docs", Type: "", Priority: "", Adopt: true, Assignee: ""},
+	}
+
+	d.spawnReviewSubtasks(parent, items, "ruri")
+
+	children, _ := d.engine.ListTasks("todo", "", "")
+	for _, c := range children {
+		if c.ParentID == parent.ID {
+			if c.Assignee != "spinel" {
+				t.Errorf("expected fallback assignee spinel, got %s", c.Assignee)
+			}
+			if c.Priority != "low" {
+				t.Errorf("expected fallback priority low, got %s", c.Priority)
+			}
+			if c.Type != "chore" {
+				t.Errorf("expected fallback type chore, got %s", c.Type)
+			}
+			return
+		}
+	}
+	t.Errorf("child task not found")
 }

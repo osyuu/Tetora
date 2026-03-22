@@ -201,10 +201,11 @@ type Config struct {
 	DefaultClientID string `json:"defaultClientID,omitempty"`
 
 	// Runtime fields — set after load, not serialized.
-	BaseDir    string            `json:"-"`
-	MCPMu      sync.RWMutex     `json:"-"`
-	MCPPaths   map[string]string `json:"-"`
-	TLSEnabled bool              `json:"-"`
+	BaseDir         string            `json:"-"`
+	MCPMu           sync.RWMutex     `json:"-"`
+	MCPPaths        map[string]string `json:"-"`
+	TLSEnabled      bool              `json:"-"`
+	RuntimeNotifyFn func(string)      `json:"-"` // set at startup for scan notifications
 
 	// Runtime service references — typed as any because the concrete types
 	// are in root (package main). Root code sets these during startup and
