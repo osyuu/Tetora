@@ -1,0 +1,44 @@
+---
+import Base from '../../../layouts/Base.astro';
+import LanguagePicker from '../../../components/LanguagePicker.astro';
+import Footer from '../../../components/Footer.astro';
+import { languages, type Lang } from '../../../i18n/ui';
+import { t } from '../../../i18n/utils';
+import { getCollection } from 'astro:content';
+
+export function getStaticPaths() {
+  return Object.keys(languages).map(lang => ({ params: { lang } }));
+}
+
+const { lang } = Astro.params as { lang: Lang };
+const allTips = await getCollection('tips');
+const tips = allTips
+  .filter(p => p.data.lang === lang)
+  .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime());
+---
+<Base title={`${t(lang, 'nav_tips')} — Tetora`} lang={lang}>
+  <LanguagePicker currentLang={lang} basePath="/tips/" />
+  <nav style="padding:50px 20px 0;max-width:900px;margin:0 auto;font-size:13px;color:var(--muted)">
+    <a href="/" style="color:var(--muted)">&larr; {t(lang, 'nav_home')}</a> / {t(lang, 'nav_tips')}
+  </nav>
+  <div style="max-width:900px;margin:0 auto;padding:48px 20px 40px">
+    <h1 style="font-size:clamp(2rem,5vw,3rem);font-weight:700;letter-spacing:-0.03em;line-height:1.2;margin-bottom:12px">
+      <span class="gradient">{t(lang, 'nav_tips')}</span>
+    </h1>
+    <p style="color:var(--muted);font-size:15px">Quick tips & tricks for getting the most out of Tetora</p>
+  </div>
+  <div class="posts">
+    {tips.map(tip => {
+      const slug = tip.id.replace(`${lang}/`, '');
+      return (
+        <div class="card">
+          <h3><a href={`/${lang}/tips/${slug}/`}>{tip.data.title}</a></h3>
+          <div class="card-meta">{tip.data.date}</div>
+          <p class="card-excerpt">{tip.data.excerpt}</p>
+          <a class="card-read" href={`/${lang}/tips/${slug}/`}>{t(lang, 'read_more')}</a>
+        </div>
+      );
+    })}
+  </div>
+  <Footer />
+</Base>

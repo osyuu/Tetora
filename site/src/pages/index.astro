@@ -1,0 +1,80 @@
+---
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import FeatureCard from '../components/FeatureCard.astro';
+import InstallBox from '../components/InstallBox.astro';
+import DownloadGrid from '../components/DownloadGrid.astro';
+import { ui } from '../i18n/ui';
+import { t } from '../i18n/utils';
+
+const lang = 'en';
+const s = ui[lang];
+---
+<Base title="Tetora — AI Agent Orchestration Platform">
+  <script is:inline>
+    (function () {
+      var supported = ['en','zh-TW','ja','ko','es','fr','de','th','id','fil'];
+      var nav = navigator.language || '';
+      var lang = 'en';
+      if (nav.startsWith('zh')) {
+        lang = 'zh-TW';
+      } else {
+        for (var i = 0; i < supported.length; i++) {
+          if (nav.startsWith(supported[i].split('-')[0])) {
+            lang = supported[i];
+            break;
+          }
+        }
+      }
+      if (lang !== 'en') {
+        window.location.replace('/' + lang + '/');
+      }
+    })();
+  </script>
+  <Header currentLang="en" />
+
+  <div class="hero">
+    <img src="/logo-gem.png" alt="Tetora" class="logo-img" />
+    <h1><span>Tetora</span></h1>
+    <p class="tagline">{s.tagline}</p>
+    <div class="cta-group">
+      <a href="https://github.com/TakumaLee/Tetora" class="btn btn-primary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+      <a href="#download" class="btn btn-secondary">{s.download_btn}</a>
+      <a href="/blog/" class="btn btn-secondary">Blog</a>
+    </div>
+    <InstallBox lang="en" />
+  </div>
+
+  <section>
+    <h2><Fragment set:html={`Why <span>Tetora</span>?`} /></h2>
+    <div class="features">
+      <FeatureCard icon="🔀" title={s.f1_title} description={s.f1_desc} />
+      <FeatureCard icon="📋" title={s.f2_title} description={s.f2_desc} />
+      <FeatureCard icon="🤖" title={s.f3_title} description={s.f3_desc} />
+      <FeatureCard icon="💬" title={s.f4_title} description={s.f4_desc} />
+      <FeatureCard icon="🧠" title={s.f5_title} description={s.f5_desc} />
+      <FeatureCard icon="📦" title={s.f6_title} description={s.f6_desc} />
+    </div>
+  </section>
+
+  <section class="flow">
+    <h2><Fragment set:html={`How it <span>works</span>`} /></h2>
+    <pre><Fragment set:html={`<span>backlog</span> → triage (agent assigns) → <span>todo</span> → auto-dispatch → <span>doing</span>
+    │                                                          │
+    │                                          ┌───────────────┤
+    │                                          ▼               ▼
+    │                                      <span>review</span>        <span>partial-done</span>
+    │                                          │          (resume from
+    │                                          ▼           checkpoint)
+    │                                       <span>done</span>
+    │
+    └── clarify → human replies → re-triage`} /></pre>
+  </section>
+
+  <DownloadGrid lang="en" />
+  <Footer />
+</Base>

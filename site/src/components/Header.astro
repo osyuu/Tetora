@@ -1,0 +1,15 @@
+---
+import { languages, type Lang } from '../i18n/ui';
+interface Props { currentLang?: Lang; }
+const { currentLang = 'en' } = Astro.props;
+---
+<div class="lang-bar">
+  {Object.entries(languages).map(([code, label]) => (
+    <a
+      class:list={['lang-btn', { active: code === currentLang }]}
+      href={code === 'en' ? '/' : `/${code}/`}
+    >
+      {label}
+    </a>
+  ))}
+</div>

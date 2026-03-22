@@ -1,0 +1,26 @@
+---
+import { t } from '../i18n/utils';
+import type { Lang } from '../i18n/ui';
+interface Props { lang: Lang; }
+const { lang } = Astro.props;
+const cmd = 'curl -fsSL https://raw.githubusercontent.com/TakumaLee/Tetora/main/install.sh | bash';
+---
+<div class="install-box" id="install-box">
+  {cmd}
+  <span class="copy-hint" id="copy-hint">{t(lang, 'copy')}</span>
+</div>
+<script is:inline define:vars={{ copiedText: t(lang, 'copied'), copyText: t(lang, 'copy') }}>
+  document.getElementById('install-box').addEventListener('click', function() {
+    var text = 'curl -fsSL https://raw.githubusercontent.com/TakumaLee/Tetora/main/install.sh | bash';
+    navigator.clipboard.writeText(text).then(function() {
+      var el = document.getElementById('install-box');
+      var hint = document.getElementById('copy-hint');
+      el.classList.add('copied');
+      hint.textContent = copiedText;
+      setTimeout(function() {
+        el.classList.remove('copied');
+        hint.textContent = copyText;
+      }, 2000);
+    });
+  });
+</script>

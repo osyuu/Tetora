@@ -1,0 +1,52 @@
+---
+import Base from '../../../layouts/Base.astro';
+import LanguagePicker from '../../../components/LanguagePicker.astro';
+import Footer from '../../../components/Footer.astro';
+import { languages, type Lang } from '../../../i18n/ui';
+import { t } from '../../../i18n/utils';
+import { getCollection } from 'astro:content';
+
+export function getStaticPaths() {
+  return Object.keys(languages).map(lang => ({ params: { lang } }));
+}
+
+const { lang } = Astro.params as { lang: Lang };
+const allPosts = await getCollection('blog');
+const posts = allPosts
+  .filter(p => p.data.lang === lang)
+  .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime());
+
+const tagLabels: Record<string, Record<string, string>> = {
+  'case-study': { 'zh-TW': '案例分析', ja: 'ケーススタディ', en: 'Case Study', ko: '사례 분석' },
+  release: { 'zh-TW': 'Release', ja: 'リリース', en: 'Release', ko: '릴리스' },
+};
+---
+<Base title={`${t(lang, 'hero_blog_title')} — Tetora`} lang={lang}>
+  <LanguagePicker currentLang={lang} basePath="/blog/" />
+  <nav style="padding:50px 20px 0;max-width:900px;margin:0 auto;font-size:13px;color:var(--muted)">
+    <a href="/" style="color:var(--muted)">&larr; {t(lang, 'nav_home')}</a> / {t(lang, 'nav_blog')}
+  </nav>
+  <div style="max-width:900px;margin:0 auto;padding:48px 20px 40px">
+    <h1 style="font-size:clamp(2rem,5vw,3rem);font-weight:700;letter-spacing:-0.03em;line-height:1.2;margin-bottom:12px">
+      <span class="gradient">{t(lang, 'hero_blog_title')}</span>
+    </h1>
+    <p style="color:var(--muted);font-size:15px">{t(lang, 'hero_blog_subtitle')}</p>
+  </div>
+  <div class="posts">
+    {posts.map(post => {
+      const slug = post.id.replace(`${lang}/`, '');
+      const tagClass = post.data.tag === 'case-study' ? 'tag-case-study' : 'tag-release';
+      const tagLabel = tagLabels[post.data.tag]?.[lang] ?? tagLabels[post.data.tag]?.en ?? post.data.tag;
+      return (
+        <div class="card">
+          <span class={`card-tag ${tagClass}`}>{tagLabel}</span>
+          <h3><a href={`/${lang}/blog/${slug}/`}>{post.data.title}</a></h3>
+          <div class="card-meta">{post.data.date} &middot; {post.data.readTime}</div>
+          <p class="card-excerpt">{post.data.excerpt}</p>
+          <a class="card-read" href={`/${lang}/blog/${slug}/`}>{t(lang, 'read_more')}</a>
+        </div>
+      );
+    })}
+  </div>
+  <Footer />
+</Base>

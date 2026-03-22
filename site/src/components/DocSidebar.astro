@@ -1,0 +1,24 @@
+---
+import type { Lang } from '../i18n/ui';
+interface Props { lang: Lang; currentSlug?: string; }
+const { lang, currentSlug } = Astro.props;
+const docPages = [
+  { slug: 'configuration', title: 'Configuration' },
+  { slug: 'workflow', title: 'Workflow' },
+  { slug: 'taskboard', title: 'TaskBoard' },
+  { slug: 'discord-multitasking', title: 'Discord' },
+  { slug: 'hooks', title: 'Hooks' },
+  { slug: 'mcp', title: 'MCP' },
+  { slug: 'troubleshooting', title: 'Troubleshooting' },
+];
+---
+<aside class="doc-sidebar">
+  {docPages.map(page => (
+    <a
+      href={`/${lang}/docs/${page.slug}/`}
+      class:list={[{ active: currentSlug === page.slug }]}
+    >
+      {page.title}
+    </a>
+  ))}
+</aside>
