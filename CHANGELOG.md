@@ -1,3 +1,22 @@
+## [Unreleased]
+
+### Added
+- **Dashboard File Browser**: Full directory browsing with lazy-load expansion, Markdown rendering with View/Edit toggle, 260px sidebar with folder tree
+- **Provider Preset management**: GET/DELETE `/api/config/providers` endpoints, dashboard displays configured providers with masked API keys and Remove buttons, Groq preset added
+- **DangerousOpsConfig**: Pattern-based blocking engine for destructive commands (rm -rf, DROP TABLE, force-push, etc.) in dispatch — configurable allowlist per agent
+- **Self-liveness watchdog**: Supervisor-managed automatic restart when the process becomes unresponsive
+- **Memory temporal decay**: Knowledge entries now have time-based relevance decay, improving retrieval quality for recent context
+- **Multi-tenant dispatch**: `--client` flag for per-client output path isolation; team builder CLI for managing agent configurations
+- **Dashboard Team Builder redesign**: Completely rebuilt UI for team configuration page
+
+### Fixed
+- **Stale hook worker cleanup**: Periodic garbage collection of zombie hook worker processes
+- **Discord proactive delivery**: Implemented Discord channel delivery for proactive notifications; fixed heartbeat and cooldown timer bugs
+- **MCP mock server type mismatch**: Corrected InputSchema type in test fixtures
+- **Budget pause + nil-registry guard**: `cost.SetBudgetPaused` API fix; dispatch no longer panics on nil registry
+
+---
+
 ## [v2.2.1] - 2026-03-19
 
 ### Added

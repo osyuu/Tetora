@@ -1,6 +1,6 @@
 export PATH := /usr/local/Cellar/go/1.26.0/bin:$(PATH)
 
-VERSION  := 2.2.1.7
+VERSION  := 2.2.1.13
 BINARY   := tetora
 INSTALL  := $(HOME)/.tetora/bin
 LDFLAGS  := -s -w -X main.tetoraVersion=$(VERSION)
@@ -86,7 +86,27 @@ install: build
 	'
 
 _bump_check_running_workflows:
-	@RUNS=$$(curl -sf --max-time 3 http://localhost:7777/workflow-runs 2>/dev/null) || true; \
+	@ADDR=$$(python3 -c "import json; c=json.load(open('$(HOME)/.tetora/config.json')); print(c.get('listenAddr','127.0.0.1:8991'))" 2>/dev/null || echo "127.0.0.1:8991"); \
+	HEALTH=$$(curl -sf --max-time 3 "http://$$ADDR/healthz" 2>/dev/null) || true; \
+	if [ -n "$$HEALTH" ]; then \
+		RUNNING=$$(echo "$$HEALTH" | python3 -c \
+			"import json,sys; d=json.load(sys.stdin); r=d.get('dispatch',{}).get('running',0); \
+			tasks=d.get('dispatch',{}).get('tasks') or []; \
+			[print('  ' + t.get('name','?') + ' [' + t.get('agent','?') + ']') for t in tasks]; \
+			sys.exit(1 if r > 0 else 0)" 2>/dev/null); \
+		if [ $$? -ne 0 ]; then \
+			echo ""; \
+			echo "⚠ WARNING: Tasks are currently running:"; \
+			echo "$$RUNNING"; \
+			echo ""; \
+			echo "Bumping now will kill them mid-run."; \
+			echo "  Use 'make bump-force' to proceed anyway."; \
+			echo "  Or wait for them to finish and re-run 'make bump'."; \
+			echo ""; \
+			exit 1; \
+		fi; \
+	fi; \
+	RUNS=$$(curl -sf --max-time 3 "http://$$ADDR/workflow-runs" 2>/dev/null) || true; \
 	if [ -n "$$RUNS" ]; then \
 		RUNNING=$$(echo "$$RUNS" | python3 -c \
 			"import json,sys; runs=[r for r in json.load(sys.stdin) if r.get('status')=='running']; \
@@ -94,7 +114,7 @@ _bump_check_running_workflows:
 			sys.exit(1 if runs else 0)" 2>/dev/null); \
 		if [ $$? -ne 0 ]; then \
 			echo ""; \
-			echo "WARNING: Workflows are currently running:"; \
+			echo "⚠ WARNING: Workflows are currently running:"; \
 			echo "$$RUNNING"; \
 			echo ""; \
 			echo "Bumping now will kill them mid-run."; \
