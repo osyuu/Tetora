@@ -3,7 +3,9 @@ package taskboard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -53,14 +55,63 @@ func (m *mockSkills) MaxInject() int { return 4096 }
 // and returns a Dispatcher ready for testing.
 func newTestDispatcher(t *testing.T, tbCfg config.TaskBoardConfig, deps DispatcherDeps) *Dispatcher {
 	t.Helper()
+	return newTestDispatcherWithConfig(t, tbCfg, &config.Config{}, deps)
+}
+
+// newTestDispatcherWithConfig is like newTestDispatcher but accepts a full Config.
+func newTestDispatcherWithConfig(t *testing.T, tbCfg config.TaskBoardConfig, cfg *config.Config, deps DispatcherDeps) *Dispatcher {
+	t.Helper()
 	dbPath := t.TempDir() + "/test.db"
 	engine := NewEngine(dbPath, tbCfg, nil)
 	if err := engine.InitSchema(); err != nil {
 		t.Fatalf("InitSchema: %v", err)
 	}
-	cfg := &config.Config{}
 	return NewDispatcher(engine, cfg, deps)
 }
+
+// initGitRepo creates a temporary directory initialised as a git repository.
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init", dir},
+		{"git", "-C", dir, "config", "user.email", "test@test.com"},
+		{"git", "-C", dir, "config", "user.name", "Test"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args[1:], err, out)
+		}
+	}
+	return dir
+}
+
+// mockWorktrees implements WorktreeManageable for tests.
+type mockWorktrees struct {
+	createFn func(repoDir, taskID, branch string) (string, error)
+	created  []string
+	removed  []string
+}
+
+func (m *mockWorktrees) Create(repoDir, taskID, branch string) (string, error) {
+	if m.createFn != nil {
+		dir, err := m.createFn(repoDir, taskID, branch)
+		if err == nil && dir != "" {
+			m.created = append(m.created, dir)
+		}
+		return dir, err
+	}
+	dir := "/tmp/wt-" + taskID
+	m.created = append(m.created, dir)
+	return dir, nil
+}
+
+func (m *mockWorktrees) Remove(_, worktreeDir string) error {
+	m.removed = append(m.removed, worktreeDir)
+	return nil
+}
+func (m *mockWorktrees) CommitCount(_ string) int  { return 0 }
+func (m *mockWorktrees) HasChanges(_ string) bool  { return false }
+func (m *mockWorktrees) Merge(_, _, _ string) (string, error) { return "", nil }
 
 // reviewJSON builds a review JSON response string.
 func reviewJSON(verdict, comment string) string {
@@ -120,7 +171,7 @@ func TestDevQALoop_PassFirstAttempt(t *testing.T) {
 		Source: "taskboard",
 	}
 
-	result := d.devQALoop(context.Background(), task, dispTask, false, "")
+	result := d.devQALoop(context.Background(), task, dispTask, false, "", "")
 
 	if !result.QAApproved {
 		t.Errorf("expected QAApproved=true, got false")
@@ -168,7 +219,7 @@ func TestDevQALoop_RetryOnRejection(t *testing.T) {
 		Source: "taskboard",
 	}
 
-	result := d.devQALoop(context.Background(), task, dispTask, false, "")
+	result := d.devQALoop(context.Background(), task, dispTask, false, "", "")
 
 	if !result.QAApproved {
 		t.Errorf("expected QAApproved=true, got false")
@@ -215,7 +266,7 @@ func TestDevQALoop_ExhaustsMaxRetries(t *testing.T) {
 		Source: "taskboard",
 	}
 
-	result := d.devQALoop(context.Background(), task, dispTask, false, "")
+	result := d.devQALoop(context.Background(), task, dispTask, false, "", "")
 
 	if result.QAApproved {
 		t.Errorf("expected QAApproved=false, got true")
@@ -744,4 +795,148 @@ func TestSpawnReviewSubtasks_DefaultAssigneeAndPriority(t *testing.T) {
 		}
 	}
 	t.Errorf("child task not found")
+}
+
+// =============================================================================
+// Worktree gate tests
+// =============================================================================
+
+// taskComments returns all system comments for a task.
+func taskComments(t *testing.T, d *Dispatcher, taskID string) []TaskComment {
+	t.Helper()
+	comments, err := d.engine.GetThread(taskID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	return comments
+}
+
+// hasComment returns true if any comment content contains substr.
+func hasComment(comments []TaskComment, substr string) bool {
+	for _, c := range comments {
+		if strings.Contains(c.Content, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestWorktreeGate_SkippedWhenDisabled verifies that no worktree is created
+// when GitWorktree=false, even when a git repo workdir is provided.
+func TestWorktreeGate_SkippedWhenDisabled(t *testing.T) {
+	repoDir := initGitRepo(t)
+	wt := &mockWorktrees{}
+
+	tbCfg := config.TaskBoardConfig{GitWorktree: false}
+	cfg := &config.Config{WorkspaceDir: repoDir}
+	d := newTestDispatcherWithConfig(t, tbCfg, cfg, DispatcherDeps{
+		Executor:     &mockExecutor{results: []dispatch.TaskResult{{Status: "success", Output: "ok"}}},
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+		Worktrees:    wt,
+	})
+
+	task, err := d.engine.CreateTask(TaskBoard{Title: "gate-disabled", Status: "todo", Assignee: "ruri"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	d.dispatchTask(task)
+
+	if len(wt.created) != 0 {
+		t.Errorf("expected no worktree created, got %v", wt.created)
+	}
+	comments := taskComments(t, d, task.ID)
+	if hasComment(comments, "[worktree] Running in isolated worktree") {
+		t.Errorf("unexpected worktree comment when GitWorktree=false")
+	}
+}
+
+// TestWorktreeGate_SkippedWhenNotGitRepo verifies that no worktree is created
+// when the workdir exists but is not a git repository.
+func TestWorktreeGate_SkippedWhenNotGitRepo(t *testing.T) {
+	nonGitDir := t.TempDir() // plain dir, not a git repo
+	wt := &mockWorktrees{}
+
+	tbCfg := config.TaskBoardConfig{GitWorktree: true}
+	cfg := &config.Config{WorkspaceDir: nonGitDir}
+	d := newTestDispatcherWithConfig(t, tbCfg, cfg, DispatcherDeps{
+		Executor:     &mockExecutor{results: []dispatch.TaskResult{{Status: "success", Output: "ok"}}},
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+		Worktrees:    wt,
+	})
+
+	task, err := d.engine.CreateTask(TaskBoard{Title: "non-git-dir", Status: "todo", Assignee: "ruri"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	d.dispatchTask(task)
+
+	if len(wt.created) != 0 {
+		t.Errorf("expected no worktree for non-git dir, got %v", wt.created)
+	}
+}
+
+// TestWorktreeGate_CreatesWorktreeForGitRepo verifies that a worktree is created
+// and the task comment is written when all gate conditions are met.
+func TestWorktreeGate_CreatesWorktreeForGitRepo(t *testing.T) {
+	repoDir := initGitRepo(t)
+	wt := &mockWorktrees{}
+
+	tbCfg := config.TaskBoardConfig{GitWorktree: true}
+	cfg := &config.Config{WorkspaceDir: repoDir}
+	d := newTestDispatcherWithConfig(t, tbCfg, cfg, DispatcherDeps{
+		Executor:     &mockExecutor{results: []dispatch.TaskResult{{Status: "success", Output: "ok"}}},
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+		Worktrees:    wt,
+	})
+
+	task, err := d.engine.CreateTask(TaskBoard{Title: "worktree-test", Status: "todo", Assignee: "ruri"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	d.dispatchTask(task)
+
+	if len(wt.created) == 0 {
+		t.Error("expected worktree to be created, none found")
+	}
+	comments := taskComments(t, d, task.ID)
+	if !hasComment(comments, "[worktree] Running in isolated worktree") {
+		t.Errorf("expected worktree comment, got: %v", comments)
+	}
+}
+
+// TestWorktreeGate_FallbackOnCreationError verifies that when worktree creation
+// fails, the task continues using the shared workdir and a failure comment is added.
+func TestWorktreeGate_FallbackOnCreationError(t *testing.T) {
+	repoDir := initGitRepo(t)
+	wt := &mockWorktrees{
+		createFn: func(_, _, _ string) (string, error) {
+			return "", errors.New("disk full")
+		},
+	}
+
+	tbCfg := config.TaskBoardConfig{GitWorktree: true}
+	cfg := &config.Config{WorkspaceDir: repoDir}
+	d := newTestDispatcherWithConfig(t, tbCfg, cfg, DispatcherDeps{
+		Executor:     &mockExecutor{results: []dispatch.TaskResult{{Status: "success", Output: "ok"}}},
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+		Worktrees:    wt,
+	})
+
+	task, err := d.engine.CreateTask(TaskBoard{Title: "worktree-fail", Status: "todo", Assignee: "ruri"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	d.dispatchTask(task)
+
+	comments := taskComments(t, d, task.ID)
+	if !hasComment(comments, "Failed to create isolated worktree") {
+		t.Errorf("expected failure comment, got: %v", comments)
+	}
+	if hasComment(comments, "[worktree] Running in isolated worktree") {
+		t.Errorf("unexpected success comment when creation failed")
+	}
 }
