@@ -530,6 +530,16 @@ func CmdInit(deps InitDeps) {
 	fmt.Printf("%s %s\n", L.APITokenLabel, apiToken)
 	fmt.Println(L.APITokenNote)
 
+	// Connection test (warn-only on failure).
+	if selectedPreset != nil {
+		fmt.Printf("  Testing connection to %s...", selectedPreset.DisplayName)
+		if err := provider.TestPresetConnection(*selectedPreset, presetAPIKey, defaultModel); err != nil {
+			fmt.Printf(" \033[33m⚠ %v\033[0m\n", err)
+		} else {
+			fmt.Printf(" \033[32m✓ OK\033[0m\n")
+		}
+	}
+
 	// --- Optional: Create agents ---
 	var createdAgents []string
 	var initDefaultAgent string

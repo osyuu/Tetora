@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -139,4 +140,40 @@ func FetchPresetModels(p Preset) ([]string, error) {
 		}
 	}
 	return models, nil
+}
+
+// TestPresetConnection sends a minimal chat completion request to verify
+// that the provider endpoint is reachable and the API key is accepted.
+// Returns nil on success; the caller should treat errors as warnings.
+func TestPresetConnection(p Preset, apiKey, model string) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	url := p.BaseURL + "/chat/completions"
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`, model)
+
+	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", p.BaseURL, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		if p.Name == "anthropic" {
+			req.Header.Set("x-api-key", apiKey)
+			req.Header.Set("anthropic-version", "2023-06-01")
+		} else {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", p.BaseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, TruncateBytes(respBody, 200))
+	}
+	return nil
 }
