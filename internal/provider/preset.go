@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -143,6 +145,67 @@ func FetchPresetModels(p Preset) ([]string, error) {
 		}
 	}
 	return models, nil
+}
+
+// ValidateCustomURL checks that a user-supplied URL is safe to use as a provider
+// endpoint. It rejects non-http/https schemes and RFC1918/loopback/link-local/
+// cloud-metadata addresses to prevent SSRF.
+func ValidateCustomURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("URL scheme must be http or https, got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("URL must include a host")
+	}
+	// Resolve to IP for range checks.
+	ip := net.ParseIP(host)
+	if ip == nil {
+		addrs, err := net.LookupHost(host)
+		if err != nil || len(addrs) == 0 {
+			return fmt.Errorf("cannot resolve host %q", host)
+		}
+		ip = net.ParseIP(addrs[0])
+	}
+	if ip != nil && isPrivateIP(ip) {
+		return fmt.Errorf("host %q resolves to a private or restricted address", host)
+	}
+	return nil
+}
+
+// privateRanges lists IP blocks forbidden in custom provider URLs.
+var privateRanges = func() []*net.IPNet {
+	cidrs := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"169.254.0.0/16", // link-local / AWS metadata
+		"::1/128",
+		"fc00::/7",
+		"fe80::/10",
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, block, _ := net.ParseCIDR(cidr)
+		if block != nil {
+			nets = append(nets, block)
+		}
+	}
+	return nets
+}()
+
+func isPrivateIP(ip net.IP) bool {
+	for _, block := range privateRanges {
+		if block.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestPresetConnection sends a minimal chat completion request to verify

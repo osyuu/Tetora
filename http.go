@@ -66,6 +66,21 @@ func isValidOutputFilename(name string) bool {
 	return len(name) > 0 && name[0] != '.'
 }
 
+// jsonError writes a JSON-encoded error response. Using json.Marshal to encode
+// the message ensures the output is valid JSON even when the message contains
+// quotes, backslashes, or other characters that would break a raw fmt.Sprintf.
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	b, err := json.Marshal(struct {
+		Error string `json:"error"`
+	}{Error: msg})
+	if err != nil {
+		// Fallback: plain text — should never happen for a string value.
+		http.Error(w, `{"error":"internal error"}`, code)
+		return
+	}
+	http.Error(w, string(b), code)
+}
+
 // authMiddleware checks Bearer token on API endpoints.
 // Skips auth for /healthz, /dashboard, and static assets.
 // If token is empty, auth is disabled (backward compatible).
@@ -1123,6 +1138,8 @@ func startHTTPServer(s *Server) *http.Server {
 			if err := updateSessionStats(cfg.HistoryDB, sessionID, 0, 0, 0, 1); err != nil {
 				log.Warn("update session stats failed", "session", sessionID, "error", err)
 			}
+			// Detect user corrections and record as lessons.
+			go detectAndRecordCorrection(cfg.HistoryDB, cfg.WorkspaceDir, sessionID, sess.Agent, prompt)
 
 			// Update session title on first message.
 			title := prompt
@@ -1578,8 +1595,10 @@ func startHTTPServer(s *Server) *http.Server {
 		},
 		ImportWorkflow: func(body json.RawMessage) (string, int, []string, error) {
 			var pkg struct {
-				TetoraExport string   `json:"tetoraExport"`
-				Workflow     Workflow `json:"workflow"`
+				TetoraExport string          `json:"tetoraExport"`
+				Workflow     Workflow        `json:"workflow"`
+				Skill        *SkillMetadata  `json:"skill"`
+				SkillDoc     string          `json:"skillDoc"`
 			}
 			if err := json.Unmarshal(body, &pkg); err != nil {
 				return "", 0, nil, err
@@ -1587,6 +1606,45 @@ func startHTTPServer(s *Server) *http.Server {
 			if pkg.TetoraExport == "" {
 				return "", 0, []string{"not a valid Tetora export package (missing tetoraExport field)"}, nil
 			}
+
+			// Handle skill-workflow bundles.
+			if pkg.TetoraExport == "skill-workflow/v1" {
+				if pkg.Skill == nil {
+					return "", 0, []string{"skill-workflow/v1 package missing skill field"}, nil
+				}
+				meta := *pkg.Skill
+				if meta.Name == "" {
+					return "", 0, []string{"skill name is required"}, nil
+				}
+				// Save the bundled workflow first.
+				wf := &pkg.Workflow
+				if wf.Name != "" {
+					errs := validateWorkflow(wf)
+					if len(errs) > 0 {
+						return "", 0, errs, nil
+					}
+					if err := saveWorkflow(cfg, wf); err != nil {
+						return "", 0, nil, fmt.Errorf("save workflow failed: %w", err)
+					}
+				}
+				// Create the skill (empty script — workflow type).
+				if err := createSkill(cfg, meta, ""); err != nil {
+					return "", 0, nil, fmt.Errorf("create skill failed: %w", err)
+				}
+				// Write SKILL.md if provided.
+				if pkg.SkillDoc != "" {
+					skillMDPath := filepath.Join(skillsDir(cfg), meta.Name, "SKILL.md")
+					if err := os.WriteFile(skillMDPath, []byte(pkg.SkillDoc), 0o644); err != nil {
+						log.Warn("import: failed to write SKILL.md", "skill", meta.Name, "error", err)
+					}
+				}
+				stepCount := 0
+				if wf := &pkg.Workflow; wf.Name != "" {
+					stepCount = len(wf.Steps)
+				}
+				return meta.Name, stepCount, nil, nil
+			}
+
 			wf := &pkg.Workflow
 			if wf.Name == "" {
 				return "", 0, []string{"workflow name is required"}, nil
@@ -2279,6 +2337,10 @@ func startHTTPServer(s *Server) *http.Server {
 	mux.HandleFunc("/dashboard/sw.js", pwa.HandleServiceWorker(tetoraVersion))
 	mux.HandleFunc("/dashboard/icon.svg", pwa.HandleIcon)
 
+	// Locale API.
+	mux.HandleFunc("/api/locales/", handleLocaleGet)
+	mux.HandleFunc("/api/locales", handleLocalesList)
+
 	// Dashboard.
 	mux.HandleFunc("/dashboard/office-bg.webp", handleOfficeBg)
 	mux.HandleFunc("/dashboard/sprites/", handleSprite)
@@ -2881,7 +2943,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 		entries, total, err := audit.Query(cfg.HistoryDB, limit, offset)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if entries == nil {
@@ -2950,7 +3012,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		audit.Log(cfg.HistoryDB, "data.export", "http", "", clientIP(r))
 		data, err := exportData(cfg)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Write(data)
@@ -2975,7 +3037,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		audit.Log(cfg.HistoryDB, "data.purge", "http", "before="+before, clientIP(r))
 		results, err := purgeDataBefore(cfg, before)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"results": results})
@@ -2993,7 +3055,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		// Create temp backup.
 		tmpFile, err := os.CreateTemp("", "tetora-backup-*.tar.gz")
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"create temp: %v"}`, err), http.StatusInternalServerError)
+			jsonError(w, "create temp: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		tmpPath := tmpFile.Name()
@@ -3001,13 +3063,13 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		defer os.Remove(tmpPath)
 
 		if err := backup.Create(cfg.BaseDir, tmpPath); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"create backup: %v"}`, err), http.StatusInternalServerError)
+			jsonError(w, "create backup: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		data, err := os.ReadFile(tmpPath)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"read backup: %v"}`, err), http.StatusInternalServerError)
+			jsonError(w, "read backup: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -3108,7 +3170,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			}
 			versions, err := version.QueryVersions(cfg.HistoryDB, "config", "config.json", limit)
 			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			if versions == nil {
@@ -3123,7 +3185,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			json.NewDecoder(r.Body).Decode(&req)
 			configPath := filepath.Join(cfg.BaseDir, "config.json")
 			if err := version.SnapshotConfig(cfg.HistoryDB, configPath, "api", req.Reason); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
@@ -3145,7 +3207,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		if r.Method == http.MethodGet && !strings.Contains(path, "/") {
 			ver, err := version.QueryByID(cfg.HistoryDB, path)
 			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
+				jsonError(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			json.NewEncoder(w).Encode(ver)
@@ -3157,7 +3219,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			versionID := strings.TrimSuffix(path, "/restore")
 			configPath := filepath.Join(cfg.BaseDir, "config.json")
 			if _, err := version.RestoreConfig(cfg.HistoryDB, configPath, versionID); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			w.Write([]byte(`{"status":"restored","note":"restart daemon for changes to take effect"}`))
@@ -3173,7 +3235,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			}
 			result, err := version.DiffDetail(cfg.HistoryDB, parts[0], parts[1])
 			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
+				jsonError(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			json.NewEncoder(w).Encode(result)
@@ -3205,7 +3267,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			// List all versioned entities.
 			entities, err := version.QueryAllEntities(cfg.HistoryDB)
 			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			if entities == nil {
@@ -3216,7 +3278,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		}
 		versions, err := version.QueryVersions(cfg.HistoryDB, entityType, entityName, limit)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if versions == nil {
@@ -3267,7 +3329,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				return
 			}
 			if err := s.pluginHost.Start(name); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]any{"status": "started", "name": name})
@@ -3278,7 +3340,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				return
 			}
 			if err := s.pluginHost.Stop(name); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]any{"status": "stopped", "name": name})
@@ -3335,7 +3397,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				audit.Log(cfg.HistoryDB, "skill.approve", "http",
 					fmt.Sprintf("name=%s", name), clientIP(r))
 				if err := approveSkill(cfg, name); err != nil {
-					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+					jsonError(w, err.Error(), http.StatusBadRequest)
 					return
 				}
 				if cfg.HistoryDB != "" {
@@ -3347,7 +3409,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				audit.Log(cfg.HistoryDB, "skill.reject", "http",
 					fmt.Sprintf("name=%s", name), clientIP(r))
 				if err := rejectSkill(cfg, name); err != nil {
-					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+					jsonError(w, err.Error(), http.StatusBadRequest)
 					return
 				}
 				if cfg.HistoryDB != "" {
@@ -3367,7 +3429,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			audit.Log(cfg.HistoryDB, "skill.delete", "http",
 				fmt.Sprintf("name=%s", name), clientIP(r))
 			if err := deleteFileSkill(cfg, name); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
+				jsonError(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
@@ -3394,7 +3456,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		rows, err := db.Query(cfg.HistoryDB,
 			fmt.Sprintf(`SELECT id, skill_name, event_type, task_prompt, role, created_at, status, duration_ms, source, session_id, error_msg FROM skill_usage ORDER BY id DESC LIMIT %d`, limit))
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{
@@ -3635,7 +3697,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			Value any    `json:"value"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -3650,19 +3712,19 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		}
 		kind, ok := allowed[req.Key]
 		if !ok {
-			http.Error(w, fmt.Sprintf(`{"error":"key %q not settable"}`, req.Key), http.StatusBadRequest)
+			jsonError(w, fmt.Sprintf("key %q not settable", req.Key), http.StatusBadRequest)
 			return
 		}
 		// Type-check the value.
 		switch kind {
 		case "bool":
 			if _, ok := req.Value.(bool); !ok {
-				http.Error(w, fmt.Sprintf(`{"error":"key %q requires bool value"}`, req.Key), http.StatusBadRequest)
+				jsonError(w, fmt.Sprintf("key %q requires bool value", req.Key), http.StatusBadRequest)
 				return
 			}
 		case "string":
 			if _, ok := req.Value.(string); !ok {
-				http.Error(w, fmt.Sprintf(`{"error":"key %q requires string value"}`, req.Key), http.StatusBadRequest)
+				jsonError(w, fmt.Sprintf("key %q requires string value", req.Key), http.StatusBadRequest)
 				return
 			}
 		}
@@ -3670,12 +3732,12 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		configPath := findConfigPath()
 		data, err := os.ReadFile(configPath)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		var raw map[string]any
 		if err := json.Unmarshal(data, &raw); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -3692,7 +3754,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			}
 			subMap, ok := sub.(map[string]any)
 			if !ok {
-				http.Error(w, fmt.Sprintf(`{"error":"cannot traverse %q"}`, req.Key), http.StatusBadRequest)
+				jsonError(w, fmt.Sprintf("cannot traverse %q", req.Key), http.StatusBadRequest)
 				return
 			}
 			target = subMap
@@ -3701,11 +3763,11 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 		out, err := json.MarshalIndent(raw, "", "  ")
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if err := os.WriteFile(configPath, append(out, '\n'), 0o644); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -3717,7 +3779,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 		respVal, err := json.Marshal(req.Value)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"marshal: %v"}`, err), http.StatusInternalServerError)
+			jsonError(w, "marshal: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Write([]byte(fmt.Sprintf(`{"status":"ok","key":"%s","value":%s}`, req.Key, respVal)))
@@ -3768,55 +3830,40 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			Model   string `json:"model"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if req.BaseURL == "" || req.Model == "" {
-			http.Error(w, `{"error":"baseUrl and model are required"}`, http.StatusBadRequest)
+		if req.Model == "" {
+			http.Error(w, `{"error":"model is required"}`, http.StatusBadRequest)
 			return
 		}
 
-		// Build a minimal chat completion request to ping the provider.
-		payload := map[string]any{
-			"model": req.Model,
-			"messages": []map[string]string{
-				{"role": "user", "content": "ping"},
-			},
-			"max_tokens": 1,
-		}
-		body, _ := json.Marshal(payload)
-
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			strings.TrimRight(req.BaseURL, "/")+"/chat/completions",
-			strings.NewReader(string(body)))
-		if err != nil {
-			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		if req.APIKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+		// Resolve preset. For known presets, always use the registry BaseURL
+		// (ignoring user-supplied baseUrl) to prevent SSRF. For unknown/custom
+		// types, validate the user-supplied URL before using it.
+		var preset provider.Preset
+		if p, ok := provider.GetPreset(req.Type); ok {
+			preset = p
+		} else {
+			if req.BaseURL == "" {
+				http.Error(w, `{"error":"baseUrl is required for custom provider"}`, http.StatusBadRequest)
+				return
+			}
+			if err := provider.ValidateCustomURL(req.BaseURL); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+				return
+			}
+			preset = provider.Preset{
+				Name:    "custom",
+				BaseURL: strings.TrimRight(req.BaseURL, "/"),
+			}
 		}
 
 		start := time.Now()
-		resp, err := http.DefaultClient.Do(httpReq)
+		err := provider.TestPresetConnection(preset, req.APIKey, req.Model)
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
 			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error(), "latencyMs": latency})
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			respBody, _ := io.ReadAll(resp.Body)
-			errMsg := string(respBody)
-			if len(errMsg) > 300 {
-				errMsg = errMsg[:300]
-			}
-			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errMsg), "latencyMs": latency})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "latencyMs": latency})
@@ -3851,16 +3898,20 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				Config tetoraConfig.ProviderConfig `json:"config"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			if req.Name == "" {
 				http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
 				return
 			}
+			if req.Config.Type == "" {
+				http.Error(w, `{"error":"config.type is required"}`, http.StatusBadRequest)
+				return
+			}
 			configPath := findConfigPath()
 			if err := tetoraConfig.SaveProviders(configPath, req.Name, req.Config); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			signalSelfReload()
@@ -3876,7 +3927,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			}
 			configPath := findConfigPath()
 			if err := tetoraConfig.DeleteProvider(configPath, name); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			signalSelfReload()
@@ -4217,7 +4268,7 @@ func (s *Server) registerPlanReviewRoutes(mux *http.ServeMux) {
 			reviews, err = listRecentPlanReviews(cfg.HistoryDB, 50)
 		}
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if reviews == nil {
@@ -4263,7 +4314,7 @@ func (s *Server) registerPlanReviewRoutes(mux *http.ServeMux) {
 		}
 
 		if err := updatePlanReviewStatus(cfg.HistoryDB, reviewID, status, body.Reviewer, body.Note); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -4539,7 +4590,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				return
 			}
 			if item.Status != "pending" && item.Status != "failed" {
-				http.Error(w, fmt.Sprintf(`{"error":"item status is %q, must be pending or failed"}`, item.Status), http.StatusConflict)
+				jsonError(w, fmt.Sprintf("item status is %q, must be pending or failed", item.Status), http.StatusConflict)
 				return
 			}
 
@@ -4596,7 +4647,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				return
 			}
 			if err := deleteQueueItem(cfg.HistoryDB, id); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			audit.Log(cfg.HistoryDB, "queue.delete", "http", fmt.Sprintf("queueId=%d", id), clientIP(r))
@@ -4634,7 +4685,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 
 		var tasks []Task
 		if err := json.NewDecoder(r.Body).Decode(&tasks); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if len(tasks) == 0 {
@@ -4646,13 +4697,13 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		for i, t := range tasks {
 			// Prompt is required — empty prompt wastes agent time.
 			if strings.TrimSpace(t.Prompt) == "" && strings.TrimSpace(t.Name) == "" {
-				http.Error(w, fmt.Sprintf(`{"error":"task[%d]: prompt is required"}`, i), http.StatusBadRequest)
+				jsonError(w, fmt.Sprintf("task[%d]: prompt is required", i), http.StatusBadRequest)
 				return
 			}
 			// If agent is specified, verify it exists in config.
 			if t.Agent != "" {
 				if _, ok := cfg.Agents[t.Agent]; !ok {
-					http.Error(w, fmt.Sprintf(`{"error":"task[%d]: agent %q not found in config"}`, i, t.Agent), http.StatusBadRequest)
+					jsonError(w, fmt.Sprintf("task[%d]: agent %q not found in config", i, t.Agent), http.StatusBadRequest)
 					return
 				}
 			}
@@ -4859,7 +4910,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			if status != "" {
 				tasks, err := db.GetTasksByStatus(dbPath, status)
 				if err != nil {
-					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+					jsonError(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -4867,7 +4918,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			} else {
 				stats, err := db.GetTaskStats(dbPath)
 				if err != nil {
-					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+					jsonError(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -4881,11 +4932,11 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				Error  string `json:"error"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			if err := db.UpdateTaskStatus(dbPath, body.ID, body.Status, body.Error); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -4936,13 +4987,13 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 
 		// Parse multipart form (max 50MB).
 		if err := r.ParseMultipartForm(50 << 20); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"parse form: %s"}`, err), http.StatusBadRequest)
+			jsonError(w, "parse form: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		file, header, err := r.FormFile("file")
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"no file: %s"}`, err), http.StatusBadRequest)
+			jsonError(w, "no file: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		defer file.Close()
@@ -4950,7 +5001,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		uploadDir := upload.InitDir(cfg.BaseDir)
 		uploaded, err := upload.Save(uploadDir, header.Filename, file, header.Size, "http")
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -4968,7 +5019,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		case "GET":
 			prompts, err := listPrompts(cfg)
 			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			json.NewEncoder(w).Encode(prompts)
@@ -4987,7 +5038,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				return
 			}
 			if err := writePrompt(cfg, body.Name, body.Content); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			audit.Log(cfg.HistoryDB, "prompt.create", "http", body.Name, clientIP(r))
@@ -5011,14 +5062,14 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		case "GET":
 			content, err := readPrompt(cfg, name)
 			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusNotFound)
+				jsonError(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]string{"name": name, "content": content})
 
 		case "DELETE":
 			if err := deletePrompt(cfg, name); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusNotFound)
+				jsonError(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			audit.Log(cfg.HistoryDB, "prompt.delete", "http", name, clientIP(r))
@@ -5038,7 +5089,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		}
 		var tasks []Task
 		if err := json.NewDecoder(r.Body).Decode(&tasks); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		result := estimateTasks(cfg, tasks)
@@ -5101,7 +5152,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		case "retry":
 			result, err := retryTask(r.Context(), cfg, taskID, actionState, actionSem, actionChildSem)
 			if err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+				jsonError(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			audit.Log(actionAuditDB, "task.retry", "http",
@@ -5115,7 +5166,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				if strings.Contains(err.Error(), "not enabled") {
 					status = http.StatusBadRequest
 				}
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
+				jsonError(w, err.Error(), status)
 				return
 			}
 			audit.Log(actionAuditDB, "task.reroute", "http",
