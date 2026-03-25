@@ -3,6 +3,8 @@ package taskboard
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,6 +65,7 @@ type WorkflowRunInfo struct {
 	ID           string
 	WorkflowName string
 	Status       string
+	StartedAt    string
 }
 
 // IsResumable returns true when the run status permits resumption.
@@ -441,43 +444,69 @@ func (d *Dispatcher) ResetStuckDoing() {
 
 		if wfRunID != "" && d.deps.Workflows != nil {
 			wfRun, wfErr := d.deps.Workflows.QueryRun(d.cfg.HistoryDB, wfRunID)
-			if wfErr == nil && (wfRun.Status == "running" || wfRun.Status == "resumed") {
-				if wfRun.Status == "resumed" {
-					newRunID := d.findRunningWorkflowForTask(id)
-					if newRunID != "" {
-						db.Exec(d.engine.dbPath, fmt.Sprintf(
-							`UPDATE tasks SET workflow_run_id = '%s', updated_at = '%s' WHERE id = '%s'`,
-							db.Escape(newRunID),
-							db.Escape(time.Now().UTC().Format(time.RFC3339)),
-							db.Escape(id),
-						))
-						log.Info("taskboard dispatch: task workflow_run_id updated to active run",
-							"id", id, "title", title, "oldRunId", wfRunID[:8], "newRunId", newRunID[:8])
-						continue
+			isRunning := wfErr == nil && (wfRun.Status == "running" || wfRun.Status == "resumed")
+
+			// Zombie detection: if workflow has been "running" for > 2x stuckThreshold,
+			// it's likely dead (process crashed without finalizing). Mark as error.
+			if isRunning {
+				maxRunDuration := threshold * 2
+				isZombie := false
+				if wfRun.StartedAt != "" {
+					if startedAt, parseErr := time.Parse(time.RFC3339, wfRun.StartedAt); parseErr == nil {
+						if time.Since(startedAt) > maxRunDuration {
+							isZombie = true
+							log.Warn("taskboard dispatch: zombie workflow detected, marking as error",
+								"id", id, "title", title, "workflowRunId", wfRunID[:8],
+								"startedAt", wfRun.StartedAt, "maxRunDuration", maxRunDuration)
+							nowISO := time.Now().UTC().Format(time.RFC3339)
+							db.Exec(d.cfg.HistoryDB, fmt.Sprintf(
+								`UPDATE workflow_runs SET status = 'error', error = 'zombie: no progress for %s, auto-terminated', finished_at = '%s' WHERE id = '%s' AND status IN ('running','resumed')`,
+								db.Escape(maxRunDuration.String()), db.Escape(nowISO), db.Escape(wfRunID),
+							))
+						}
 					}
 				}
-				touchSQL := fmt.Sprintf(
-					`UPDATE tasks SET updated_at = '%s' WHERE id = '%s'`,
-					db.Escape(time.Now().UTC().Format(time.RFC3339)),
-					db.Escape(id),
-				)
-				db.Exec(d.engine.dbPath, touchSQL)
-				log.Info("taskboard dispatch: task has running workflow, refreshing timestamp",
-					"id", id, "title", title, "workflowRunId", wfRunID[:8])
-				continue
-			}
-			// Check for an active run even if pointed run is terminal.
-			activeRunID := d.findRunningWorkflowForTask(id)
-			if activeRunID != "" {
-				db.Exec(d.engine.dbPath, fmt.Sprintf(
-					`UPDATE tasks SET workflow_run_id = '%s', updated_at = '%s' WHERE id = '%s'`,
-					db.Escape(activeRunID),
-					db.Escape(time.Now().UTC().Format(time.RFC3339)),
-					db.Escape(id),
-				))
-				log.Info("taskboard dispatch: found active workflow for task, updating link",
-					"id", id, "title", title, "activeRunId", activeRunID[:8])
-				continue
+
+				if !isZombie {
+					if wfRun.Status == "resumed" {
+						newRunID := d.findRunningWorkflowForTask(id)
+						if newRunID != "" {
+							db.Exec(d.engine.dbPath, fmt.Sprintf(
+								`UPDATE tasks SET workflow_run_id = '%s', updated_at = '%s' WHERE id = '%s'`,
+								db.Escape(newRunID),
+								db.Escape(time.Now().UTC().Format(time.RFC3339)),
+								db.Escape(id),
+							))
+							log.Info("taskboard dispatch: task workflow_run_id updated to active run",
+								"id", id, "title", title, "oldRunId", wfRunID[:8], "newRunId", newRunID[:8])
+							continue
+						}
+					}
+					touchSQL := fmt.Sprintf(
+						`UPDATE tasks SET updated_at = '%s' WHERE id = '%s'`,
+						db.Escape(time.Now().UTC().Format(time.RFC3339)),
+						db.Escape(id),
+					)
+					db.Exec(d.engine.dbPath, touchSQL)
+					log.Info("taskboard dispatch: task has running workflow, refreshing timestamp",
+						"id", id, "title", title, "workflowRunId", wfRunID[:8])
+					continue
+				}
+				// Zombie: fall through to task reset.
+			} else {
+				// Check for an active run even if pointed run is terminal.
+				activeRunID := d.findRunningWorkflowForTask(id)
+				if activeRunID != "" {
+					db.Exec(d.engine.dbPath, fmt.Sprintf(
+						`UPDATE tasks SET workflow_run_id = '%s', updated_at = '%s' WHERE id = '%s'`,
+						db.Escape(activeRunID),
+						db.Escape(time.Now().UTC().Format(time.RFC3339)),
+						db.Escape(id),
+					))
+					log.Info("taskboard dispatch: found active workflow for task, updating link",
+						"id", id, "title", title, "activeRunId", activeRunID[:8])
+					continue
+				}
 			}
 		}
 
@@ -886,6 +915,8 @@ func (d *Dispatcher) scanReviews() {
 		reviewer = "ruri"
 	}
 
+	log.Info("scanReviews: found review tasks", "count", len(reviews))
+
 	for _, t := range reviews {
 		if t.Assignee == escalateUser || t.Assignee == "" {
 			continue
@@ -901,20 +932,40 @@ func (d *Dispatcher) scanReviews() {
 			originalPrompt += "\n\n" + t.Description
 		}
 		output := ""
+		diff := ""
 		hasNeedsThought := false
+		var needsThoughtTime time.Time
 		if comments, err := d.engine.GetThread(t.ID); err == nil {
 			for i := len(comments) - 1; i >= 0; i-- {
 				c := comments[i]
-				if c.Author == "system" && strings.Contains(c.Content, "[needs-thought]") {
+				// Only block on [needs-thought] if it's more recent than the latest output.
+				if output == "" && c.Author == "system" && strings.Contains(c.Content, "[needs-thought]") {
 					hasNeedsThought = true
+					if ts, err := time.Parse(time.RFC3339, c.CreatedAt); err == nil {
+						needsThoughtTime = ts
+					}
 				}
 				if output == "" && (c.Type == "log" || c.Type == "") && c.Author != "system" && c.Author != "triage" {
 					output = c.Content
 				}
+				// Pick up the captured diff from the thread.
+				if diff == "" && c.Type == "diff" {
+					diff = c.Content
+				}
 			}
 		}
-		// Skip tasks marked needs-thought — they require human judgment, not re-review.
+
+		// Stale needs-thought auto-approval: if stuck for >24h, auto-approve.
 		if hasNeedsThought {
+			staleThreshold := 24 * time.Hour
+			if !needsThoughtTime.IsZero() && time.Since(needsThoughtTime) > staleThreshold {
+				log.Info("scanReviews: stale needs-thought, auto-approving", "id", t.ID,
+					"age", time.Since(needsThoughtTime).Round(time.Hour))
+				d.engine.AddComment(t.ID, "system",
+					fmt.Sprintf("[auto-review] Stale needs-thought (>%s). Auto-approved.", staleThreshold))
+				d.approveReviewTask(t, reviewer, 0)
+				continue
+			}
 			log.Debug("scanReviews: skipping needs-thought task", "id", t.ID)
 			continue
 		}
@@ -925,20 +976,21 @@ func (d *Dispatcher) scanReviews() {
 
 		d.engine.AddComment(t.ID, "system", fmt.Sprintf("[auto-review] %s reviewing...", reviewer))
 
-		rv := d.thoroughReview(d.ctx, originalPrompt, output, t.Assignee, reviewer, nil)
+		// Include diff context for the reviewer if available.
+		var reviewCtx *string
+		if diff != "" {
+			s := "\n\n## Git Diff (actual code changes)\n```diff\n" + diff + "\n```"
+			reviewCtx = &s
+		}
+
+		rv := d.thoroughReview(d.ctx, originalPrompt, output, t.Assignee, reviewer, reviewCtx)
 
 		switch rv.Verdict {
 		case reviewApprove:
 			log.Info("scanReviews: approved", "id", t.ID, "comment", rv.Comment)
 			d.engine.AddComment(t.ID, reviewer, fmt.Sprintf("[review] Approved: %s", rv.Comment))
-			nowISO := time.Now().UTC().Format(time.RFC3339)
-			sql := fmt.Sprintf(
-				`UPDATE tasks SET status = 'done', completed_at = '%s', updated_at = '%s', cost_usd = cost_usd + %.6f WHERE id = '%s'`,
-				db.Escape(nowISO), db.Escape(nowISO), rv.CostUSD, db.Escape(t.ID),
-			)
-			db.Exec(d.engine.dbPath, sql)
-			d.checkParentRollup(t.ID)
-			d.promoteUnblockedTasks(t.ID)
+			d.spawnReviewSubtasks(t, rv.ActionableItems, reviewer)
+			d.approveReviewTask(t, reviewer, rv.CostUSD)
 
 		case reviewFix:
 			log.Info("scanReviews: fix required, sending back", "id", t.ID, "comment", rv.Comment)
@@ -953,7 +1005,70 @@ func (d *Dispatcher) scanReviews() {
 		case reviewEscalate:
 			log.Info("scanReviews: escalating to user", "id", t.ID, "comment", rv.Comment)
 			d.engine.AddComment(t.ID, reviewer, fmt.Sprintf("[review] Needs human judgment: %s", rv.Comment))
+			d.engine.AddComment(t.ID, "system", "[needs-thought] Escalated by reviewer — needs human judgment")
 			d.engine.UpdateTask(t.ID, map[string]any{"assignee": escalateUser})
 		}
+	}
+}
+
+// approveReviewTask marks a review task as done and merges its worktree if preserved.
+func (d *Dispatcher) approveReviewTask(t TaskBoard, reviewer string, costUSD float64) {
+	nowISO := time.Now().UTC().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`UPDATE tasks SET status = 'done', completed_at = '%s', updated_at = '%s', cost_usd = cost_usd + %.6f WHERE id = '%s'`,
+		db.Escape(nowISO), db.Escape(nowISO), costUSD, db.Escape(t.ID),
+	)
+	db.Exec(d.engine.dbPath, sql)
+
+	// Merge preserved worktree if it exists.
+	d.mergePreservedWorktree(t)
+
+	d.checkParentRollup(t.ID)
+	d.promoteUnblockedTasks(t.ID)
+}
+
+// mergePreservedWorktree merges a worktree that was preserved during review.
+func (d *Dispatcher) mergePreservedWorktree(t TaskBoard) {
+	if d.deps.Worktrees == nil {
+		return
+	}
+
+	// Derive worktree path from convention: runtime/worktrees/{taskID}
+	wtDir := filepath.Join(d.cfg.RuntimeDir, "worktrees", t.ID)
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		return // No preserved worktree
+	}
+
+	// Resolve project workdir.
+	projectWorkdir := d.cfg.WorkspaceDir
+	if t.Project != "" && t.Project != "default" && d.deps.GetProject != nil {
+		if p := d.deps.GetProject(d.cfg.HistoryDB, t.Project); p != nil && p.Workdir != "" {
+			projectWorkdir = p.Workdir
+		}
+	}
+	if projectWorkdir == "" {
+		log.Warn("scanReviews: cannot merge worktree, no project workdir", "task", t.ID)
+		return
+	}
+
+	commitMsg := fmt.Sprintf("[%s] %s", t.ID, t.Title)
+	diffSummary, err := d.deps.Worktrees.Merge(projectWorkdir, wtDir, commitMsg)
+	if err != nil {
+		log.Warn("scanReviews: worktree merge failed", "task", t.ID, "error", err)
+		d.engine.AddComment(t.ID, "system",
+			fmt.Sprintf("[worktree] ⚠️ Post-review merge failed: %v\nBranch preserved: task/%s", err, t.ID))
+		return
+	}
+
+	comment := "[worktree] Post-review: changes merged into main."
+	if diffSummary != "" {
+		comment += "\n```\n" + diffSummary + "\n```"
+	}
+	d.engine.AddComment(t.ID, "system", comment)
+	log.Info("scanReviews: worktree merged after approval", "task", t.ID)
+
+	// Cleanup worktree.
+	if err := d.deps.Worktrees.Remove(projectWorkdir, wtDir); err != nil {
+		log.Warn("scanReviews: worktree cleanup failed", "task", t.ID, "error", err)
 	}
 }

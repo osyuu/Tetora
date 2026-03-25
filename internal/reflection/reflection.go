@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -389,6 +391,57 @@ func QueryTimeSavings(dbPath, month string) ([]TimeSavingsRow, error) {
 		})
 	}
 	return results, nil
+}
+
+// ExtractAutoLesson appends a lesson entry to {workspaceDir}/rules/auto-lessons.md
+// when the reflection score is low (≤ 2) and improvement text is non-empty.
+// Duplicate improvements (matched by first 40 chars) are silently skipped.
+func ExtractAutoLesson(workspaceDir string, ref *Result) error {
+	if ref == nil || ref.Improvement == "" || ref.Score >= 3 {
+		return nil
+	}
+
+	rulesDir := filepath.Join(workspaceDir, "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		return fmt.Errorf("ExtractAutoLesson: mkdir rules: %w", err)
+	}
+
+	autoPath := filepath.Join(rulesDir, "auto-lessons.md")
+
+	// Dedup: check if improvement already present.
+	key := ref.Improvement
+	if len(key) > 40 {
+		key = key[:40]
+	}
+	if existing, err := os.ReadFile(autoPath); err == nil {
+		if strings.Contains(string(existing), key) {
+			return nil
+		}
+	}
+
+	// Build entry.
+	entry := fmt.Sprintf("- [pending] (score=%d, task=%s, agent=%s) %s\n",
+		ref.Score, ref.TaskID, ref.Agent, ref.Improvement)
+
+	// Create or append.
+	f, err := os.OpenFile(autoPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("ExtractAutoLesson: open: %w", err)
+	}
+	defer f.Close()
+
+	// Write header if file is new (size 0).
+	info, _ := f.Stat()
+	if info.Size() == 0 {
+		if _, err := f.WriteString("# Auto-Lessons\n\n"); err != nil {
+			return fmt.Errorf("ExtractAutoLesson: write header: %w", err)
+		}
+	}
+
+	if _, err := f.WriteString(entry); err != nil {
+		return fmt.Errorf("ExtractAutoLesson: write entry: %w", err)
+	}
+	return nil
 }
 
 // --- JSON field helpers (package-local) ---

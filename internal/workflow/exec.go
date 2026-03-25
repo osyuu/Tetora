@@ -524,15 +524,15 @@ func (e *Executor) finalizeRun(dagErr error, startTime time.Time, outerCtx, exec
 		run.Status = "cancelled"
 		run.Error = "workflow cancelled"
 	} else {
-		hasError := false
-		for _, sr := range run.StepResults {
+		var failedSteps []string
+		for id, sr := range run.StepResults {
 			if sr.Status == "error" || sr.Status == "timeout" {
-				hasError = true
-				break
+				failedSteps = append(failedSteps, fmt.Sprintf("%s(%s)", id, sr.Status))
 			}
 		}
-		if hasError {
+		if len(failedSteps) > 0 {
 			run.Status = "error"
+			run.Error = fmt.Sprintf("step failures: %s", strings.Join(failedSteps, ", "))
 		} else {
 			run.Status = "success"
 		}

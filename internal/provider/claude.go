@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"tetora/internal/log"
@@ -48,6 +49,16 @@ func (p *ClaudeProvider) Execute(ctx context.Context, req Request) (*Result, err
 		}
 		cmd.Env = filteredEnv
 	}
+
+	// Kill entire process group on timeout to prevent orphaned child processes.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return os.ErrProcessDone
+	}
+	cmd.WaitDelay = 5 * time.Second
 
 	// Pipe prompt via stdin to avoid OS ARG_MAX limits on long prompts.
 	if req.Prompt != "" {

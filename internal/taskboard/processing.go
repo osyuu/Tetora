@@ -545,6 +545,12 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 		t.Assignee = d.resolveEscalateAssignee()
 	}
 
+	// Capture diff from worktree before review so the reviewer can see actual code changes.
+	var worktreeDiff string
+	if worktreeDir != "" && newStatus == "done" {
+		worktreeDiff = d.captureTaskDiff(t, projectWorkdir, worktreeDir)
+	}
+
 	// Review gate.
 	if newStatus == "done" && !qaApproved && t.Status != "review" {
 		reviewer := d.engine.config.AutoDispatch.ReviewAgent
@@ -554,11 +560,20 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 		log.Info("taskboard dispatch: auto-review starting", "id", t.ID, "reviewer", reviewer)
 		d.engine.AddComment(t.ID, "system", fmt.Sprintf("[auto-review] %s reviewing output...", reviewer))
 
-		// Build completion context for the reviewer when agent has concerns.
+		// Build completion context for the reviewer including diff when available.
 		var completionCtxArg *string
 		if completionStatus == dispatch.StatusDoneWithConcerns && result.Concerns != "" {
 			s := fmt.Sprintf("Agent status: DONE_WITH_CONCERNS\nConcerns: %s", result.Concerns)
 			completionCtxArg = &s
+		}
+		if worktreeDiff != "" {
+			diffCtx := "\n\n## Git Diff (actual code changes)\n```diff\n" + worktreeDiff + "\n```"
+			if completionCtxArg != nil {
+				s := *completionCtxArg + diffCtx
+				completionCtxArg = &s
+			} else {
+				completionCtxArg = &diffCtx
+			}
 		}
 
 		rv := d.thoroughReview(ctx, prompt, result.Output, t.Assignee, reviewer, completionCtxArg)

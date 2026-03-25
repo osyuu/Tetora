@@ -34,6 +34,11 @@ type SkillResult struct {
 	Duration int64  `json:"durationMs"`
 }
 
+// RunWorkflow is an optional callback set by the root package (wire.go) to
+// bridge skill execution into the workflow engine. When nil, workflow-type
+// skills are not supported.
+var RunWorkflow func(ctx context.Context, workflowName string, vars map[string]string, callStack []string) (*SkillResult, error)
+
 // ExecuteSkill runs a skill command and returns the result.
 func ExecuteSkill(ctx context.Context, skill SkillConfig, vars map[string]string) (*SkillResult, error) {
 	timeout, err := time.ParseDuration(skill.Timeout)

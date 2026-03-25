@@ -177,7 +177,7 @@ func (d *Dispatcher) postTaskWorktree(t TaskBoard, projectWorkdir, worktreeDir, 
 	}()
 
 	switch newStatus {
-	case "done", "review":
+	case "done":
 		commitCount := d.deps.Worktrees.CommitCount(worktreeDir)
 		hasChanges := d.deps.Worktrees.HasChanges(worktreeDir)
 
@@ -187,7 +187,7 @@ func (d *Dispatcher) postTaskWorktree(t TaskBoard, projectWorkdir, worktreeDir, 
 			return
 		}
 
-		d.captureTaskDiff(t, projectWorkdir, worktreeDir)
+		// Diff is captured before the review gate in processing.go.
 
 		commitMsg := fmt.Sprintf("[%s] %s", t.ID, t.Title)
 		diffSummary, err := d.deps.Worktrees.Merge(projectWorkdir, worktreeDir, commitMsg)
@@ -209,6 +209,12 @@ func (d *Dispatcher) postTaskWorktree(t TaskBoard, projectWorkdir, worktreeDir, 
 		}
 		d.engine.AddComment(t.ID, "system", comment)
 		log.Info("worktree: merge complete", "task", t.ID)
+
+	case "review":
+		// Preserve worktree for review — merge only after approval.
+		d.engine.AddComment(t.ID, "system",
+			fmt.Sprintf("[worktree] Preserved for review. Branch: task/%s\nPath: %s", t.ID, worktreeDir))
+		log.Info("worktree: preserved for review", "task", t.ID, "path", worktreeDir)
 
 	default: // failed, cancelled
 		mergeOK = true

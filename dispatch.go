@@ -3875,6 +3875,7 @@ func (r *rootWorkflowRunner) QueryRun(dbPath, id string) (taskboard.WorkflowRunI
 		ID:           run.ID,
 		WorkflowName: run.WorkflowName,
 		Status:       run.Status,
+		StartedAt:    run.StartedAt,
 	}, nil
 }
 

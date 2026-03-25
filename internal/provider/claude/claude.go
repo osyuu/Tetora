@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"tetora/internal/log"
@@ -55,6 +56,22 @@ func New(binaryPath string, dockerEnabled bool, buildDockerCmd DockerCmdBuilder,
 
 func (p *Provider) Name() string { return "claude" }
 
+// setProcessGroup puts cmd into its own process group and configures
+// Cancel to kill the entire group (including child processes) when the
+// context expires.  This prevents orphaned claude/node processes from
+// running indefinitely after a timeout.
+func setProcessGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			// Kill the entire process group (negative PID).
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return os.ErrProcessDone
+	}
+	cmd.WaitDelay = 5 * time.Second
+}
+
 func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider.Result, error) {
 	args := BuildArgs(req, req.EventCh != nil)
 
@@ -82,6 +99,7 @@ func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider
 		}
 		cmd.Env = filteredEnv
 	}
+	setProcessGroup(cmd)
 
 	// Pipe prompt via stdin to avoid OS ARG_MAX limits on long prompts.
 	if req.Prompt != "" {
