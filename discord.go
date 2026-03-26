@@ -431,6 +431,12 @@ func (db *DiscordBot) handleMessage(msg discord.Message) {
 		}
 	}
 
+	// !chat lock: skip smart dispatch, route directly to locked agent.
+	if agent := db.getChatLock(msg.ChannelID); agent != "" {
+		db.handleDirectRoute(msg, text, agent)
+		return
+	}
+
 	if db.cfg.SmartDispatch.Enabled {
 		db.handleRoute(msg, text)
 	} else if db.cfg.DefaultAgent != "" {
@@ -478,6 +484,14 @@ func (db *DiscordBot) handleCommand(msg discord.Message, cmdText string) {
 		db.cmdNewSession(msg)
 	case "cancel":
 		db.cmdCancel(msg)
+	case "chat":
+		if args == "" {
+			db.sendMessage(msg.ChannelID, "Usage: `!chat <agent-name>`")
+		} else {
+			db.cmdChat(msg, strings.Fields(args)[0])
+		}
+	case "end":
+		db.cmdEnd(msg)
 	case "ask":
 		if args == "" {
 			db.sendMessage(msg.ChannelID, "Usage: `!ask <prompt>`")
@@ -729,6 +743,8 @@ func (db *DiscordBot) cmdHelp(msg discord.Message) {
 			{Name: "!model [model] [agent]", Value: "Show/switch model"},
 			{Name: "!new", Value: "Start a new session (clear context)"},
 			{Name: "!cancel", Value: "Cancel all running tasks"},
+			{Name: "!chat <agent>", Value: "Lock this channel to an agent (skip dispatch)"},
+			{Name: "!end", Value: "Unlock channel, resume smart dispatch"},
 			{Name: "!ask <prompt>", Value: "Quick question (no routing, no session)"},
 			{Name: "!approve [tool|reset]", Value: "Manage auto-approved tools"},
 			{Name: "!help", Value: "Show this help"},
@@ -987,7 +1003,7 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 	}
 
 	taskStart := time.Now()
-	result := runSingleTask(ctx, db.cfg, task, db.sem, db.childSem, route.Agent)
+	result := runSingleTask(taskCtx, db.cfg, task, db.sem, db.childSem, route.Agent)
 
 	// Stop progress updater and clean up progress message.
 	if progressStopCh != nil {
