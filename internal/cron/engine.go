@@ -697,24 +697,32 @@ func (ce *Engine) tick(ctx context.Context) {
 			if j.runCount > 0 {
 				nowLocal := now.In(j.loc)
 				if j.expr.Matches(nowLocal) {
-					log.WarnCtx(ctx, "cron job skipped: already running max instances",
-						"jobId", j.ID, "name", j.Name,
-						"running", j.runCount, "maxConcurrentRuns", maxRuns)
-					if ce.cfg.HistoryDB != "" {
-						jID, jName, running, maxR := j.ID, j.Name, j.runCount, maxRuns
-						histDB := ce.cfg.HistoryDB
-						go func() {
-							ts := time.Now().UTC().Format(time.RFC3339)
-							_ = history.InsertRun(histDB, history.JobRun{
-								JobID:      jID,
-								Name:       jName,
-								Source:     "cron",
-								StartedAt:  ts,
-								FinishedAt: ts,
-								Status:     "skipped_concurrent_limit",
-								Error:      fmt.Sprintf("already %d instance(s) running (max %d)", running, maxR),
-							})
-						}()
+					// Suppress noise when the job just started this minute.
+					// The 30s ticker can fire twice within the same minute: the first
+					// fires the job, the second sees it running and would record a
+					// spurious skipped_concurrent_limit. Use runStart to detect this.
+					sameMinute := !j.runStart.IsZero() &&
+						j.runStart.In(j.loc).Truncate(time.Minute).Equal(nowLocal.Truncate(time.Minute))
+					if !sameMinute {
+						log.WarnCtx(ctx, "cron job skipped: already running max instances",
+							"jobId", j.ID, "name", j.Name,
+							"running", j.runCount, "maxConcurrentRuns", maxRuns)
+						if ce.cfg.HistoryDB != "" {
+							jID, jName, running, maxR := j.ID, j.Name, j.runCount, maxRuns
+							histDB := ce.cfg.HistoryDB
+							go func() {
+								ts := time.Now().UTC().Format(time.RFC3339)
+								_ = history.InsertRun(histDB, history.JobRun{
+									JobID:      jID,
+									Name:       jName,
+									Source:     "cron",
+									StartedAt:  ts,
+									FinishedAt: ts,
+									Status:     "skipped_concurrent_limit",
+									Error:      fmt.Sprintf("already %d instance(s) running (max %d)", running, maxR),
+								})
+							}()
+						}
 					}
 				}
 			}
