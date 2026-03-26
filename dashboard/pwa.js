@@ -450,6 +450,7 @@ function refreshSettings() {
       renderSettingsSecurity(data.security || {});
       renderSettingsHeartbeat(data.heartbeat || {});
       renderSettingsTaskBoard(data.taskBoard || {});
+      renderSettingsProviders();
       refreshNotificationsTable();
       refreshDiscordSettings();
       refreshHooksStatus();
@@ -457,6 +458,233 @@ function refreshSettings() {
     .catch(function(e) {
       document.getElementById('settings-loading').innerHTML = '<span style="color:var(--red)">Failed to load: ' + e + '</span>';
     });
+}
+
+// --- Provider Management ---
+
+var _providerPresets = [];
+var _selectedPreset = null;
+
+function renderSettingsProviders() {
+  // Fetch presets (for the add modal) and configured providers in parallel
+  Promise.all([
+    fetch(API + '/api/provider-presets').then(function(r){return r.json()}).catch(function(){return [];}),
+    fetch(API + '/api/config/providers').then(function(r){return r.json()}).catch(function(){return [];})
+  ]).then(function(results) {
+    _providerPresets = results[0];
+    var configured = results[1] || [];
+    var el = document.getElementById('providers-list');
+    if (!configured.length) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:13px">No providers configured. Use "+ Add Provider" to set up an LLM provider.</div>';
+      return;
+    }
+    el.innerHTML = '';
+    configured.forEach(function(entry) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)';
+      var info = document.createElement('div');
+      var modelText = entry.config.model ? ' &mdash; ' + entry.config.model : '';
+      var baseUrlText = entry.config.baseUrl ? '<span style="color:var(--muted);font-size:11px"> (' + entry.config.baseUrl + ')</span>' : '';
+      info.innerHTML = '<strong>' + entry.name + '</strong>' + modelText + baseUrlText;
+      var del = document.createElement('button');
+      del.className = 'btn';
+      del.textContent = 'Remove';
+      del.style.cssText = 'font-size:11px;padding:2px 10px;color:var(--red)';
+      del.onclick = (function(name) {
+        return function() {
+          if (!confirm('Remove provider "' + name + '"?')) return;
+          fetch(API + '/api/config/providers?name=' + encodeURIComponent(name), {method: 'DELETE'})
+            .then(function(r){return r.json()})
+            .then(function(d) {
+              if (d.status === 'ok') renderSettingsProviders();
+              else alert('Remove failed: ' + (d.error || 'unknown'));
+            });
+        };
+      })(entry.name);
+      row.appendChild(info);
+      row.appendChild(del);
+      el.appendChild(row);
+    });
+  });
+}
+
+function openAddProviderModal() {
+  document.getElementById('provider-modal').style.display = '';
+  showProviderStep(1);
+  _selectedPreset = null;
+
+  // Fetch presets if not loaded
+  if (_providerPresets.length === 0) {
+    fetch(API + '/api/provider-presets').then(function(r){return r.json()}).then(function(presets) {
+      _providerPresets = presets;
+      renderPresetList(presets);
+    });
+  } else {
+    renderPresetList(_providerPresets);
+  }
+}
+
+function closeProviderModal() {
+  document.getElementById('provider-modal').style.display = 'none';
+}
+
+function renderPresetList(presets) {
+  var el = document.getElementById('provider-preset-list');
+  el.innerHTML = '';
+  presets.forEach(function(p) {
+    var card = document.createElement('button');
+    card.className = 'btn';
+    card.style.cssText = 'text-align:left;padding:12px;display:flex;justify-content:space-between;align-items:center';
+    var status = '';
+    if (p.dynamic && !p.available) {
+      status = '<span style="color:var(--yellow);font-size:11px">offline</span>';
+    }
+    card.innerHTML = '<span><strong>' + p.displayName + '</strong>' +
+      (p.requiresKey ? ' <span style="color:var(--muted);font-size:11px">API key required</span>' : '') +
+      '</span>' + status;
+    card.onclick = function() { selectPreset(p); };
+    el.appendChild(card);
+  });
+}
+
+function selectPreset(preset) {
+  _selectedPreset = preset;
+  // Show/hide baseUrl input for custom provider
+  var urlRow = document.getElementById('provider-baseurl-row');
+  var urlInput = document.getElementById('provider-baseurl');
+  if (preset.name === 'custom') {
+    urlRow.style.display = '';
+    urlInput.value = '';
+  } else {
+    urlRow.style.display = 'none';
+    urlInput.value = preset.baseUrl || '';
+  }
+  if (preset.requiresKey) {
+    showProviderStep(2);
+  } else {
+    showProviderStep(3);
+    populateModelSelect(preset);
+  }
+}
+
+function providerStepBackFromModel() {
+  if (_selectedPreset && _selectedPreset.requiresKey) {
+    showProviderStep(2);
+  } else {
+    showProviderStep(1);
+  }
+}
+
+function showProviderStep(step) {
+  for (var i = 1; i <= 4; i++) {
+    document.getElementById('provider-step-' + i).style.display = i === step ? '' : 'none';
+  }
+}
+
+function providerStepBack(toStep) {
+  showProviderStep(toStep);
+}
+
+function providerStepNext(toStep) {
+  if (toStep === 3) {
+    populateModelSelect(_selectedPreset);
+  }
+  if (toStep === 4) {
+    var model = document.getElementById('provider-model-select').value ||
+                document.getElementById('provider-model-custom').value;
+    var baseUrl = document.getElementById('provider-baseurl').value || _selectedPreset.baseUrl || '';
+    var summaryEl = document.getElementById('provider-test-summary');
+    summaryEl.textContent = '';
+    var nameEl = document.createElement('strong');
+    nameEl.textContent = _selectedPreset.displayName;
+    summaryEl.appendChild(nameEl);
+    summaryEl.appendChild(document.createElement('br'));
+    summaryEl.appendChild(document.createTextNode('Base URL: ' + (baseUrl || '(default)')));
+    summaryEl.appendChild(document.createElement('br'));
+    summaryEl.appendChild(document.createTextNode('Model: ' + (model || '(none selected)')));
+    document.getElementById('provider-test-result').innerHTML = '';
+    document.getElementById('provider-save-btn').disabled = true;
+  }
+  showProviderStep(toStep);
+}
+
+function populateModelSelect(preset) {
+  var sel = document.getElementById('provider-model-select');
+  sel.innerHTML = '<option value="">-- select model --</option>';
+  var models = (preset.fetchedModels && preset.fetchedModels.length > 0) ? preset.fetchedModels : preset.models;
+  (models || []).forEach(function(m) {
+    var opt = document.createElement('option');
+    opt.value = m; opt.textContent = m;
+    sel.appendChild(opt);
+  });
+}
+
+function testProviderConnection() {
+  var btn = document.getElementById('provider-test-btn');
+  var result = document.getElementById('provider-test-result');
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+  result.innerHTML = '<span style="color:var(--muted)">Connecting...</span>';
+
+  var model = document.getElementById('provider-model-select').value ||
+              document.getElementById('provider-model-custom').value;
+  var apiKey = document.getElementById('provider-apikey').value;
+  var baseUrl = document.getElementById('provider-baseurl').value || _selectedPreset.baseUrl || '';
+
+  fetch(API + '/api/provider-test', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      type: _selectedPreset.name === 'custom' ? 'openai-compatible' : _selectedPreset.type,
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      model: model
+    })
+  }).then(function(r){return r.json()}).then(function(d) {
+    btn.disabled = false;
+    btn.textContent = 'Test';
+    if (d.ok) {
+      result.innerHTML = '<span style="color:var(--green)">Connected</span> &middot; ' + d.latencyMs + 'ms';
+      document.getElementById('provider-save-btn').disabled = false;
+    } else {
+      result.innerHTML = '<span style="color:var(--red)">Failed</span>: ' + (d.error || 'unknown error');
+    }
+  }).catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = 'Test';
+    result.innerHTML = '<span style="color:var(--red)">Error</span>: ' + e;
+  });
+}
+
+function saveProvider() {
+  var model = document.getElementById('provider-model-select').value ||
+              document.getElementById('provider-model-custom').value;
+  var apiKey = document.getElementById('provider-apikey').value;
+  var baseUrl = document.getElementById('provider-baseurl').value || _selectedPreset.baseUrl || '';
+  var name = _selectedPreset.name;
+
+  fetch(API + '/api/config/providers', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name: name,
+      config: {
+        type: _selectedPreset.name === 'custom' ? 'openai-compatible' : _selectedPreset.type,
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+        model: model
+      }
+    })
+  }).then(function(r){return r.json()}).then(function(d) {
+    if (d.status === 'ok') {
+      closeProviderModal();
+      refreshSettings();
+    } else {
+      alert('Save failed: ' + (d.error || 'unknown'));
+    }
+  }).catch(function(e) {
+    alert('Save failed: ' + e);
+  });
 }
 
 // --- v3: Claude Code Hooks Settings ---
@@ -1070,50 +1298,141 @@ document.addEventListener('click', function(e) {
 });
 
 // --- Memory Browser ---
-var _memBrowserFiles = [], _memBrowserActive = '';
+var _memBrowserActive = '', _memOpenDirs = new Set(), _memViewMode = 'rendered', _memFileContent = '';
+
 async function loadMemoryBrowser() {
   try {
     var data = await fetchJSON(API + '/api/workspace/files');
-    _memBrowserFiles = data.files || [];
-    renderMemoryTree();
+    var entries = data.entries || [];
+    var tree = document.getElementById('memory-tree');
+    if (!tree) return;
+    tree.innerHTML = '';
+    renderMemoryEntries(entries, tree, 0);
+    if (entries.length === 0) tree.innerHTML = '<div class="search-empty">No workspace files</div>';
   } catch(e) { console.warn('memBrowser: no workspace API'); }
 }
-function renderMemoryTree() {
-  var tree = document.getElementById('memory-tree');
-  if (!tree) return;
-  var byFolder = {};
-  _memBrowserFiles.forEach(function(f) {
-    if (!byFolder[f.folder]) byFolder[f.folder] = [];
-    byFolder[f.folder].push(f);
+
+function renderMemoryEntries(entries, parentEl, depth) {
+  var depthClass = depth > 0 ? ' memory-tree-indent-' + Math.min(depth, 3) : '';
+  entries.forEach(function(entry) {
+    var el = document.createElement('div');
+    if (entry.isDir) {
+      var isOpen = _memOpenDirs.has(entry.path);
+      el.className = 'memory-tree-dir' + depthClass;
+      el.setAttribute('data-dir', entry.path);
+      el.innerHTML = '<span class="memory-tree-chevron' + (isOpen ? ' open' : '') + '">\u25B6</span> ' + escapeHtml(entry.name);
+      parentEl.appendChild(el);
+      if (isOpen) {
+        var childContainer = document.createElement('div');
+        childContainer.setAttribute('data-children', entry.path);
+        parentEl.appendChild(childContainer);
+        // Load children if open
+        fetchJSON(API + '/api/workspace/files?dir=' + encodeURIComponent(entry.path)).then(function(data) {
+          renderMemoryEntries(data.entries || [], childContainer, depth + 1);
+        });
+      }
+    } else {
+      var active = entry.path === _memBrowserActive ? ' active' : '';
+      el.className = 'memory-tree-item' + depthClass + active;
+      el.setAttribute('data-path', entry.path);
+      el.textContent = entry.name;
+      parentEl.appendChild(el);
+    }
   });
-  var html = '';
-  ['rules','memory','knowledge','skills'].forEach(function(folder) {
-    var files = byFolder[folder] || [];
-    if (files.length === 0) return;
-    html += '<div class="memory-tree-folder">' + folder + ' (' + files.length + ')</div>';
-    files.forEach(function(f) {
-      var active = f.path === _memBrowserActive ? ' active' : '';
-      html += '<div class="memory-tree-item' + active + '" onclick="loadMemoryFile(\'' + f.path.replace(/'/g,"\\'") + '\')">' + f.name + '</div>';
-    });
-  });
-  tree.innerHTML = html || '<div class="search-empty">No workspace files</div>';
 }
+
+function toggleTreeDir(path) {
+  if (_memOpenDirs.has(path)) {
+    _memOpenDirs.delete(path);
+    // Remove child container
+    var children = document.querySelector('[data-children="' + CSS.escape(path) + '"]');
+    if (children) children.remove();
+    // Update chevron
+    var dir = document.querySelector('[data-dir="' + CSS.escape(path) + '"]');
+    if (dir) { var chev = dir.querySelector('.memory-tree-chevron'); if (chev) chev.classList.remove('open'); }
+  } else {
+    _memOpenDirs.add(path);
+    var dirEl = document.querySelector('[data-dir="' + CSS.escape(path) + '"]');
+    if (!dirEl) return;
+    var chev = dirEl.querySelector('.memory-tree-chevron');
+    if (chev) chev.classList.add('open');
+    var childContainer = document.createElement('div');
+    childContainer.setAttribute('data-children', path);
+    dirEl.after(childContainer);
+    fetchJSON(API + '/api/workspace/files?dir=' + encodeURIComponent(path)).then(function(data) {
+      var d = (path.match(/\//g) || []).length + 1;
+      renderMemoryEntries(data.entries || [], childContainer, d);
+    });
+  }
+}
+
 async function loadMemoryFile(path) {
   _memBrowserActive = path;
-  renderMemoryTree();
+  // Update active state in tree
+  var tree = document.getElementById('memory-tree');
+  if (tree) {
+    tree.querySelectorAll('.memory-tree-item.active').forEach(function(el) { el.classList.remove('active'); });
+    var target = tree.querySelector('[data-path="' + CSS.escape(path) + '"]');
+    if (target) target.classList.add('active');
+  }
   var editor = document.getElementById('memory-editor');
   try {
     var data = await fetchJSON(API + '/api/workspace/file?path=' + encodeURIComponent(path));
-    editor.innerHTML = '<div class="memory-meta">' + path + '</div><textarea id="memory-editor-textarea">' + (data.content||'').replace(/</g,'&lt;') + '</textarea><button class="btn btn-add memory-save-btn" onclick="saveMemoryFile()">Save</button>';
+    _memFileContent = data.content || '';
+    _memViewMode = path.endsWith('.md') ? 'rendered' : 'edit';
+    renderMemoryEditor(path);
   } catch(e) { editor.innerHTML = '<div class="search-empty">Failed to load file</div>'; }
 }
+
+function renderMemoryEditor(path) {
+  var editor = document.getElementById('memory-editor');
+  if (!editor) return;
+  var isRendered = _memViewMode === 'rendered';
+  var isMd = path.endsWith('.md');
+  var metaHtml = '<div class="memory-meta"><span>' + escapeHtml(path) + '</span>';
+  if (isMd) {
+    metaHtml += '<div class="memory-view-toggle">' +
+      '<button class="btn-mini' + (isRendered ? ' active' : '') + '" data-view="rendered">View</button>' +
+      '<button class="btn-mini' + (!isRendered ? ' active' : '') + '" data-view="edit">Edit</button>' +
+      '</div>';
+  }
+  metaHtml += '</div>';
+
+  if (isRendered && isMd) {
+    editor.innerHTML = metaHtml + '<div class="memory-rendered">' + renderMarkdown(_memFileContent) + '</div>';
+  } else {
+    editor.innerHTML = metaHtml +
+      '<textarea id="memory-editor-textarea">' + escapeHtml(_memFileContent) + '</textarea>' +
+      '<button class="btn btn-add memory-save-btn" data-action="save">Save</button>';
+  }
+}
+
 async function saveMemoryFile() {
   if (!_memBrowserActive) return;
-  var content = document.getElementById('memory-editor-textarea').value;
+  var ta = document.getElementById('memory-editor-textarea');
+  if (!ta) return;
+  var content = ta.value;
   try {
     await fetch(API + '/api/workspace/file', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:_memBrowserActive, content:content}) });
+    _memFileContent = content;
   } catch(e) { console.warn('save failed', e); }
 }
+
+function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// Event delegation for memory tree and editor
+(function() {
+  document.addEventListener('click', function(e) {
+    var dir = e.target.closest('[data-dir]');
+    if (dir && dir.closest('#memory-tree')) { toggleTreeDir(dir.getAttribute('data-dir')); return; }
+    var file = e.target.closest('[data-path]');
+    if (file && file.closest('#memory-tree')) { loadMemoryFile(file.getAttribute('data-path')); return; }
+    var viewBtn = e.target.closest('[data-view]');
+    if (viewBtn && viewBtn.closest('.memory-view-toggle')) { _memViewMode = viewBtn.getAttribute('data-view'); renderMemoryEditor(_memBrowserActive); return; }
+    var saveBtn = e.target.closest('[data-action="save"]');
+    if (saveBtn && saveBtn.closest('#memory-editor')) { saveMemoryFile(); return; }
+  });
+})();
 
 // --- System Health ---
 function refreshHealth() {

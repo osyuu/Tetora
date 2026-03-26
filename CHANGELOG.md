@@ -1,6 +1,39 @@
 ## [Unreleased]
 
 ### Added
+- **Dashboard File Browser**: Full directory browsing with lazy-load expansion, Markdown rendering with View/Edit toggle, 260px sidebar with folder tree
+- **Provider Preset management**: GET/DELETE `/api/config/providers` endpoints, dashboard displays configured providers with masked API keys and Remove buttons, Groq preset added
+- **DangerousOpsConfig**: Pattern-based blocking engine for destructive commands (rm -rf, DROP TABLE, force-push, etc.) in dispatch — configurable allowlist per agent
+- **Self-liveness watchdog**: Supervisor-managed automatic restart when the process becomes unresponsive
+- **Memory temporal decay**: Knowledge entries now have time-based relevance decay, improving retrieval quality for recent context
+- **Multi-tenant dispatch**: `--client` flag for per-client output path isolation; team builder CLI for managing agent configurations
+- **Dashboard Team Builder redesign**: Completely rebuilt UI for team configuration page
+
+### Fixed
+- **Stale hook worker cleanup**: Periodic garbage collection of zombie hook worker processes
+- **Discord proactive delivery**: Implemented Discord channel delivery for proactive notifications; fixed heartbeat and cooldown timer bugs
+- **MCP mock server type mismatch**: Corrected InputSchema type in test fixtures
+- **Budget pause + nil-registry guard**: `cost.SetBudgetPaused` API fix; dispatch no longer panics on nil registry
+
+---
+
+## [v2.2.1] - 2026-03-19
+
+### Added
+- **Task Detail cancel button**: Cancel running tasks directly from the Task Detail modal (yellow "Cancel" button, visible only when status is "doing")
+- **Workflow progress cancel button**: Cancel running workflow runs from the step progress panel ("Cancel Run" button next to "View Full Run")
+- Cancel buttons auto-hide when workflow completes or status changes away from "doing"
+
+---
+
+## [v2.1.0] - 2026-03-18
+
+### Highlights
+- **Massive codebase consolidation**: 28 root source files → 9 domain files. 111 test files → 22. Cleaner, easier to navigate.
+- **Workflow Engine & Marketplace**: DAG pipeline execution, dynamic model routing, Store tab, Import/Export
+- **Dashboard improvements**: Workflow progress tracking, Capabilities tab, DAG visualization
+
+### Added
 - **Git Workflow Pipeline — configurable branch convention**: Branch naming for agent dispatch is now template-based (`{type}/{agent}-{description}`), configurable via `taskBoard.gitWorkflow` in config
 - **TaskBoard `type` field**: Tasks now have a type (feat/fix/refactor/chore) for branch naming; available in Dashboard create/detail UI, CLI `--type`, and agent tools
 - **Worktree `.tetora-branch` metadata**: Worktrees record their branch name in a metadata file, enabling dynamic branch names instead of hardcoded `task/{taskID}`

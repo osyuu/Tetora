@@ -56,6 +56,56 @@ async function cancelTask(id) {
   }
 }
 
+async function cancelTaskFromDetail() {
+  var taskId = document.getElementById('td-id').value;
+  if (!taskId) return;
+  if (!confirm('Cancel this running task?')) return;
+  try {
+    // Check if there's a running workflow run.
+    var wfEl = document.getElementById('td-wf-progress');
+    var runId = wfEl && wfEl.dataset.runId;
+    if (runId && wfEl.style.display !== 'none') {
+      var resp = await fetch('/workflow-runs/' + runId + '/cancel', { method: 'POST' });
+      if (!resp.ok) {
+        var data = await resp.json().catch(function() { return {}; });
+        toast('Error: ' + (data.error || 'cancel failed'));
+        return;
+      }
+    } else {
+      var resp = await fetch('/cancel/board:' + taskId, { method: 'POST' });
+      if (!resp.ok) {
+        var data = await resp.json().catch(function() { return {}; });
+        toast('Error: ' + (data.error || 'cancel failed'));
+        return;
+      }
+    }
+    toast('Cancelling task...');
+    setTimeout(function() { openTaskDetail(taskId); refreshBoard(); }, 500);
+  } catch(e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+async function cancelWorkflowRun() {
+  var wfEl = document.getElementById('td-wf-progress');
+  var runId = wfEl && wfEl.dataset.runId;
+  if (!runId) return;
+  if (!confirm('Cancel this workflow run?')) return;
+  try {
+    var resp = await fetch('/workflow-runs/' + runId + '/cancel', { method: 'POST' });
+    if (resp.ok) {
+      toast('Cancelling workflow...');
+      var taskId = document.getElementById('td-id').value;
+      if (taskId) setTimeout(function() { openTaskDetail(taskId); refreshBoard(); }, 500);
+    } else {
+      var data = await resp.json().catch(function() { return {}; });
+      toast('Error: ' + (data.error || 'cancel failed'));
+    }
+  } catch(e) {
+    toast('Error: ' + e.message);
+  }
+}
+
 async function cancelDispatch() {
   try {
     await fetch('/cancel', { method: 'POST' });

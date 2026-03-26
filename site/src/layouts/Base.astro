@@ -1,0 +1,43 @@
+---
+import '../styles/global.css';
+interface Props {
+  title: string;
+  description?: string;
+  ogImage?: string;
+  ogUrl?: string;
+  ogType?: string;
+  lang?: string;
+}
+const {
+  title,
+  description = 'Orchestrate AI agents with workflows, taskboards, and multi-agent collaboration.',
+  ogImage = 'https://tetora.dev/banner.png',
+  ogUrl = 'https://tetora.dev',
+  ogType = 'website',
+  lang = 'en',
+} = Astro.props;
+---
+<!DOCTYPE html>
+<html lang={lang}>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{title}</title>
+  <meta name="description" content={description} />
+  <meta property="og:title" content={title} />
+  <meta property="og:description" content={description} />
+  <meta property="og:type" content={ogType} />
+  <meta property="og:url" content={ogUrl} />
+  <meta property="og:image" content={ogImage} />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content={ogImage} />
+  <link rel="icon" href="/logo-gem.png" type="image/png" />
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-X6YR7HG68N"></script>
+  <script is:inline>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-X6YR7HG68N');</script>
+</head>
+<body>
+  <slot />
+</body>
+</html>

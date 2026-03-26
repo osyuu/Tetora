@@ -1,0 +1,152 @@
+package skill
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// SkillConfig defines a named skill (external command).
+type SkillConfig struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Command     string            `json:"command"`             // shell command to execute
+	Args        []string          `json:"args,omitempty"`      // command arguments
+	Env         map[string]string `json:"env,omitempty"`       // additional env vars (supports $ENV_VAR)
+	Matcher     *SkillMatcher     `json:"matcher,omitempty"`   // when to inject this skill (default: always)
+	Example     string            `json:"example,omitempty"`   // usage example for LLM
+	Workdir     string            `json:"workdir,omitempty"`   // working directory
+	Timeout     string            `json:"timeout,omitempty"`   // default "30s"
+	OutputAs    string            `json:"outputAs,omitempty"`  // "text" (default), "json"
+	DocPath     string            `json:"-"`                   // runtime: SKILL.md full path (not serialized)
+	DocSize     int               `json:"-"`                   // runtime: SKILL.md byte size (not serialized)
+}
+
+// SkillResult is the output of a skill execution.
+type SkillResult struct {
+	Name     string `json:"name"`
+	Status   string `json:"status"` // "success", "error", "timeout"
+	Output   string `json:"output"`
+	Error    string `json:"error,omitempty"`
+	Duration int64  `json:"durationMs"`
+}
+
+// RunWorkflow is an optional callback set by the root package (wire.go) to
+// bridge skill execution into the workflow engine. When nil, workflow-type
+// skills are not supported.
+var RunWorkflow func(ctx context.Context, workflowName string, vars map[string]string, callStack []string) (*SkillResult, error)
+
+// ExecuteSkill runs a skill command and returns the result.
+func ExecuteSkill(ctx context.Context, skill SkillConfig, vars map[string]string) (*SkillResult, error) {
+	timeout, err := time.ParseDuration(skill.Timeout)
+	if err != nil || timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	skillCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Expand template vars in command and args.
+	command := ExpandSkillVars(skill.Command, vars)
+	args := make([]string, len(skill.Args))
+	for i, a := range skill.Args {
+		args[i] = ExpandSkillVars(a, vars)
+	}
+
+	// Validate command exists.
+	if _, err := exec.LookPath(command); err != nil {
+		return &SkillResult{
+			Name:   skill.Name,
+			Status: "error",
+			Error:  fmt.Sprintf("command not found: %s", command),
+		}, nil
+	}
+
+	cmd := exec.CommandContext(skillCtx, command, args...)
+	if skill.Workdir != "" {
+		cmd.Dir = ExpandSkillVars(skill.Workdir, vars)
+	}
+
+	// Set environment.
+	cmd.Env = os.Environ()
+	for k, v := range skill.Env {
+		// Resolve $ENV_VAR references first.
+		resolved := resolveEnvRef(v, fmt.Sprintf("skill.%s.env.%s", skill.Name, k))
+		// Then expand template vars.
+		expanded := ExpandSkillVars(resolved, vars)
+		cmd.Env = append(cmd.Env, k+"="+expanded)
+	}
+
+	start := time.Now()
+	output, runErr := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+
+	result := &SkillResult{
+		Name:     skill.Name,
+		Duration: elapsed.Milliseconds(),
+		Output:   string(output),
+	}
+
+	if skillCtx.Err() == context.DeadlineExceeded {
+		result.Status = "timeout"
+		result.Error = fmt.Sprintf("timed out after %v", timeout)
+	} else if runErr != nil {
+		result.Status = "error"
+		result.Error = runErr.Error()
+	} else {
+		result.Status = "success"
+	}
+
+	return result, nil
+}
+
+// ExpandSkillVars replaces {{key}} with values from the vars map.
+func ExpandSkillVars(s string, vars map[string]string) string {
+	for k, v := range vars {
+		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
+	}
+	return s
+}
+
+// ListSkills returns all configured skills (config-based + file-based, merged).
+func ListSkills(cfg *AppConfig) []SkillConfig {
+	configSkills := cfg.Skills
+	if configSkills == nil {
+		configSkills = []SkillConfig{}
+	}
+	fileSkills := LoadFileSkills(cfg)
+	return MergeSkills(configSkills, fileSkills)
+}
+
+// GetSkill returns a skill by name, searching both config and file-based skills.
+func GetSkill(cfg *AppConfig, name string) *SkillConfig {
+	for i, s := range cfg.Skills {
+		if s.Name == name {
+			return &cfg.Skills[i]
+		}
+	}
+	// Also search file-based skills.
+	fileSkills := LoadFileSkills(cfg)
+	for i, s := range fileSkills {
+		if s.Name == name {
+			return &fileSkills[i]
+		}
+	}
+	return nil
+}
+
+// TestSkill runs a skill with a quick timeout to verify it works.
+func TestSkill(ctx context.Context, skill SkillConfig) (*SkillResult, error) {
+	skill.Timeout = "5s"
+	return ExecuteSkill(ctx, skill, nil)
+}
+
+// resolveEnvRef resolves a value that may reference an environment variable.
+// If the value looks like $VARNAME or ${VARNAME}, it is expanded from the OS env.
+// The fieldName is used for logging purposes.
+func resolveEnvRef(value, fieldName string) string {
+	return os.ExpandEnv(value)
+}

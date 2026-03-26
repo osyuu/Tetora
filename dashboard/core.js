@@ -119,7 +119,7 @@ function handleActivityEvent(type, ev) {
       if (data.durationMs) detail += ' in ' + formatDuration(data.durationMs);
       if (data.costUsd) detail += ' &middot; $' + Number(data.costUsd).toFixed(4);
       if (ev.taskId) removeLiveTaskItem(ev.taskId);
-      addNotification('Completed: ' + (data.name || ev.taskId || 'task'), 'success', {tab:'operations',sub:'tasks'});
+      if (data.name || ev.taskId) addNotification('Completed: ' + (data.name || ev.taskId), 'success', {tab:'operations',sub:'tasks'});
       play8BitSound('complete');
       break;
     case 'error':

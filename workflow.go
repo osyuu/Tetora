@@ -1,663 +1,2474 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
-	"os"
+	"net/http"
+	neturl "net/url"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	dtypes "tetora/internal/dispatch"
+	"tetora/internal/db"
+	"tetora/internal/log"
+	"tetora/internal/version"
+	iwf "tetora/internal/workflow"
 )
 
-//go:embed examples/templates/*.json
-var templateFS embed.FS
+// --- Workflow Run Types ---
 
-// --- Workflow Types ---
-
-// Workflow defines a multi-step orchestration pipeline.
-type Workflow struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Steps       []WorkflowStep    `json:"steps"`
-	Variables   map[string]string `json:"variables,omitempty"` // input variables with defaults
-	Timeout     string            `json:"timeout,omitempty"`   // overall workflow timeout, e.g. "30m"
-	OnSuccess   string            `json:"onSuccess,omitempty"` // notification template
-	OnFailure   string            `json:"onFailure,omitempty"` // notification template
-
-	// Git worktree isolation (opt-in). When enabled, creates an isolated worktree
-	// for the entire workflow run. All steps share the same branch.
-	GitWorktree bool   `json:"gitWorktree,omitempty"` // enable worktree isolation
-	Branch      string `json:"branch,omitempty"`      // explicit branch name (auto: "wf/{name}")
-	Workdir     string `json:"workdir,omitempty"`     // repo directory (falls back to cfg.DefaultWorkdir)
+// WorkflowRun tracks a single execution of a workflow.
+type WorkflowRun struct {
+	ID           string                       `json:"id"`
+	WorkflowName string                       `json:"workflowName"`
+	Status       string                       `json:"status"` // "running", "success", "error", "cancelled", "timeout", "resumed"
+	StartedAt    string                       `json:"startedAt"`
+	FinishedAt   string                       `json:"finishedAt,omitempty"`
+	DurationMs   int64                        `json:"durationMs,omitempty"`
+	TotalCost    float64                      `json:"totalCostUsd,omitempty"`
+	Variables    map[string]string            `json:"variables,omitempty"`
+	StepResults  map[string]*StepRunResult    `json:"stepResults"`
+	Error        string                       `json:"error,omitempty"`
+	ResumedFrom  string                       `json:"resumedFrom,omitempty"`
 }
 
-// WorkflowStep is a single step in a workflow.
-type WorkflowStep struct {
-	ID        string   `json:"id"`
-	Type      string   `json:"type,omitempty"`      // "dispatch" (default), "skill", "condition", "parallel"
-	Agent      string   `json:"agent,omitempty"`       // agent role for dispatch steps
-	Prompt    string   `json:"prompt,omitempty"`     // for dispatch steps
-	Skill     string   `json:"skill,omitempty"`      // skill name for skill steps
-	SkillArgs []string `json:"skillArgs,omitempty"`  // skill arguments
-	DependsOn []string `json:"dependsOn,omitempty"`  // step IDs that must complete first
-
-	// Dispatch options.
-	Model          string  `json:"model,omitempty"`
-	Provider       string  `json:"provider,omitempty"`
-	Timeout        string  `json:"timeout,omitempty"` // per-step timeout
-	Budget         float64 `json:"budget,omitempty"`
-	PermissionMode string  `json:"permissionMode,omitempty"`
-
-	// Condition step fields.
-	If   string `json:"if,omitempty"`   // condition expression
-	Then string `json:"then,omitempty"` // step ID to jump to on true
-	Else string `json:"else,omitempty"` // step ID to jump to on false
-
-	// Handoff step fields.
-	HandoffFrom string `json:"handoffFrom,omitempty"` // source step ID whose output becomes context
-
-	// Parallel step fields.
-	Parallel []WorkflowStep `json:"parallel,omitempty"` // sub-steps to run in parallel
-
-	// Failure handling.
-	RetryMax   int    `json:"retryMax,omitempty"`   // max retries on failure
-	RetryDelay string `json:"retryDelay,omitempty"` // delay between retries
-	OnError    string `json:"onError,omitempty"`    // "stop" (default), "skip", "retry"
-
-	// --- P18.3: Workflow Triggers --- New step types.
-	ToolName  string            `json:"toolName,omitempty"`  // for type="tool_call"
-	ToolInput map[string]string `json:"toolInput,omitempty"` // tool input params (supports {{var}} expansion)
-	Delay     string            `json:"delay,omitempty"`     // for type="delay" (e.g. "30s", "5m")
-	NotifyMsg string            `json:"notifyMsg,omitempty"` // for type="notify"
-	NotifyTo  string            `json:"notifyTo,omitempty"`  // notification channel hint
-
-	// External step fields (type="external").
-	ExternalURL         string            `json:"externalUrl,omitempty"`         // POST target URL
-	ExternalHeaders     map[string]string `json:"externalHeaders,omitempty"`     // custom headers (supports template vars)
-	ExternalBody        map[string]string `json:"externalBody,omitempty"`        // request body KV (supports template vars)
-	ExternalRawBody     string            `json:"externalRawBody,omitempty"`     // raw body (XML / custom, mutually exclusive with ExternalBody)
-	ExternalContentType string            `json:"externalContentType,omitempty"` // default: application/json
-	CallbackKey         string            `json:"callbackKey,omitempty"`         // callback matching key (supports template vars)
-	CallbackTimeout     string            `json:"callbackTimeout,omitempty"`     // wait timeout (default 1h, max 30d)
-	CallbackMode        string            `json:"callbackMode,omitempty"`        // "single" (default) or "streaming"
-	CallbackAccumulate  bool              `json:"callbackAccumulate,omitempty"`  // streaming: true=accumulate all results as JSON array
-	CallbackAuth        string            `json:"callbackAuth,omitempty"`        // "bearer" (default), "open", "signature"
-	CallbackContentType string            `json:"callbackContentType,omitempty"` // callback content type, default application/json
-	CallbackResponseMap *ResponseMapping  `json:"callbackResponseMap,omitempty"` // extract status/data from webhook body
-	OnTimeout           string            `json:"onTimeout,omitempty"`           // timeout behavior: stop / skip
+// StepRunResult tracks the execution of one step.
+type StepRunResult struct {
+	StepID     string  `json:"stepId"`
+	Status     string  `json:"status"` // "pending", "running", "success", "error", "skipped", "timeout"
+	Output     string  `json:"output,omitempty"`
+	Error      string  `json:"error,omitempty"`
+	StartedAt  string  `json:"startedAt,omitempty"`
+	FinishedAt string  `json:"finishedAt,omitempty"`
+	DurationMs int64   `json:"durationMs,omitempty"`
+	CostUSD    float64 `json:"costUsd,omitempty"`
+	TaskID     string  `json:"taskId,omitempty"`
+	SessionID  string  `json:"sessionId,omitempty"`
+	Retries    int     `json:"retries,omitempty"`
 }
 
-// ResponseMapping extracts structured data from arbitrary webhook bodies.
-type ResponseMapping struct {
-	StatusPath string `json:"statusPath,omitempty"` // JSONPath-like: "data.object.status"
-	DataPath   string `json:"dataPath,omitempty"`   // JSONPath-like: "data.object"
-	DonePath   string `json:"donePath,omitempty"`   // streaming: field path to check for completion
-	DoneValue  string `json:"doneValue,omitempty"`  // streaming: DonePath value that indicates done
+// --- Workflow Run Mode ---
+
+// WorkflowRunMode controls how a workflow is executed.
+type WorkflowRunMode string
+
+const (
+	// WorkflowModeLive is the default mode: full execution with provider calls and history recording.
+	WorkflowModeLive WorkflowRunMode = "live"
+	// WorkflowModeDryRun skips provider calls and estimates costs instead.
+	WorkflowModeDryRun WorkflowRunMode = "dry-run"
+	// WorkflowModeShadow executes normally but marks runs so they skip task-level history recording.
+	WorkflowModeShadow WorkflowRunMode = "shadow"
+)
+
+// --- Workflow Executor ---
+
+// workflowExecutor holds the state for one workflow execution.
+type workflowExecutor struct {
+	cfg      *Config
+	workflow *Workflow
+	run      *WorkflowRun
+	wCtx     *WorkflowContext
+	state    *dispatchState
+	sem      chan struct{}
+	childSem chan struct{}
+	broker   *sseBroker
+	mode     WorkflowRunMode
+	mu       sync.Mutex
+
+	// Git worktree isolation (populated when workflow.GitWorktree is true).
+	worktreeDir string           // active worktree path (empty = no isolation)
+	repoDir     string           // original repo dir (for merge/cleanup)
+	worktreeMgr *WorktreeManager // worktree manager reference
+
+	// Resume state: non-nil when resuming a previous run. Carries completed step results.
+	resumeState map[string]*StepRunResult
 }
 
-// workflowDir returns the workflows directory under baseDir.
-func workflowDir(cfg *Config) string {
-	return filepath.Join(cfg.baseDir, "workflows")
+// executeWorkflow runs a full workflow and returns the completed run.
+// An optional mode parameter controls execution behavior (default: WorkflowModeLive).
+func executeWorkflow(ctx context.Context, cfg *Config, w *Workflow, vars map[string]string,
+	state *dispatchState, sem, childSem chan struct{}, mode ...WorkflowRunMode) *WorkflowRun {
+
+	runMode := WorkflowModeLive
+	if len(mode) > 0 && mode[0] != "" {
+		runMode = mode[0]
+	}
+
+	runID := newUUID()
+	now := time.Now()
+
+	run := &WorkflowRun{
+		ID:           runID,
+		WorkflowName: w.Name,
+		Status:       "running",
+		StartedAt:    now.Format(time.RFC3339),
+		Variables:    vars,
+		StepResults:  make(map[string]*StepRunResult),
+	}
+
+	// Initialize all step results as pending.
+	for _, s := range w.Steps {
+		run.StepResults[s.ID] = &StepRunResult{
+			StepID: s.ID,
+			Status: "pending",
+		}
+	}
+
+	wCtx := newWorkflowContext(w, vars)
+
+	var broker *sseBroker
+	if state != nil {
+		broker = state.broker
+	}
+
+	exec := &workflowExecutor{
+		cfg:      cfg,
+		workflow: w,
+		run:      run,
+		wCtx:     wCtx,
+		state:    state,
+		sem:      sem,
+		childSem: childSem,
+		broker:   broker,
+		mode:     runMode,
+	}
+
+	execCtx, execCancel := exec.setupExecContext(ctx)
+	defer execCancel()
+
+	// Publish workflow started event.
+	exec.publishEvent("workflow_started", map[string]any{
+		"runId":    runID,
+		"workflow": w.Name,
+		"steps":    len(w.Steps),
+		"stepDefs": buildStepSummaries(w.Steps),
+	})
+
+	// --- Worktree isolation (opt-in) ---
+	if runMode == WorkflowModeLive {
+		exec.setupWorktree()
+	}
+
+	// Record running state to DB so dashboard can see it immediately.
+	recordWorkflowRun(cfg.HistoryDB, run)
+
+	// Execute DAG.
+	err := exec.executeDAG(execCtx)
+
+	// Finalize run.
+	exec.finalizeRun(err, now, ctx, execCtx)
+
+	// Prefix status for non-live modes.
+	switch runMode {
+	case WorkflowModeDryRun:
+		run.Status = "dry-run:" + run.Status
+	case WorkflowModeShadow:
+		run.Status = "shadow:" + run.Status
+	}
+
+	// Record to DB.
+	recordWorkflowRun(cfg.HistoryDB, run)
+
+	if runMode == WorkflowModeLive {
+		if run.Status == "success" {
+			log.InfoCtx(ctx, "workflow completed", "workflow", w.Name, "runID", runID[:8], "status", run.Status, "durationMs", run.DurationMs, "cost", run.TotalCost)
+		} else {
+			log.WarnCtx(ctx, "workflow completed with error", "workflow", w.Name, "runID", runID[:8], "status", run.Status, "durationMs", run.DurationMs, "cost", run.TotalCost)
+		}
+	} else {
+		log.InfoCtx(ctx, "workflow completed", "workflow", w.Name, "runID", runID[:8], "status", run.Status, "mode", string(runMode), "durationMs", run.DurationMs, "cost", run.TotalCost)
+	}
+
+	return run
 }
 
-// ensureWorkflowDir creates the workflows directory if missing.
-func ensureWorkflowDir(cfg *Config) error {
-	return os.MkdirAll(workflowDir(cfg), 0o755)
+// setupExecContext applies workflow-level timeout and registers the canceller.
+// Returns the execution context and a cleanup function that must be deferred.
+func (e *workflowExecutor) setupExecContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	execCtx := ctx
+	var timeoutCancel context.CancelFunc
+	if e.workflow.Timeout != "" {
+		if d, err := time.ParseDuration(e.workflow.Timeout); err == nil {
+			execCtx, timeoutCancel = context.WithTimeout(ctx, d)
+		}
+	}
+	execCtx, cancelRun := context.WithCancel(execCtx)
+	runCancellers.Store(e.run.ID, cancelRun)
+
+	return execCtx, func() {
+		cancelRun()
+		runCancellers.Delete(e.run.ID)
+		if timeoutCancel != nil {
+			timeoutCancel()
+		}
+	}
 }
 
-// --- Load / Save ---
+// setupWorktree creates a git worktree for isolated execution if configured.
+func (e *workflowExecutor) setupWorktree() {
+	w := e.workflow
+	if !w.GitWorktree {
+		return
+	}
+	repoDir := w.Workdir
+	if repoDir == "" {
+		repoDir = e.cfg.DefaultWorkdir
+	}
+	if repoDir == "" || !isGitRepo(repoDir) {
+		return
+	}
+	branch := w.Branch
+	if branch == "" {
+		branch = "wf/" + slugifyBranch(w.Name)
+	}
+	branch = resolveTemplate(branch, e.wCtx)
 
-// loadWorkflow reads a single workflow JSON file.
-func loadWorkflow(path string) (*Workflow, error) {
-	data, err := os.ReadFile(path)
+	wtBaseDir := filepath.Join(e.cfg.RuntimeDir, "worktrees")
+	wm := NewWorktreeManager(wtBaseDir)
+	wtDir, wtErr := wm.Create(repoDir, e.run.ID, branch)
+	if wtErr != nil {
+		log.Warn("workflow worktree: creation failed, continuing without isolation",
+			"workflow", w.Name, "error", wtErr)
+		return
+	}
+	e.worktreeDir = wtDir
+	e.repoDir = repoDir
+	e.worktreeMgr = wm
+	log.Info("workflow worktree: created",
+		"workflow", w.Name, "runID", e.run.ID[:8], "path", wtDir, "branch", branch)
+}
+
+// finalizeRun determines final status, calculates cost, publishes event,
+// and handles worktree merge/cleanup after DAG execution completes.
+func (e *workflowExecutor) finalizeRun(dagErr error, startTime time.Time, outerCtx, execCtx context.Context) {
+	run := e.run
+	run.FinishedAt = time.Now().Format(time.RFC3339)
+	run.DurationMs = time.Since(startTime).Milliseconds()
+
+	// Calculate total cost.
+	for _, sr := range run.StepResults {
+		run.TotalCost += sr.CostUSD
+	}
+
+	// Determine final status.
+	if dagErr != nil {
+		run.Status = "error"
+		run.Error = dagErr.Error()
+	} else if execCtx.Err() == context.DeadlineExceeded {
+		run.Status = "timeout"
+		run.Error = "workflow timeout exceeded"
+	} else if outerCtx.Err() != nil {
+		run.Status = "cancelled"
+		run.Error = "workflow cancelled"
+	} else {
+		hasError := false
+		for _, sr := range run.StepResults {
+			if sr.Status == "error" || sr.Status == "timeout" {
+				hasError = true
+				break
+			}
+		}
+		if hasError {
+			run.Status = "error"
+		} else {
+			run.Status = "success"
+		}
+	}
+
+	// Publish workflow completed event.
+	eventData := map[string]any{
+		"runId":      run.ID,
+		"workflow":   e.workflow.Name,
+		"status":     run.Status,
+		"durationMs": run.DurationMs,
+		"totalCost":  run.TotalCost,
+	}
+	if run.ResumedFrom != "" {
+		eventData["resumedFrom"] = run.ResumedFrom
+	}
+	e.publishEvent("workflow_completed", eventData)
+
+	// Worktree finalization.
+	if e.worktreeDir != "" && e.worktreeMgr != nil {
+		if run.Status == "success" {
+			diffSummary, mergeErr := e.worktreeMgr.MergeBranchOnly(e.repoDir, e.worktreeDir)
+			if mergeErr != nil {
+				log.Warn("workflow worktree: merge failed, keeping for inspection",
+					"workflow", e.workflow.Name, "path", e.worktreeDir, "error", mergeErr)
+			} else {
+				if diffSummary != "" {
+					log.Info("workflow worktree: merged", "workflow", e.workflow.Name, "diff", diffSummary)
+				}
+				e.worktreeMgr.Remove(e.repoDir, e.worktreeDir)
+			}
+		} else {
+			log.Info("workflow worktree: keeping for inspection (workflow failed)",
+				"workflow", e.workflow.Name, "path", e.worktreeDir, "status", run.Status)
+		}
+	}
+}
+
+// executeDAG processes the workflow steps respecting dependencies.
+func (e *workflowExecutor) executeDAG(ctx context.Context) error {
+	steps := e.workflow.Steps
+
+	// Build step map and dependency tracking.
+	stepMap := make(map[string]*WorkflowStep)
+	remaining := make(map[string]int) // step ID → pending dependency count
+	dependents := make(map[string][]string) // step ID → steps that depend on it
+
+	for i := range steps {
+		s := &steps[i]
+		stepMap[s.ID] = s
+		remaining[s.ID] = len(s.DependsOn)
+		for _, dep := range s.DependsOn {
+			dependents[dep] = append(dependents[dep], s.ID)
+		}
+	}
+
+	// Channels for coordination.
+	readyCh := make(chan string, len(steps))
+	doneCh := make(chan stepDoneMsg, len(steps))
+
+	completed := 0
+	total := len(steps)
+	inFlight := 0
+	aborted := false
+
+	if e.resumeState != nil {
+		// Resume mode: adjust dependency counts for already-completed steps.
+		for id, sr := range e.resumeState {
+			if _, exists := stepMap[id]; !exists {
+				continue // step removed from definition
+			}
+			if sr.Status == "success" || sr.Status == "skipped" {
+				completed++
+				for _, dep := range dependents[id] {
+					remaining[dep]--
+				}
+			}
+		}
+		// Replay condition branches: mark unchosen branches as skipped.
+		for i := range steps {
+			s := &steps[i]
+			if stepType(s) == "condition" {
+				if sr, ok := e.resumeState[s.ID]; ok && sr.Status == "success" {
+					skipped := e.replayConditionSkips(s, sr, remaining, dependents)
+					completed += len(skipped)
+				}
+			}
+		}
+		// Seed steps that are ready and not already completed.
+		for id, cnt := range remaining {
+			if cnt == 0 {
+				if sr, ok := e.resumeState[id]; ok && (sr.Status == "success" || sr.Status == "skipped") {
+					continue // already completed
+				}
+				readyCh <- id
+			}
+		}
+	} else {
+		// Normal mode: seed steps with no dependencies.
+		for id, cnt := range remaining {
+			if cnt == 0 {
+				readyCh <- id
+			}
+		}
+	}
+
+	for completed < total {
+		select {
+		case <-ctx.Done():
+			// Mark all pending steps as cancelled.
+			e.mu.Lock()
+			for id, sr := range e.run.StepResults {
+				if sr.Status == "pending" || sr.Status == "running" {
+					e.run.StepResults[id].Status = "cancelled"
+				}
+			}
+			e.mu.Unlock()
+			return ctx.Err()
+
+		case stepID := <-readyCh:
+			if aborted {
+				// Mark as skipped and count as done.
+				e.mu.Lock()
+				e.run.StepResults[stepID].Status = "skipped"
+				e.mu.Unlock()
+				completed++
+				// Propagate to dependents.
+				for _, dep := range dependents[stepID] {
+					remaining[dep]--
+					if remaining[dep] == 0 {
+						readyCh <- dep
+					}
+				}
+				continue
+			}
+
+			// Don't execute steps already marked as skipped by condition handling.
+			e.mu.Lock()
+			skipSr := e.run.StepResults[stepID]
+			isSkipped := skipSr != nil && skipSr.Status == "skipped"
+			e.mu.Unlock()
+			if isSkipped {
+				continue
+			}
+
+			inFlight++
+			go func(id string) {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error("workflow step panic", "step", id, "recover", r)
+						doneCh <- stepDoneMsg{
+							id: id,
+							result: &StepRunResult{
+								StepID:     id,
+								Status:     "error",
+								Error:      fmt.Sprintf("panic: %v", r),
+								StartedAt:  time.Now().Format(time.RFC3339),
+								FinishedAt: time.Now().Format(time.RFC3339),
+							},
+						}
+					}
+				}()
+				step := stepMap[id]
+				result := e.executeStep(ctx, step)
+				doneCh <- stepDoneMsg{id: id, result: result}
+			}(stepID)
+
+		case msg := <-doneCh:
+			inFlight--
+			completed++
+
+			e.mu.Lock()
+			sr := e.run.StepResults[msg.id]
+			if sr == nil {
+				log.Error("workflow: step result not found in map", "stepId", msg.id)
+				sr = &StepRunResult{StepID: msg.id}
+				e.run.StepResults[msg.id] = sr
+			}
+			sr.Status = msg.result.Status
+			sr.Output = msg.result.Output
+			sr.Error = msg.result.Error
+			sr.StartedAt = msg.result.StartedAt
+			sr.FinishedAt = msg.result.FinishedAt
+			sr.DurationMs = msg.result.DurationMs
+			sr.CostUSD = msg.result.CostUSD
+			sr.TaskID = msg.result.TaskID
+			sr.SessionID = msg.result.SessionID
+			sr.Retries = msg.result.Retries
+
+			// Update workflow context with step output.
+			e.wCtx.Steps[msg.id] = &WorkflowStepResult{
+				Output: msg.result.Output,
+				Status: msg.result.Status,
+				Error:  msg.result.Error,
+			}
+			e.mu.Unlock()
+
+			// Check failure strategy.
+			if msg.result.Status != "success" && msg.result.Status != "skipped" {
+				step := stepMap[msg.id]
+				onErr := step.OnError
+				if onErr == "" {
+					onErr = "stop"
+				}
+				if onErr == "stop" {
+					aborted = true
+				}
+				// "skip" and "retry" (already retried by executeStep) just continue.
+			}
+
+			// Handle condition step: may skip dependents.
+			step := stepMap[msg.id]
+			if stepType(step) == "condition" {
+				skippedSteps := e.handleConditionResult(step, msg.result, remaining, dependents, readyCh)
+				// Propagate skipped steps through the DAG so their dependents get unblocked.
+				// Use index-based loop: nested condition branches append to skippedSteps.
+				visited := make(map[string]bool)
+				for i := 0; i < len(skippedSteps); i++ {
+					sid := skippedSteps[i]
+					if visited[sid] {
+						continue
+					}
+					visited[sid] = true
+					completed++
+
+					// If the skipped step is itself a condition, skip BOTH its branches
+					// (since the condition was never evaluated, neither branch should run).
+					if ss, ok := stepMap[sid]; ok && stepType(ss) == "condition" {
+						for _, target := range []string{ss.Then, ss.Else} {
+							if target == "" {
+								continue
+							}
+							e.mu.Lock()
+							if sr, ok := e.run.StepResults[target]; ok && sr.Status == "pending" {
+								sr.Status = "skipped"
+								skippedSteps = append(skippedSteps, target)
+							}
+							e.mu.Unlock()
+						}
+					}
+
+					for _, dep := range dependents[sid] {
+						remaining[dep]--
+						if remaining[dep] == 0 {
+							readyCh <- dep
+						}
+					}
+				}
+				// Fall through to propagate the condition step's own dependents.
+			}
+
+			// Unblock dependents.
+			for _, dep := range dependents[msg.id] {
+				remaining[dep]--
+				if remaining[dep] == 0 {
+					readyCh <- dep
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+type stepDoneMsg struct {
+	id     string
+	result *StepRunResult
+}
+
+// handleConditionResult processes condition branching after evaluation.
+// Returns the list of step IDs that were marked as skipped (for DAG propagation by caller).
+func (e *workflowExecutor) handleConditionResult(step *WorkflowStep, result *StepRunResult,
+	remaining map[string]int, dependents map[string][]string, readyCh chan string) []string {
+
+	// The condition output is "then" or "else" — the chosen branch target.
+	chosenTarget := strings.TrimSpace(result.Output)
+
+	// Unblock dependents normally.
+	for _, dep := range dependents[step.ID] {
+		remaining[dep]--
+		if remaining[dep] == 0 {
+			readyCh <- dep
+		}
+	}
+
+	// Skip the unchosen branch target (mark as skipped if it's not already done).
+	skipTarget := ""
+	if chosenTarget == step.Then && step.Else != "" {
+		skipTarget = step.Else
+	} else if chosenTarget == step.Else && step.Then != "" {
+		skipTarget = step.Then
+	}
+
+	var skipped []string
+	if skipTarget != "" {
+		e.mu.Lock()
+		if sr, ok := e.run.StepResults[skipTarget]; ok && sr.Status == "pending" {
+			sr.Status = "skipped"
+			skipped = append(skipped, skipTarget)
+		}
+		e.mu.Unlock()
+	}
+	return skipped
+}
+
+// replayConditionSkips replays a completed condition step's branch choice without re-executing.
+// It marks the unchosen branch as skipped and adjusts dependency counts.
+func (e *workflowExecutor) replayConditionSkips(step *WorkflowStep, sr *StepRunResult,
+	remaining map[string]int, dependents map[string][]string) []string {
+
+	chosenTarget := strings.TrimSpace(sr.Output)
+	skipTarget := ""
+	if chosenTarget == step.Then && step.Else != "" {
+		skipTarget = step.Else
+	} else if chosenTarget == step.Else && step.Then != "" {
+		skipTarget = step.Then
+	}
+
+	var skipped []string
+	if skipTarget != "" {
+		e.mu.Lock()
+		if existing, ok := e.run.StepResults[skipTarget]; ok && existing.Status == "pending" {
+			existing.Status = "skipped"
+			skipped = append(skipped, skipTarget)
+		}
+		e.mu.Unlock()
+		// Adjust dependency counts for skipped step's dependents.
+		for _, dep := range dependents[skipTarget] {
+			remaining[dep]--
+		}
+	}
+	return skipped
+}
+
+// isResumableStatus returns true if a workflow run status can be resumed.
+func isResumableStatus(status string) bool {
+	switch status {
+	case "error", "cancelled", "timeout":
+		return true
+	}
+	return false
+}
+
+// resumeWorkflow creates a new run that skips already-completed steps from a previous run.
+func resumeWorkflow(ctx context.Context, cfg *Config, originalRunID string,
+	state *dispatchState, sem, childSem chan struct{}) (*WorkflowRun, error) {
+
+	// Load the original run.
+	originalRun, err := queryWorkflowRunByID(cfg.HistoryDB, originalRunID)
 	if err != nil {
-		return nil, fmt.Errorf("read workflow: %w", err)
+		return nil, fmt.Errorf("original run not found: %w", err)
 	}
-	var w Workflow
-	if err := json.Unmarshal(data, &w); err != nil {
-		return nil, fmt.Errorf("parse workflow: %w", err)
+
+	// Validate status is resumable.
+	if !isResumableStatus(originalRun.Status) {
+		return nil, fmt.Errorf("run %s has status %q which is not resumable (must be error/cancelled/timeout)",
+			originalRunID[:8], originalRun.Status)
 	}
-	return &w, nil
+
+	// Load current workflow definition.
+	w, err := loadWorkflowByName(cfg, originalRun.WorkflowName)
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q not found: %w", originalRun.WorkflowName, err)
+	}
+
+	// Create new run.
+	runID := newUUID()
+	now := time.Now()
+	run := &WorkflowRun{
+		ID:           runID,
+		WorkflowName: w.Name,
+		Status:       "running",
+		StartedAt:    now.Format(time.RFC3339),
+		Variables:    originalRun.Variables,
+		StepResults:  make(map[string]*StepRunResult),
+		ResumedFrom:  originalRunID,
+	}
+
+	// Build resume state and initialize step results.
+	resumeState := make(map[string]*StepRunResult)
+	skippedCount := 0
+	pendingCount := 0
+
+	for _, s := range w.Steps {
+		if prevSR, ok := originalRun.StepResults[s.ID]; ok && (prevSR.Status == "success" || prevSR.Status == "skipped") {
+			// Carry over completed/skipped results (shallow copy).
+			copied := *prevSR
+			resumeState[s.ID] = &copied
+			run.StepResults[s.ID] = &copied
+			skippedCount++
+		} else {
+			// Step needs to run (pending, error, running, cancelled, timeout, or new).
+			run.StepResults[s.ID] = &StepRunResult{
+				StepID: s.ID,
+				Status: "pending",
+			}
+			pendingCount++
+		}
+	}
+
+	// Log orphaned steps (in original run but removed from current definition).
+	stepSet := make(map[string]bool, len(w.Steps))
+	for _, s := range w.Steps {
+		stepSet[s.ID] = true
+	}
+	for stepID := range originalRun.StepResults {
+		if !stepSet[stepID] {
+			log.Info("workflow resume: orphaned step (removed from definition)", "step", stepID, "workflow", w.Name)
+		}
+	}
+
+	// Pre-populate WorkflowContext with completed step outputs.
+	wCtx := newWorkflowContext(w, originalRun.Variables)
+	for id, sr := range resumeState {
+		if sr.Status == "success" {
+			wCtx.Steps[id] = &WorkflowStepResult{
+				Output: sr.Output,
+				Status: sr.Status,
+				Error:  sr.Error,
+			}
+		}
+	}
+
+	var broker *sseBroker
+	if state != nil {
+		broker = state.broker
+	}
+
+	exec := &workflowExecutor{
+		cfg:         cfg,
+		workflow:    w,
+		run:         run,
+		wCtx:        wCtx,
+		state:       state,
+		sem:         sem,
+		childSem:    childSem,
+		broker:      broker,
+		mode:        WorkflowModeLive,
+		resumeState: resumeState,
+	}
+
+	// Mark original run as "resumed".
+	if _, err := db.Query(cfg.HistoryDB, fmt.Sprintf(
+		`UPDATE workflow_runs SET status='resumed', error='resumed as %s' WHERE id='%s'`,
+		db.Escape(runID), db.Escape(originalRunID),
+	)); err != nil {
+		log.Warn("resumeWorkflow: failed to mark original as resumed", "error", err)
+	}
+
+	log.Info("workflow resumed", "workflow", w.Name, "originalRunID", originalRunID[:8],
+		"newRunID", runID[:8], "skippedSteps", skippedCount, "pendingSteps", pendingCount)
+
+	execCtx, execCancel := exec.setupExecContext(ctx)
+	defer execCancel()
+
+	// Publish workflow resumed event.
+	exec.publishEvent("workflow_resumed", map[string]any{
+		"runId":        runID,
+		"workflow":     w.Name,
+		"resumedFrom":  originalRunID,
+		"skippedSteps": skippedCount,
+		"pendingSteps": pendingCount,
+	})
+
+	exec.setupWorktree()
+
+	// Record running state.
+	recordWorkflowRun(cfg.HistoryDB, run)
+
+	// Update task's workflowRunId to point to the new run immediately,
+	// so resetStuckDoing() sees the correct (running) run during execution.
+	if taskID := originalRun.Variables["_taskId"]; taskID != "" {
+		tb := newTaskBoardEngine(cfg.HistoryDB, cfg.TaskBoard, cfg.Webhooks)
+		tb.UpdateTask(taskID, map[string]any{"workflowRunId": runID})
+	}
+
+	// Execute DAG.
+	dagErr := exec.executeDAG(execCtx)
+
+	// Finalize run.
+	exec.finalizeRun(dagErr, now, ctx, execCtx)
+
+	// Record final state.
+	recordWorkflowRun(cfg.HistoryDB, run)
+
+	if run.Status == "success" {
+		log.Info("workflow resume completed", "workflow", w.Name, "runID", runID[:8],
+			"status", run.Status, "durationMs", run.DurationMs, "cost", run.TotalCost)
+	} else {
+		log.Warn("workflow resume completed with error", "workflow", w.Name, "runID", runID[:8],
+			"status", run.Status, "durationMs", run.DurationMs, "cost", run.TotalCost)
+	}
+
+	return run, nil
 }
 
-// loadWorkflowByName loads a workflow by name from the workflows directory.
-// Falls back to scanning all files if no {name}.json exists (handles filename != internal name).
-func loadWorkflowByName(cfg *Config, name string) (*Workflow, error) {
-	path := filepath.Join(workflowDir(cfg), name+".json")
-	wf, err := loadWorkflow(path)
-	if err == nil {
-		return wf, nil
+// executeStep runs a single step with retry logic.
+func (e *workflowExecutor) executeStep(ctx context.Context, step *WorkflowStep) *StepRunResult {
+	start := time.Now()
+
+	result := &StepRunResult{
+		StepID:    step.ID,
+		StartedAt: start.Format(time.RFC3339),
 	}
-	// Fallback: scan directory for a workflow with matching internal name.
-	entries, dirErr := os.ReadDir(workflowDir(cfg))
-	if dirErr != nil {
-		return nil, err // return original error
+
+	// Mark as running and checkpoint to DB so dashboard sees it immediately.
+	e.mu.Lock()
+	e.run.StepResults[step.ID].Status = "running"
+	e.run.StepResults[step.ID].StartedAt = start.Format(time.RFC3339)
+	e.mu.Unlock()
+	checkpointRun(e)
+
+	e.publishEvent("step_started", map[string]any{
+		"runId":  e.run.ID,
+		"stepId": step.ID,
+		"type":   stepType(step),
+		"role":   step.Agent,
+	})
+
+	maxRetries := step.RetryMax
+	if step.OnError != "retry" {
+		maxRetries = 0
 	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Retry delay.
+			delay := 5 * time.Second
+			if step.RetryDelay != "" {
+				if d, err := time.ParseDuration(step.RetryDelay); err == nil {
+					delay = d
+				}
+			}
+			select {
+			case <-ctx.Done():
+				result.Status = "cancelled"
+				result.Error = "cancelled during retry wait"
+				result.FinishedAt = time.Now().Format(time.RFC3339)
+				result.DurationMs = time.Since(start).Milliseconds()
+				return result
+			case <-time.After(delay):
+			}
+			result.Retries = attempt
+			log.DebugCtx(ctx, "step retry", "workflow", e.workflow.Name, "step", step.ID, "attempt", attempt+1, "maxRetries", maxRetries+1)
+		}
+
+		e.runStepOnce(ctx, step, result)
+
+		if result.Status == "success" || result.Status == "skipped" {
+			break
+		}
+	}
+
+	result.FinishedAt = time.Now().Format(time.RFC3339)
+	result.DurationMs = time.Since(start).Milliseconds()
+
+	// If still failed after retries and onError is "skip", mark as skipped.
+	if result.Status != "success" && step.OnError == "skip" {
+		result.Status = "skipped"
+	}
+
+	e.publishEvent("step_completed", map[string]any{
+		"runId":      e.run.ID,
+		"stepId":     step.ID,
+		"status":     result.Status,
+		"durationMs": result.DurationMs,
+		"costUsd":    result.CostUSD,
+	})
+
+	// Checkpoint run state to DB after each step for dashboard visibility.
+	checkpointRun(e)
+
+	return result
+}
+
+// runStepOnce executes a step once (no retry logic).
+func (e *workflowExecutor) runStepOnce(ctx context.Context, step *WorkflowStep, result *StepRunResult) {
+	e.mu.Lock()
+	wCtx := e.wCtx
+	e.mu.Unlock()
+
+	st := stepType(step)
+
+	// Dry-run mode: skip actual execution for dispatch/skill/handoff steps.
+	if e.mode == WorkflowModeDryRun {
+		switch st {
+		case "dispatch":
+			e.runDispatchStepDryRun(step, result, wCtx)
+			return
+		case "skill":
+			e.runSkillStepDryRun(step, result)
+			return
+		case "handoff":
+			e.runHandoffStepDryRun(step, result, wCtx)
+			return
+		case "condition":
+			// Conditions evaluate normally in dry-run.
+			e.runConditionStep(step, result, wCtx)
+			return
+		case "parallel":
+			// Parallel steps recurse into runStepOnce which will hit dry-run again.
+			e.runParallelStep(ctx, step, result, wCtx)
+			return
+		// --- P18.3: New step types in dry-run ---
+		case "tool_call":
+			result.Status = "success"
+			result.Output = fmt.Sprintf("[DRY-RUN] Would call tool: %s", step.ToolName)
+			return
+		case "delay":
+			result.Status = "success"
+			result.Output = fmt.Sprintf("[DRY-RUN] Would delay: %s", step.Delay)
+			return
+		case "external":
+			result.Status = "success"
+			result.Output = fmt.Sprintf("[DRY-RUN] Would call external URL: %s (callback mode: %s)", step.ExternalURL, step.CallbackMode)
+			return
+		case "notify":
+			msg := resolveTemplate(step.NotifyMsg, wCtx)
+			result.Status = "success"
+			result.Output = fmt.Sprintf("[DRY-RUN] Would notify (%s): %s", step.NotifyTo, msg)
+			return
+		default:
+			result.Status = "error"
+			result.Error = fmt.Sprintf("unknown step type: %s", step.Type)
+			return
+		}
+	}
+
+	// Shadow mode: execute dispatch steps without history recording.
+	if e.mode == WorkflowModeShadow && st == "dispatch" {
+		e.runDispatchStepShadow(ctx, step, result, wCtx)
+		return
+	}
+	if e.mode == WorkflowModeShadow && st == "handoff" {
+		e.runHandoffStepShadow(ctx, step, result, wCtx)
+		return
+	}
+
+	switch st {
+	case "dispatch":
+		e.runDispatchStep(ctx, step, result, wCtx)
+	case "skill":
+		e.runSkillStep(ctx, step, result, wCtx)
+	case "handoff":
+		e.runHandoffStep(ctx, step, result, wCtx)
+	case "condition":
+		e.runConditionStep(step, result, wCtx)
+	case "parallel":
+		e.runParallelStep(ctx, step, result, wCtx)
+	// --- P18.3: Workflow Triggers --- New step types.
+	case "tool_call":
+		e.runToolCallStep(ctx, step, result, wCtx)
+	case "delay":
+		e.runDelayStep(ctx, step, result)
+	case "notify":
+		e.runNotifyStep(step, result, wCtx)
+	case "external":
+		e.runExternalStep(ctx, step, result)
+	default:
+		result.Status = "error"
+		result.Error = fmt.Sprintf("unknown step type: %s", step.Type)
+	}
+}
+
+// runDispatchStep executes an LLM dispatch step.
+func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	task := buildStepTask(step, wCtx, e.workflow.Name)
+	fillDefaults(e.cfg, &task)
+
+	if task.Model == "" {
+		log.Error("workflow dispatch: model still empty after defaults",
+			"workflow", e.workflow.Name, "step", step.ID, "agent", task.Agent)
+		result.Status = "error"
+		result.Error = "model is required but not configured"
+		return
+	}
+
+	// Override workdir with worktree path when isolation is active.
+	if e.worktreeDir != "" {
+		task.Workdir = e.worktreeDir
+	}
+
+	result.TaskID = task.ID
+	result.SessionID = task.SessionID
+
+	// Create a session for this step.
+	createSession(e.cfg.HistoryDB, Session{
+		ID:     task.SessionID,
+		Agent:   task.Agent,
+		Source: "workflow:" + e.workflow.Name,
+		Status: "active",
+		Title:  fmt.Sprintf("%s / %s", e.workflow.Name, step.ID),
+	})
+
+	// Enable streaming when broker is available.
+	task.SSEBroker = e.broker
+	task.WorkflowRunID = e.run.ID
+
+	// Execute using runSingleTask (respects semaphore).
+	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, task.Agent)
+	recordSessionActivity(e.cfg.HistoryDB, task, taskResult, task.Agent)
+
+	result.Output = taskResult.Output
+	result.CostUSD = taskResult.CostUSD
+	result.SessionID = taskResult.SessionID
+
+	switch taskResult.Status {
+	case "success":
+		result.Status = "success"
+
+		// Auto-delegation: check for delegation markers in output.
+		delegations := parseAutoDelegate(result.Output)
+		if len(delegations) > 0 {
+			result.Output = processAutoDelegations(ctx, e.cfg, delegations,
+				result.Output, e.run.ID, task.Agent, step.ID,
+				e.state, e.sem, e.childSem, e.broker)
+		}
+	case "timeout":
+		result.Status = "timeout"
+		result.Error = taskResult.Error
+	default:
+		result.Status = "error"
+		result.Error = taskResult.Error
+	}
+}
+
+// runSkillStep executes an external skill command.
+func (e *workflowExecutor) runSkillStep(ctx context.Context, step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	skill := getSkill(e.cfg, step.Skill)
+	if skill == nil {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("skill %q not found", step.Skill)
+		return
+	}
+
+	// Build vars from workflow context.
+	vars := make(map[string]string)
+	for k, v := range wCtx.Input {
+		vars[k] = v
+	}
+	// Resolve skill args as template vars.
+	for i, arg := range step.SkillArgs {
+		vars[fmt.Sprintf("arg%d", i)] = resolveTemplate(arg, wCtx)
+	}
+
+	skillResult, err := executeSkill(ctx, *skill, vars)
+	if err != nil {
+		result.Status = "error"
+		result.Error = err.Error()
+		return
+	}
+
+	result.Output = skillResult.Output
+	switch skillResult.Status {
+	case "success":
+		result.Status = "success"
+	case "timeout":
+		result.Status = "timeout"
+		result.Error = skillResult.Error
+	default:
+		result.Status = "error"
+		result.Error = skillResult.Error
+	}
+}
+
+// runConditionStep evaluates a condition and returns the chosen branch.
+func (e *workflowExecutor) runConditionStep(step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	condResult := evalCondition(step.If, wCtx)
+
+	if condResult {
+		result.Output = step.Then
+		result.Status = "success"
+	} else {
+		if step.Else != "" {
+			result.Output = step.Else
+		} else {
+			result.Output = ""
+		}
+		result.Status = "success"
+	}
+}
+
+// runParallelStep executes sub-steps in parallel and waits for all.
+func (e *workflowExecutor) runParallelStep(ctx context.Context, step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	var wg sync.WaitGroup
+	subResults := make([]*StepRunResult, len(step.Parallel))
+
+	for i, sub := range step.Parallel {
+		wg.Add(1)
+		go func(idx int, s WorkflowStep) {
+			defer wg.Done()
+			sr := &StepRunResult{StepID: s.ID, StartedAt: time.Now().Format(time.RFC3339)}
+			e.runStepOnce(ctx, &s, sr)
+			sr.FinishedAt = time.Now().Format(time.RFC3339)
+			subResults[idx] = sr
+		}(i, sub)
+	}
+
+	// Wait with early cancellation support: if ctx is cancelled,
+	// give sub-steps a grace period to finish (they already received ctx cancellation).
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// All sub-steps completed normally.
+	case <-ctx.Done():
+		gracePeriod := time.NewTimer(10 * time.Second)
+		select {
+		case <-done:
+			gracePeriod.Stop()
+		case <-gracePeriod.C:
+			log.Warn("workflow parallel step: sub-steps did not finish within grace period", "step", step.ID)
+		}
+	}
+
+	// Aggregate results.
+	var outputs []string
+	hasError := false
+	for _, sr := range subResults {
+		if sr == nil {
 			continue
 		}
-		w, loadErr := loadWorkflow(filepath.Join(workflowDir(cfg), e.Name()))
-		if loadErr == nil && w.Name == name {
-			return w, nil
+		// Store sub-step results in workflow context.
+		e.mu.Lock()
+		e.wCtx.Steps[sr.StepID] = &WorkflowStepResult{
+			Output: sr.Output,
+			Status: sr.Status,
+			Error:  sr.Error,
+		}
+		// Also track in run results.
+		e.run.StepResults[sr.StepID] = sr
+		e.mu.Unlock()
+
+		result.CostUSD += sr.CostUSD
+		if sr.Output != "" {
+			outputs = append(outputs, sr.Output)
+		}
+		if sr.Status != "success" && sr.Status != "skipped" {
+			hasError = true
 		}
 	}
-	return nil, err
+
+	result.Output = strings.Join(outputs, "\n---\n")
+	if hasError {
+		result.Status = "error"
+		result.Error = "one or more parallel sub-steps failed"
+	} else {
+		result.Status = "success"
+	}
 }
 
-// saveWorkflow writes a workflow to the workflows directory.
-func saveWorkflow(cfg *Config, w *Workflow) error {
-	if err := ensureWorkflowDir(cfg); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(w, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal workflow: %w", err)
-	}
-	path := filepath.Join(workflowDir(cfg), w.Name+".json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return err
-	}
-	// Auto-snapshot workflow version.
-	snapshotWorkflow(cfg.HistoryDB, w.Name, string(data), "system", "")
-	return nil
-}
+// runHandoffStep executes a handoff from one agent to another.
+func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
 
-// deleteWorkflow removes a workflow file.
-func deleteWorkflow(cfg *Config, name string) error {
-	path := filepath.Join(workflowDir(cfg), name+".json")
-	// Snapshot before deletion.
-	if data, err := os.ReadFile(path); err == nil {
-		snapshotWorkflow(cfg.HistoryDB, name, string(data), "system", "pre-delete")
+	// Get source step output.
+	sourceResult, ok := wCtx.Steps[step.HandoffFrom]
+	if !ok {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("handoff source step %q has no result", step.HandoffFrom)
+		return
 	}
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("workflow %q not found", name)
+
+	sourceOutput := sourceResult.Output
+	if sourceResult.Status != "success" {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("handoff source step %q failed: %s", step.HandoffFrom, sourceResult.Error)
+		return
+	}
+
+	// Resolve the instruction prompt with templates.
+	instruction := resolveTemplate(step.Prompt, wCtx)
+
+	// Determine source role.
+	fromAgent := ""
+	for _, s := range e.workflow.Steps {
+		if s.ID == step.HandoffFrom {
+			fromAgent = s.Agent
+			break
 		}
-		return err
 	}
-	return nil
+
+	now := time.Now().Format(time.RFC3339)
+	handoffID := newUUID()
+	toSessionID := newUUID()
+
+	// Get source step's session ID.
+	fromSessionID := ""
+	if sr, exists := e.run.StepResults[step.HandoffFrom]; exists {
+		fromSessionID = sr.SessionID
+	}
+
+	h := Handoff{
+		ID:            handoffID,
+		WorkflowRunID: e.run.ID,
+		FromAgent:      fromAgent,
+		ToAgent:        step.Agent,
+		FromStepID:    step.HandoffFrom,
+		ToStepID:      step.ID,
+		FromSessionID: fromSessionID,
+		ToSessionID:   toSessionID,
+		Context:       truncateStr(sourceOutput, e.cfg.PromptBudget.ContextMaxOrDefault()),
+		Instruction:   instruction,
+		Status:        "pending",
+		CreatedAt:     now,
+	}
+
+	// Record handoff.
+	recordHandoff(e.cfg.HistoryDB, h)
+
+	// Record agent message.
+	sendAgentMessage(e.cfg.HistoryDB, AgentMessage{
+		WorkflowRunID: e.run.ID,
+		FromAgent:      fromAgent,
+		ToAgent:        step.Agent,
+		Type:          "handoff",
+		Content:       fmt.Sprintf("Handoff from %s: %s", fromAgent, truncate(instruction, 200)),
+		RefID:         handoffID,
+		CreatedAt:     now,
+	})
+
+	// Publish handoff event.
+	e.publishEvent("handoff", map[string]any{
+		"runId":      e.run.ID,
+		"handoffId":  handoffID,
+		"fromAgent":   fromAgent,
+		"toAgent":     step.Agent,
+		"fromStepId": step.HandoffFrom,
+		"toStepId":   step.ID,
+	})
+
+	// Build task with handoff context.
+	prompt := buildHandoffPrompt(sourceOutput, instruction)
+
+	resolvedAgent := resolveTemplate(step.Agent, wCtx)
+	task := Task{
+		ID:             newUUID(),
+		Name:           fmt.Sprintf("%s/%s (handoff:%s→%s)", e.workflow.Name, step.ID, fromAgent, resolvedAgent),
+		Prompt:         prompt,
+		Agent:          resolvedAgent,
+		Model:          resolveTemplate(step.Model, wCtx),
+		Provider:       resolveTemplate(step.Provider, wCtx),
+		Timeout:        resolveTemplate(step.Timeout, wCtx),
+		Budget:         step.Budget,
+		PermissionMode: resolveTemplate(step.PermissionMode, wCtx),
+		Source:         fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
+		SessionID:      toSessionID,
+	}
+	fillDefaults(e.cfg, &task)
+
+	// Override workdir with worktree path when isolation is active.
+	if e.worktreeDir != "" {
+		task.Workdir = e.worktreeDir
+	}
+
+	result.TaskID = task.ID
+	result.SessionID = toSessionID
+
+	// Create session.
+	createSession(e.cfg.HistoryDB, Session{
+		ID:        toSessionID,
+		Agent:      resolvedAgent,
+		Source:    fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
+		Status:    "active",
+		Title:     fmt.Sprintf("Handoff: %s → %s / %s", fromAgent, resolvedAgent, step.ID),
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	// Update handoff to active.
+	updateHandoffStatus(e.cfg.HistoryDB, handoffID, "active")
+
+	// Enable streaming when broker is available.
+	task.SSEBroker = e.broker
+	task.WorkflowRunID = e.run.ID
+
+	// Execute.
+	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, resolvedAgent)
+	recordSessionActivity(e.cfg.HistoryDB, task, taskResult, resolvedAgent)
+
+	result.Output = taskResult.Output
+	result.CostUSD = taskResult.CostUSD
+
+	switch taskResult.Status {
+	case "success":
+		result.Status = "success"
+		updateHandoffStatus(e.cfg.HistoryDB, handoffID, "completed")
+	case "timeout":
+		result.Status = "timeout"
+		result.Error = taskResult.Error
+		updateHandoffStatus(e.cfg.HistoryDB, handoffID, "error")
+	default:
+		result.Status = "error"
+		result.Error = taskResult.Error
+		updateHandoffStatus(e.cfg.HistoryDB, handoffID, "error")
+	}
+
+	// Record response message.
+	sendAgentMessage(e.cfg.HistoryDB, AgentMessage{
+		WorkflowRunID: e.run.ID,
+		FromAgent:      step.Agent,
+		ToAgent:        fromAgent,
+		Type:          "response",
+		Content:       truncateStr(taskResult.Output, 2000),
+		RefID:         handoffID,
+		CreatedAt:     time.Now().Format(time.RFC3339),
+	})
+
+	log.DebugCtx(ctx, "handoff completed", "from", fromAgent, "to", step.Agent, "workflow", e.workflow.Name, "step", step.ID, "status", result.Status)
 }
 
-// listWorkflows returns all workflow files from the workflows directory.
-func listWorkflows(cfg *Config) ([]*Workflow, error) {
-	dir := workflowDir(cfg)
-	entries, err := os.ReadDir(dir)
+// --- P18.3: New Step Type Implementations ---
+
+// runToolCallStep executes a registered tool.
+func (e *workflowExecutor) runToolCallStep(ctx context.Context, step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	if e.cfg.Runtime.ToolRegistry == nil {
+		result.Status = "error"
+		result.Error = "tool registry not initialized"
+		return
+	}
+
+	tool, ok := e.cfg.Runtime.ToolRegistry.(*ToolRegistry).Get(step.ToolName)
+	if !ok {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("tool %q not found", step.ToolName)
+		return
+	}
+
+	// Expand {{var}} in tool input values.
+	expandedInput := expandToolInput(step.ToolInput, wCtx.Input)
+	inputJSON := toolInputToJSON(expandedInput)
+
+	output, err := tool.Handler(ctx, e.cfg, inputJSON)
 	if err != nil {
-		if os.IsNotExist(err) {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("tool %q error: %v", step.ToolName, err)
+		result.Output = output
+		return
+	}
+
+	result.Status = "success"
+	result.Output = output
+}
+
+// runDelayStep waits for the specified duration.
+func (e *workflowExecutor) runDelayStep(ctx context.Context, step *WorkflowStep,
+	result *StepRunResult) {
+
+	d, err := time.ParseDuration(step.Delay)
+	if err != nil {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("invalid delay %q: %v", step.Delay, err)
+		return
+	}
+
+	select {
+	case <-time.After(d):
+		result.Status = "success"
+		result.Output = fmt.Sprintf("delayed %s", d)
+	case <-ctx.Done():
+		result.Status = "cancelled"
+		result.Error = "cancelled during delay"
+	}
+}
+
+// runNotifyStep sends a notification message.
+func (e *workflowExecutor) runNotifyStep(step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	// Expand {{var}} in the notification message.
+	msg := resolveTemplate(step.NotifyMsg, wCtx)
+
+	// Log the notification (fallback if no notification channel available).
+	log.Info("workflow notify", "workflow", e.workflow.Name, "step", step.ID,
+		"to", step.NotifyTo, "message", truncateStr(msg, 200))
+
+	// Publish as SSE event so external consumers can act on it.
+	if e.broker != nil {
+		e.broker.Publish("_triggers", SSEEvent{
+			Type:   "workflow_notify",
+			TaskID: e.run.ID,
+			Data: map[string]any{
+				"workflow": e.workflow.Name,
+				"step":     step.ID,
+				"message":  msg,
+				"channel":  step.NotifyTo,
+			},
+		})
+	}
+
+	result.Status = "success"
+	result.Output = msg
+}
+
+// --- Dry-Run Step Implementations ---
+
+// runDispatchStepDryRun estimates cost without calling any provider.
+func (e *workflowExecutor) runDispatchStepDryRun(step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	task := buildStepTask(step, wCtx, e.workflow.Name)
+	fillDefaults(e.cfg, &task)
+
+	result.TaskID = task.ID
+	result.SessionID = task.SessionID
+
+	est := estimateTaskCost(e.cfg, task, task.Agent)
+	result.CostUSD = est.EstimatedCostUSD
+	result.Status = "success"
+	result.Output = fmt.Sprintf("[DRY-RUN] step=%s role=%s model=%s estimated_cost=$%.4f",
+		step.ID, task.Agent, est.Model, est.EstimatedCostUSD)
+}
+
+// runSkillStepDryRun returns mock output without running the skill.
+func (e *workflowExecutor) runSkillStepDryRun(step *WorkflowStep,
+	result *StepRunResult) {
+
+	result.Status = "success"
+	result.Output = fmt.Sprintf("[DRY-RUN] Would execute skill: %s", step.Skill)
+}
+
+// runHandoffStepDryRun estimates cost for the handoff provider call without executing.
+func (e *workflowExecutor) runHandoffStepDryRun(step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	// Verify source step exists in context (same validation as live).
+	sourceResult, ok := wCtx.Steps[step.HandoffFrom]
+	if !ok {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("handoff source step %q has no result", step.HandoffFrom)
+		return
+	}
+	if sourceResult.Status != "success" {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("handoff source step %q failed: %s", step.HandoffFrom, sourceResult.Error)
+		return
+	}
+
+	// Build the handoff task to estimate cost.
+	instruction := resolveTemplate(step.Prompt, wCtx)
+	sourceOutput := sourceResult.Output
+	prompt := buildHandoffPrompt(sourceOutput, instruction)
+
+	resolvedAgent := resolveTemplate(step.Agent, wCtx)
+	task := Task{
+		ID:             newUUID(),
+		Name:           fmt.Sprintf("%s/%s (handoff)", e.workflow.Name, step.ID),
+		Prompt:         prompt,
+		Agent:          resolvedAgent,
+		Model:          resolveTemplate(step.Model, wCtx),
+		Provider:       resolveTemplate(step.Provider, wCtx),
+		Timeout:        resolveTemplate(step.Timeout, wCtx),
+		Budget:         step.Budget,
+		PermissionMode: resolveTemplate(step.PermissionMode, wCtx),
+		Source:         fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
+		SessionID:      newUUID(),
+	}
+	fillDefaults(e.cfg, &task)
+
+	est := estimateTaskCost(e.cfg, task, resolvedAgent)
+	result.TaskID = task.ID
+	result.SessionID = task.SessionID
+	result.CostUSD = est.EstimatedCostUSD
+	result.Status = "success"
+	result.Output = fmt.Sprintf("[DRY-RUN] step=%s role=%s model=%s estimated_cost=$%.4f (handoff)",
+		step.ID, resolvedAgent, est.Model, est.EstimatedCostUSD)
+}
+
+// --- Shadow Step Implementations ---
+
+// runDispatchStepShadow executes the dispatch step but skips history/session recording.
+func (e *workflowExecutor) runDispatchStepShadow(ctx context.Context, step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	task := buildStepTask(step, wCtx, e.workflow.Name)
+	fillDefaults(e.cfg, &task)
+
+	result.TaskID = task.ID
+	result.SessionID = task.SessionID
+
+	// Execute using the provider directly (no history/session recording).
+	taskResult := runSingleTaskNoRecord(ctx, e.cfg, task, e.sem, e.childSem, task.Agent)
+
+	result.Output = taskResult.Output
+	result.CostUSD = taskResult.CostUSD
+	result.SessionID = taskResult.SessionID
+
+	switch taskResult.Status {
+	case "success":
+		result.Status = "success"
+	case "timeout":
+		result.Status = "timeout"
+		result.Error = taskResult.Error
+	default:
+		result.Status = "error"
+		result.Error = taskResult.Error
+	}
+}
+
+// runHandoffStepShadow executes the handoff step but skips history/session recording.
+func (e *workflowExecutor) runHandoffStepShadow(ctx context.Context, step *WorkflowStep,
+	result *StepRunResult, wCtx *WorkflowContext) {
+
+	// Get source step output.
+	sourceResult, ok := wCtx.Steps[step.HandoffFrom]
+	if !ok {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("handoff source step %q has no result", step.HandoffFrom)
+		return
+	}
+	if sourceResult.Status != "success" {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("handoff source step %q failed: %s", step.HandoffFrom, sourceResult.Error)
+		return
+	}
+
+	sourceOutput := sourceResult.Output
+	instruction := resolveTemplate(step.Prompt, wCtx)
+	prompt := buildHandoffPrompt(sourceOutput, instruction)
+
+	resolvedAgent := resolveTemplate(step.Agent, wCtx)
+	task := Task{
+		ID:             newUUID(),
+		Name:           fmt.Sprintf("%s/%s (handoff:%s)", e.workflow.Name, step.ID, resolvedAgent),
+		Prompt:         prompt,
+		Agent:          resolvedAgent,
+		Model:          resolveTemplate(step.Model, wCtx),
+		Provider:       resolveTemplate(step.Provider, wCtx),
+		Timeout:        resolveTemplate(step.Timeout, wCtx),
+		Budget:         step.Budget,
+		PermissionMode: resolveTemplate(step.PermissionMode, wCtx),
+		Source:         fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
+		SessionID:      newUUID(),
+	}
+	fillDefaults(e.cfg, &task)
+
+	result.TaskID = task.ID
+	result.SessionID = task.SessionID
+
+	// Execute without recording history/session/handoff metadata.
+	taskResult := runSingleTaskNoRecord(ctx, e.cfg, task, e.sem, e.childSem, resolvedAgent)
+
+	result.Output = taskResult.Output
+	result.CostUSD = taskResult.CostUSD
+
+	switch taskResult.Status {
+	case "success":
+		result.Status = "success"
+	case "timeout":
+		result.Status = "timeout"
+		result.Error = taskResult.Error
+	default:
+		result.Status = "error"
+		result.Error = taskResult.Error
+	}
+}
+
+// runSingleTaskNoRecord executes a task using the provider but skips
+// history recording and session activity tracking. Used by shadow mode.
+func runSingleTaskNoRecord(ctx context.Context, cfg *Config, task Task, sem, childSem chan struct{}, agentName string) TaskResult {
+	// Validate directories before running.
+	if err := validateDirs(cfg, task, agentName); err != nil {
+		return TaskResult{
+			ID: task.ID, Name: task.Name, Status: "error",
+			Error: err.Error(), Model: task.Model, SessionID: task.SessionID,
+		}
+	}
+
+	s := selectSem(sem, childSem, task.Depth)
+	if task.Depth == 0 && cfg.Runtime.SlotPressureGuard != nil {
+		_, err := cfg.Runtime.SlotPressureGuard.(*dtypes.SlotPressureGuard).AcquireSlot(ctx, s, task.Source)
+		if err != nil {
+			return TaskResult{
+				ID: task.ID, Name: task.Name, Status: "cancelled",
+				Error: "slot acquisition cancelled: " + err.Error(), Model: task.Model, SessionID: task.SessionID,
+			}
+		}
+		defer cfg.Runtime.SlotPressureGuard.(*dtypes.SlotPressureGuard).ReleaseSlot()
+		defer func() { <-s }()
+	} else {
+		s <- struct{}{}
+		defer func() { <-s }()
+	}
+
+	// Signal that this task has acquired a slot and is about to execute.
+	if task.OnStart != nil {
+		task.OnStart()
+	}
+
+	providerName := resolveProviderName(cfg, task, agentName)
+
+	log.DebugCtx(ctx, "shadow task start",
+		"taskId", task.ID[:8], "name", task.Name,
+		"model", task.Model, "provider", providerName)
+
+	timeout, err := time.ParseDuration(task.Timeout)
+	if err != nil {
+		timeout = 15 * time.Minute
+	}
+	taskCtx, taskCancel := context.WithTimeout(ctx, timeout)
+	defer taskCancel()
+
+	start := time.Now()
+	pr := executeWithProvider(taskCtx, cfg, task, agentName, cfg.Runtime.ProviderRegistry.(*providerRegistry), nil)
+	elapsed := time.Since(start)
+
+	result := TaskResult{
+		ID:         task.ID,
+		Name:       task.Name,
+		Output:     pr.Output,
+		CostUSD:    pr.CostUSD,
+		DurationMs: elapsed.Milliseconds(),
+		Model:      task.Model,
+		SessionID:  pr.SessionID,
+		TokensIn:   pr.TokensIn,
+		TokensOut:  pr.TokensOut,
+		ProviderMs: pr.ProviderMs,
+		Provider:   pr.Provider,
+	}
+	if result.SessionID == "" {
+		result.SessionID = task.SessionID
+	}
+
+	if taskCtx.Err() == context.DeadlineExceeded {
+		result.Status = "timeout"
+		result.Error = fmt.Sprintf("timed out after %v", timeout)
+	} else if ctx.Err() != nil {
+		result.Status = "cancelled"
+		result.Error = "cancelled"
+	} else if pr.IsError {
+		result.Status = "error"
+		result.Error = pr.Error
+	} else {
+		result.Status = "success"
+	}
+
+	log.DebugCtx(ctx, "shadow task done",
+		"taskId", task.ID[:8], "name", task.Name,
+		"elapsed", elapsed.Round(time.Millisecond),
+		"cost", result.CostUSD,
+		"status", result.Status)
+
+	// Deliberately skip: recordHistory, recordSessionActivity, saveTaskOutput, webhooks.
+	return result
+}
+
+// buildStepSummaries returns step metadata for DAG visualization.
+func buildStepSummaries(steps []WorkflowStep) []map[string]any {
+	var out []map[string]any
+	for _, s := range steps {
+		out = append(out, map[string]any{
+			"id":        s.ID,
+			"type":      stepType(&s),
+			"role":      s.Agent,
+			"dependsOn": s.DependsOn,
+		})
+	}
+	return out
+}
+
+// publishEvent sends an SSE event for workflow progress.
+func (e *workflowExecutor) publishEvent(eventType string, data map[string]any) {
+	if e.broker == nil {
+		return
+	}
+	e.broker.PublishMulti([]string{
+		"workflow:" + e.run.ID,
+		"workflow:" + e.workflow.Name,
+	}, SSEEvent{
+		Type:   eventType,
+		TaskID: e.run.ID,
+		Data:   data,
+	})
+}
+
+// --- Workflow Run DB ---
+
+const workflowRunsTableSQL = `CREATE TABLE IF NOT EXISTS workflow_runs (
+  id TEXT PRIMARY KEY,
+  workflow_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  started_at TEXT NOT NULL,
+  finished_at TEXT DEFAULT '',
+  duration_ms INTEGER DEFAULT 0,
+  total_cost REAL DEFAULT 0,
+  variables TEXT DEFAULT '{}',
+  step_results TEXT DEFAULT '{}',
+  error TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+)`
+
+func initWorkflowRunsTable(dbPath string) {
+	if dbPath == "" {
+		return
+	}
+	if _, err := db.Query(dbPath, workflowRunsTableSQL); err != nil {
+		log.Warn("init workflow_runs table failed", "error", err)
+	}
+	// Migration: add resumed_from column (no-op if column already exists).
+	if _, err := db.Query(dbPath, "ALTER TABLE workflow_runs ADD COLUMN resumed_from TEXT DEFAULT ''"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			log.Warn("migration: add resumed_from column failed", "error", err)
+		}
+	}
+}
+
+func recordWorkflowRun(dbPath string, run *WorkflowRun) {
+	if dbPath == "" {
+		return
+	}
+	initWorkflowRunsTable(dbPath)
+
+	varsJSON, _ := json.Marshal(run.Variables)
+	stepsJSON, _ := json.Marshal(run.StepResults)
+
+	sql := fmt.Sprintf(
+		`INSERT OR REPLACE INTO workflow_runs (id, workflow_name, status, started_at, finished_at, duration_ms, total_cost, variables, step_results, error, created_at, resumed_from)
+		 VALUES ('%s','%s','%s','%s','%s',%d,%f,'%s','%s','%s','%s','%s')`,
+		db.Escape(run.ID),
+		db.Escape(run.WorkflowName),
+		db.Escape(run.Status),
+		db.Escape(run.StartedAt),
+		db.Escape(run.FinishedAt),
+		run.DurationMs,
+		run.TotalCost,
+		db.Escape(string(varsJSON)),
+		db.Escape(string(stepsJSON)),
+		db.Escape(run.Error),
+		db.Escape(run.StartedAt),
+		db.Escape(run.ResumedFrom),
+	)
+
+	if _, err := db.Query(dbPath, sql); err != nil {
+		log.Warn("record workflow run failed", "error", err)
+	}
+}
+
+// queryWorkflowRuns returns recent workflow runs.
+func queryWorkflowRuns(dbPath string, limit int, workflowName string) ([]WorkflowRun, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	where := ""
+	if workflowName != "" {
+		where = fmt.Sprintf("WHERE workflow_name='%s'", db.Escape(workflowName))
+	}
+
+	sql := fmt.Sprintf(
+		`SELECT id, workflow_name, status, started_at, finished_at, duration_ms, total_cost, variables, step_results, error, COALESCE(resumed_from,'') as resumed_from
+		 FROM workflow_runs %s ORDER BY created_at DESC LIMIT %d`,
+		where, limit,
+	)
+
+	rows, err := db.Query(dbPath, sql)
+	if err != nil {
+		// Table might not exist yet.
+		if strings.Contains(err.Error(), "no such table") {
 			return nil, nil
 		}
 		return nil, err
 	}
-	var workflows []*Workflow
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+
+	var runs []WorkflowRun
+	for _, row := range rows {
+		run := WorkflowRun{
+			ID:           jsonStr(row["id"]),
+			WorkflowName: jsonStr(row["workflow_name"]),
+			Status:       jsonStr(row["status"]),
+			StartedAt:    jsonStr(row["started_at"]),
+			FinishedAt:   jsonStr(row["finished_at"]),
+			DurationMs:   int64(jsonFloat(row["duration_ms"])),
+			TotalCost:    jsonFloat(row["total_cost"]),
+			Error:        jsonStr(row["error"]),
+			StepResults:  make(map[string]*StepRunResult),
+			ResumedFrom:  jsonStr(row["resumed_from"]),
+		}
+		// Parse variables.
+		if v := jsonStr(row["variables"]); v != "" {
+			json.Unmarshal([]byte(v), &run.Variables)
+		}
+		// Parse step results.
+		if v := jsonStr(row["step_results"]); v != "" {
+			json.Unmarshal([]byte(v), &run.StepResults)
+		}
+		runs = append(runs, run)
+	}
+	return runs, nil
+}
+
+// queryWorkflowRunByID returns a single workflow run.
+func queryWorkflowRunByID(dbPath, id string) (*WorkflowRun, error) {
+	sql := fmt.Sprintf(
+		`SELECT id, workflow_name, status, started_at, finished_at, duration_ms, total_cost, variables, step_results, error, COALESCE(resumed_from,'') as resumed_from
+		 FROM workflow_runs WHERE id='%s'`,
+		db.Escape(id),
+	)
+
+	rows, err := db.Query(dbPath, sql)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, fmt.Errorf("workflow run %q not found", id)
+		}
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("workflow run %q not found", id)
+	}
+
+	row := rows[0]
+	run := &WorkflowRun{
+		ID:           jsonStr(row["id"]),
+		WorkflowName: jsonStr(row["workflow_name"]),
+		Status:       jsonStr(row["status"]),
+		StartedAt:    jsonStr(row["started_at"]),
+		FinishedAt:   jsonStr(row["finished_at"]),
+		DurationMs:   int64(jsonFloat(row["duration_ms"])),
+		TotalCost:    jsonFloat(row["total_cost"]),
+		Error:        jsonStr(row["error"]),
+		StepResults:  make(map[string]*StepRunResult),
+		ResumedFrom:  jsonStr(row["resumed_from"]),
+	}
+	if v := jsonStr(row["variables"]); v != "" {
+		json.Unmarshal([]byte(v), &run.Variables)
+	}
+	if v := jsonStr(row["step_results"]); v != "" {
+		json.Unmarshal([]byte(v), &run.StepResults)
+	}
+	return run, nil
+}
+
+// =============================================================================
+// Type aliases — re-export from internal/workflow for root-package callers
+// =============================================================================
+
+type CallbackManager = iwf.CallbackManager
+type CallbackResult = iwf.CallbackResult
+type CallbackRecord = iwf.CallbackRecord
+type DeliverResult = iwf.DeliverResult
+type DeliverWithSeq = iwf.DeliverWithSeq
+
+const (
+	DeliverOK      = iwf.DeliverOK
+	DeliverNoEntry = iwf.DeliverNoEntry
+	DeliverDup     = iwf.DeliverDup
+	DeliverFull    = iwf.DeliverFull
+)
+
+type TriggerInfo = iwf.TriggerInfo
+type WorkflowTriggerEngine = iwf.WorkflowTriggerEngine
+
+// =============================================================================
+// Package-level singletons
+// =============================================================================
+
+// callbackMgr is the process-wide singleton CallbackManager.
+var callbackMgr *CallbackManager
+
+// runCancellers maps runID -> context.CancelFunc for the cancel API.
+var runCancellers sync.Map
+
+// =============================================================================
+// Constructor wrappers
+// =============================================================================
+
+func newCallbackManager(dbPath string) *CallbackManager {
+	return iwf.NewCallbackManager(dbPath)
+}
+
+func newWorkflowTriggerEngine(cfg *Config, state *dispatchState, sem, childSem chan struct{}, broker *sseBroker) *WorkflowTriggerEngine {
+	deps := iwf.TriggerDeps{
+		ExecuteWorkflow: func(ctx context.Context, c *Config, wf *Workflow, vars map[string]string) iwf.TriggerRunResult {
+			run := executeWorkflow(ctx, c, wf, vars, state, sem, childSem)
+			return iwf.TriggerRunResult{
+				ID:         run.ID,
+				Status:     run.Status,
+				Error:      run.Error,
+				DurationMs: run.DurationMs,
+			}
+		},
+		LoadWorkflowByName: func(c *Config, name string) (*Workflow, error) {
+			return loadWorkflowByName(c, name)
+		},
+	}
+	return iwf.NewWorkflowTriggerEngine(cfg, deps, broker)
+}
+
+// =============================================================================
+// DB helper wrappers (lowercase aliases used across the codebase)
+// =============================================================================
+
+func initCallbackTable(dbPath string)   { iwf.InitCallbackTable(dbPath) }
+func initTriggerRunsTable(dbPath string) { iwf.InitTriggerRunsTable(dbPath) }
+
+func recordPendingCallback(dbPath, key, runID, stepID, mode, authMode, url, body, timeoutAt string) {
+	iwf.RecordPendingCallback(dbPath, key, runID, stepID, mode, authMode, url, body, timeoutAt)
+}
+
+func queryPendingCallbackByKey(dbPath, key string) *CallbackRecord {
+	return iwf.QueryPendingCallbackByKey(dbPath, key)
+}
+
+func queryPendingCallback(dbPath, key string) *CallbackRecord {
+	return iwf.QueryPendingCallback(dbPath, key)
+}
+
+func queryPendingCallbacksByRun(dbPath, runID string) []*CallbackRecord {
+	return iwf.QueryPendingCallbacksByRun(dbPath, runID)
+}
+
+func markPostSent(dbPath, key string)          { iwf.MarkPostSent(dbPath, key) }
+func resetCallbackRecord(dbPath, key string)   { iwf.ResetCallbackRecord(dbPath, key) }
+func clearPendingCallback(dbPath, key string)  { iwf.ClearPendingCallback(dbPath, key) }
+func updateCallbackRunID(dbPath, key, newRunID string) { iwf.UpdateCallbackRunID(dbPath, key, newRunID) }
+
+func markCallbackDelivered(dbPath, key string, seq int, result CallbackResult) {
+	iwf.MarkCallbackDelivered(dbPath, key, seq, result)
+}
+
+func isCallbackDelivered(dbPath, key string, seq int) bool {
+	return iwf.IsCallbackDelivered(dbPath, key, seq)
+}
+
+func appendStreamingCallback(dbPath, key string, seq int, result CallbackResult) {
+	iwf.AppendStreamingCallback(dbPath, key, seq, result)
+}
+
+func queryStreamingCallbacks(dbPath, key string) []CallbackResult {
+	return iwf.QueryStreamingCallbacks(dbPath, key)
+}
+
+func cleanupExpiredCallbacks(dbPath string) { iwf.CleanupExpiredCallbacks(dbPath) }
+
+func recordTriggerRun(dbPath, triggerName, workflowName, runID, status, startedAt, finishedAt, errMsg string) {
+	iwf.RecordTriggerRun(dbPath, triggerName, workflowName, runID, status, startedAt, finishedAt, errMsg)
+}
+
+func queryTriggerRuns(dbPath, triggerName string, limit int) ([]map[string]any, error) {
+	return iwf.QueryTriggerRuns(dbPath, triggerName, limit)
+}
+
+// =============================================================================
+// HMAC helpers
+// =============================================================================
+
+func callbackSignatureSecret(serverSecret, callbackKey string) string {
+	return iwf.CallbackSignatureSecret(serverSecret, callbackKey)
+}
+
+func verifyCallbackSignature(body []byte, secret, signatureHex string) bool {
+	return iwf.VerifyCallbackSignature(body, secret, signatureHex)
+}
+
+// =============================================================================
+// JSON helpers
+// =============================================================================
+
+func extractJSONPath(jsonStr, path string) string { return iwf.ExtractJSONPath(jsonStr, path) }
+
+func applyResponseMapping(body string, mapping *ResponseMapping) string {
+	return iwf.ApplyResponseMapping(body, mapping)
+}
+
+// =============================================================================
+// Validation / utility helpers
+// =============================================================================
+
+func isValidCallbackKey(key string) bool { return iwf.IsValidCallbackKey(key) }
+
+func parseDurationWithDays(s string) (time.Duration, error) { return iwf.ParseDurationWithDays(s) }
+
+func matchEventType(eventType, pattern string) bool { return iwf.MatchEventType(eventType, pattern) }
+
+func toolInputToJSON(input map[string]string) json.RawMessage { return iwf.ToolInputToJSON(input) }
+
+// expandVars and expandToolInput are already wrapped in workflow.go via iwf.ExpandVars /
+// iwf.ExpandToolInput. Keep thin wrappers here so workflow_exec.go callers compile.
+func expandVars(s string, vars map[string]string) string { return iwf.ExpandVars(s, vars) }
+func expandToolInput(input, vars map[string]string) map[string]string {
+	return iwf.ExpandToolInput(input, vars)
+}
+
+// =============================================================================
+// HTTP helper
+// =============================================================================
+
+func httpPostWithRetry(ctx context.Context, url, contentType string, headers map[string]string, body string, maxRetry int) (*http.Response, error) {
+	return iwf.HTTPPostWithRetry(ctx, url, contentType, headers, body, maxRetry)
+}
+
+// =============================================================================
+// Wait helpers
+// =============================================================================
+
+// waitSingleCallback waits for a single callback result or timeout.
+func waitSingleCallback(ctx context.Context, ch chan CallbackResult, _ string, _ *WorkflowStep, timeout time.Duration) *CallbackResult {
+	return iwf.WaitSingleCallback(ctx, ch, timeout)
+}
+
+// waitStreamingCallback waits for multiple callbacks until DonePath==DoneValue or timeout.
+func waitStreamingCallback(ctx context.Context, ch chan CallbackResult, _ string, step *WorkflowStep, timeout time.Duration) (*CallbackResult, []CallbackResult) {
+	return iwf.WaitStreamingCallback(ctx, ch, step.CallbackResponseMap, timeout)
+}
+
+// handleCallbackTimeout sets result fields for a timed-out callback.
+func handleCallbackTimeout(step *WorkflowStep, result *StepRunResult, timeout time.Duration, ctx context.Context) {
+	onTimeout := step.OnTimeout
+	r := iwf.HandleCallbackTimeout(onTimeout, timeout, ctx.Err())
+	result.Status = r.Status
+	result.Error = r.Error
+	if r.Output != "" {
+		result.Output = r.Output
+	}
+}
+
+// =============================================================================
+// Template helpers (on workflowExecutor — root-only, accesses wCtx)
+// =============================================================================
+
+// resolveTemplateWithFields resolves {{...}} templates and also handles
+// {{steps.id.output.field}} by extracting JSON fields from step outputs.
+func (e *workflowExecutor) resolveTemplateWithFields(tmpl string) string {
+	result := templateVarRe.ReplaceAllStringFunc(tmpl, func(match string) string {
+		expr := strings.TrimSpace(match[2 : len(match)-2])
+		parts := strings.SplitN(expr, ".", 4)
+
+		// Handle {{steps.id.output.fieldPath}}
+		if len(parts) >= 4 && parts[0] == "steps" && parts[2] == "output" {
+			stepID := parts[1]
+			fieldPath := strings.Join(parts[3:], ".")
+			stepResult, ok := e.wCtx.Steps[stepID]
+			if !ok {
+				return ""
+			}
+			return extractJSONPath(stepResult.Output, fieldPath)
+		}
+
+		// Fallback to standard resolution.
+		return resolveExpr(expr, e.wCtx)
+	})
+	return result
+}
+
+// resolveTemplateMapWithFields resolves all values in a map using resolveTemplateWithFields.
+func (e *workflowExecutor) resolveTemplateMapWithFields(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]string, len(m))
+	for k, v := range m {
+		result[k] = e.resolveTemplateWithFields(v)
+	}
+	return result
+}
+
+// resolveTemplateXMLEscaped resolves templates and XML-escapes the result.
+func (e *workflowExecutor) resolveTemplateXMLEscaped(tmpl string) string {
+	result := e.resolveTemplateWithFields(tmpl)
+	result = strings.ReplaceAll(result, "&", "&amp;")
+	result = strings.ReplaceAll(result, "<", "&lt;")
+	result = strings.ReplaceAll(result, ">", "&gt;")
+	result = strings.ReplaceAll(result, "\"", "&quot;")
+	result = strings.ReplaceAll(result, "'", "&apos;")
+	return result
+}
+
+// =============================================================================
+// runExternalStep — root-only: accesses workflowExecutor, callbackMgr singleton
+// =============================================================================
+
+// runExternalStep executes an external step: POST to URL, wait for callback.
+func (e *workflowExecutor) runExternalStep(ctx context.Context, step *WorkflowStep, result *StepRunResult) {
+	if callbackMgr == nil {
+		result.Status = "error"
+		result.Error = "callback manager not initialized"
+		return
+	}
+
+	// Resolve templates in all fields.
+	url := e.resolveTemplateWithFields(step.ExternalURL)
+	headers := e.resolveTemplateMapWithFields(step.ExternalHeaders)
+
+	// Resolve auth mode early — needed before callbackKey for header injection.
+	authMode := step.CallbackAuth
+	if authMode == "" {
+		authMode = "bearer"
+	}
+
+	callbackKey := e.resolveTemplateWithFields(step.CallbackKey)
+	if callbackKey == "" {
+		// Check for recovery-injected key (from recoverPendingWorkflows).
+		if recoveredKey, ok := e.wCtx.Input["__cb_key_"+step.ID]; ok && recoveredKey != "" {
+			callbackKey = recoveredKey
+		} else {
+			callbackKey = fmt.Sprintf("%s-%s-%s", e.run.ID, step.ID, newUUID()[:8])
+		}
+	}
+
+	// For signature auth, include callback secret in outgoing headers.
+	if authMode == "signature" {
+		if url != "" && !strings.HasPrefix(url, "https://") {
+			log.Warn("HMAC callback secret sent over non-HTTPS connection", "step", step.ID, "url", url)
+		}
+		cbSecret := callbackSignatureSecret(e.cfg.APIToken, callbackKey)
+		if headers == nil {
+			headers = make(map[string]string)
+		}
+		headers["X-Callback-Secret"] = cbSecret
+	}
+
+	// Build request body.
+	contentType := step.ExternalContentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	var bodyStr string
+	if step.ExternalRawBody != "" {
+		bodyStr = e.resolveTemplateWithFields(step.ExternalRawBody)
+	} else if step.ExternalBody != nil {
+		resolvedBody := e.resolveTemplateMapWithFields(step.ExternalBody)
+		if contentType == "application/x-www-form-urlencoded" {
+			vals := neturl.Values{}
+			for k, v := range resolvedBody {
+				vals.Set(k, v)
+			}
+			bodyStr = vals.Encode()
+		} else {
+			bodyBytes, _ := json.Marshal(resolvedBody)
+			bodyStr = string(bodyBytes)
+		}
+	}
+
+	// Callback mode and timeout.
+	mode := step.CallbackMode
+	if mode == "" {
+		mode = "single"
+	}
+	timeout := 1 * time.Hour // default
+	if step.CallbackTimeout != "" {
+		if d, err := parseDurationWithDays(step.CallbackTimeout); err == nil {
+			timeout = d
+		}
+	}
+
+	// Check DB state for resume/retry.
+	isResume := false
+	existingRecord := queryPendingCallbackByKey(callbackMgr.DBPath(), callbackKey)
+	if existingRecord != nil {
+		switch existingRecord.Status {
+		case "delivered":
+			// Already completed — skip re-execution.
+			result.Status = "success"
+			output := existingRecord.ResultBody
+			if output == "" {
+				output = existingRecord.Body // fallback for legacy records
+			}
+			result.Output = output
+			log.Info("external step already delivered, skipping", "step", step.ID, "key", callbackKey)
+			return
+		case "completed", "timeout":
+			// Previous attempt finished — reset for retry.
+			resetCallbackRecord(callbackMgr.DBPath(), callbackKey)
+			log.Info("external step retrying (reset old record)", "step", step.ID, "key", callbackKey, "oldStatus", existingRecord.Status)
+		default:
+			// "waiting" — check if POST was already sent (resume).
+			if existingRecord.PostSent {
+				isResume = true
+				log.Info("external step resuming (POST already sent)", "step", step.ID, "key", callbackKey)
+			}
+		}
+	}
+
+	// If this is a recovered key, update the DB record to reference the new run ID.
+	if _, ok := e.wCtx.Input["__cb_key_"+step.ID]; ok {
+		updateCallbackRunID(callbackMgr.DBPath(), callbackKey, e.run.ID)
+	}
+
+	// Register channel BEFORE POST to prevent race condition.
+	ch := callbackMgr.Register(callbackKey, ctx, mode)
+	if ch == nil {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("failed to register callback channel (key collision or at capacity): %s", callbackKey)
+		return
+	}
+	defer callbackMgr.Unregister(callbackKey)
+
+	// Calculate timeout time.
+	timeoutAt := time.Now().Add(timeout)
+
+	// Write DB record.
+	if !isResume {
+		recordPendingCallback(callbackMgr.DBPath(), callbackKey, e.run.ID, step.ID,
+			mode, authMode, url, bodyStr, timeoutAt.UTC().Format("2006-01-02 15:04:05"))
+	}
+
+	// Replay accumulated streaming callbacks on resume.
+	if isResume && mode == "streaming" {
+		accumulated := queryStreamingCallbacks(callbackMgr.DBPath(), callbackKey)
+		if len(accumulated) > 0 {
+			callbackMgr.ReplayAccumulated(callbackKey, accumulated)
+			callbackMgr.SetSeq(callbackKey, len(accumulated))
+			log.Info("replayed accumulated streaming callbacks", "step", step.ID, "key", callbackKey, "count", len(accumulated))
+		}
+	}
+
+	// HTTP POST (skip if resuming).
+	if !isResume && url != "" {
+		markPostSent(callbackMgr.DBPath(), callbackKey)
+
+		retryMax := step.RetryMax
+		if retryMax <= 0 {
+			retryMax = 2
+		}
+		resp, err := httpPostWithRetry(ctx, url, contentType, headers, bodyStr, retryMax)
+		if err != nil {
+			result.Status = "error"
+			result.Error = fmt.Sprintf("external POST failed: %v", err)
+			resetCallbackRecord(callbackMgr.DBPath(), callbackKey)
+			return
+		}
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+	} else if !isResume {
+		// No URL — callback-only mode (e.g. manual approval).
+		markPostSent(callbackMgr.DBPath(), callbackKey)
+	}
+
+	// Publish waiting event.
+	e.publishEvent("step_waiting", map[string]any{
+		"runId":       e.run.ID,
+		"stepId":      step.ID,
+		"callbackKey": callbackKey,
+		"timeout":     timeout.String(),
+	})
+
+	log.Info("external step waiting for callback", "step", step.ID, "key", callbackKey, "timeout", timeout.String())
+
+	// Wait for callback(s).
+	if mode == "streaming" {
+		lastResult, accumulated := waitStreamingCallback(ctx, ch, callbackKey, step, timeout)
+
+		if lastResult == nil {
+			handleCallbackTimeout(step, result, timeout, ctx)
+			return
+		}
+
+		// Build output based on accumulate setting.
+		var output string
+		if step.CallbackAccumulate && len(accumulated) > 0 {
+			var parts []string
+			for _, a := range accumulated {
+				mapped := applyResponseMapping(a.Body, step.CallbackResponseMap)
+				if !json.Valid([]byte(mapped)) {
+					b, _ := json.Marshal(mapped)
+					mapped = string(b)
+				}
+				parts = append(parts, mapped)
+			}
+			output = "[" + strings.Join(parts, ",") + "]"
+		} else {
+			output = applyResponseMapping(lastResult.Body, step.CallbackResponseMap)
+		}
+
+		// Check if done or timed out.
+		isDone := false
+		if step.CallbackResponseMap != nil && step.CallbackResponseMap.DonePath != "" {
+			doneVal := extractJSONPath(lastResult.Body, step.CallbackResponseMap.DonePath)
+			isDone = doneVal == step.CallbackResponseMap.DoneValue
+		}
+
+		if isDone {
+			result.Status = "success"
+			result.Output = output
+		} else if ctx.Err() != nil {
+			result.Status = "cancelled"
+			result.Error = "workflow cancelled while waiting for callback"
+			result.Output = output
+		} else {
+			// Timeout with partial results.
+			onTimeout := step.OnTimeout
+			if onTimeout == "" {
+				onTimeout = "stop"
+			}
+			if onTimeout == "skip" {
+				result.Status = "skipped"
+				result.Error = "streaming timeout (partial)"
+				result.Output = output
+			} else {
+				result.Status = "timeout"
+				result.Error = "streaming timeout (partial)"
+				result.Output = output
+			}
+		}
+		clearPendingCallback(callbackMgr.DBPath(), callbackKey)
+		log.Info("external step completed (streaming)", "step", step.ID, "key", callbackKey, "callbacks", len(accumulated))
+	} else {
+		// Single mode.
+		cbResult := waitSingleCallback(ctx, ch, callbackKey, step, timeout)
+		if cbResult == nil {
+			handleCallbackTimeout(step, result, timeout, ctx)
+			return
+		}
+
+		markCallbackDelivered(callbackMgr.DBPath(), callbackKey, 0, *cbResult)
+
+		output := cbResult.Body
+		if step.CallbackResponseMap != nil {
+			output = applyResponseMapping(output, step.CallbackResponseMap)
+		}
+
+		result.Status = "success"
+		result.Output = output
+		clearPendingCallback(callbackMgr.DBPath(), callbackKey)
+		log.Info("external step completed", "step", step.ID, "key", callbackKey)
+	}
+}
+
+// =============================================================================
+// Recovery helpers — root-only (use dispatchState + executeWorkflow)
+// =============================================================================
+
+// recoverPendingWorkflows scans for workflows with pending external steps and resumes them.
+func recoverPendingWorkflows(cfg *Config, state *dispatchState, sem, childSem chan struct{}) {
+	if cfg.HistoryDB == "" || callbackMgr == nil {
+		return
+	}
+
+	// Find all unique run IDs with waiting callbacks.
+	sql := `SELECT DISTINCT run_id FROM workflow_callbacks WHERE status='waiting'`
+	rows, err := db.Query(cfg.HistoryDB, sql)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+
+	for _, row := range rows {
+		runID := fmt.Sprintf("%v", row["run_id"])
+
+		// Load the workflow run.
+		run, err := queryWorkflowRunByID(cfg.HistoryDB, runID)
+		if err != nil || run == nil {
+			log.Warn("recovery: cannot load workflow run", "runID", runID, "error", err)
 			continue
 		}
-		w, err := loadWorkflow(filepath.Join(dir, e.Name()))
+
+		// Load the workflow definition.
+		wf, err := loadWorkflowByName(cfg, run.WorkflowName)
 		if err != nil {
-			continue // skip malformed files
+			log.Warn("recovery: cannot load workflow", "workflow", run.WorkflowName, "error", err)
+			continue
 		}
-		workflows = append(workflows, w)
+
+		log.Info("recovering pending workflow", "workflow", run.WorkflowName, "runID", runID[:8])
+
+		// Collect pending callback keys for this run so the new execution can reuse them.
+		pendingCallbacks := queryPendingCallbacksByRun(cfg.HistoryDB, runID)
+		recoveryVars := make(map[string]string)
+		for k, v := range run.Variables {
+			recoveryVars[k] = v
+		}
+		for _, cb := range pendingCallbacks {
+			recoveryVars["__cb_key_"+cb.StepID] = cb.Key
+		}
+
+		// Mark old run as superseded so it's not left orphaned.
+		markRunSuperseded := func(oldRunID string) {
+			sql := fmt.Sprintf(
+				`UPDATE workflow_runs SET status='recovered', finished_at=datetime('now') WHERE id='%s' AND status IN ('running','waiting')`,
+				db.Escape(oldRunID),
+			)
+			db.Query(cfg.HistoryDB, sql)
+		}
+		markRunSuperseded(runID)
+
+		// Re-execute the workflow in background.
+		go executeWorkflow(context.Background(), cfg, wf, recoveryVars, state, sem, childSem)
 	}
-	return workflows, nil
 }
+
+// checkpointRun saves current workflow run state to DB.
+func checkpointRun(e *workflowExecutor) {
+	recordWorkflowRun(e.cfg.HistoryDB, e.run)
+}
+
+// hasWaitingExternalStep checks if any step result indicates a waiting external step.
+func hasWaitingExternalStep(results map[string]*StepRunResult) bool {
+	for _, r := range results {
+		if r.Status == "waiting" {
+			return true
+		}
+	}
+	return false
+}
+
+// validateTriggerConfig wraps the internal version (which also validates cron expressions).
+func validateTriggerConfig(t WorkflowTriggerConfig, existingNames map[string]bool) []string {
+	return iwf.ValidateTriggerConfig(t, existingNames)
+}
+
+// =============================================================================
+// Merged from workflow.go
+// =============================================================================
+
+// ConfigVersion is an alias for version.Version so that existing callers in
+// the root package continue to compile without modification.
+type ConfigVersion = version.Version
+
+//go:embed examples/templates/*.json
+var templateFS embed.FS
+
+// --- Type Aliases ---
+// These aliases let root-package code continue to use the unqualified names
+// while the canonical definitions live in internal/workflow.
+
+type Workflow = iwf.Workflow
+type WorkflowStep = iwf.WorkflowStep
+type ResponseMapping = iwf.ResponseMapping
+type WorkflowContext = iwf.WorkflowContext
+type WorkflowStepResult = iwf.WorkflowStepResult
+type TemplateSummary = iwf.TemplateSummary
+
+// --- Directory helpers ---
+
+func workflowDir(cfg *Config) string      { return iwf.WorkflowDir(cfg) }
+func ensureWorkflowDir(cfg *Config) error { return iwf.EnsureWorkflowDir(cfg) }
+
+// --- Load / Save ---
+
+func loadWorkflow(path string) (*Workflow, error) { return iwf.LoadWorkflow(path) }
+
+func loadWorkflowByName(cfg *Config, name string) (*Workflow, error) {
+	return iwf.LoadWorkflowByName(cfg, name)
+}
+
+func saveWorkflow(cfg *Config, w *Workflow) error { return iwf.SaveWorkflow(cfg, w) }
+
+func deleteWorkflow(cfg *Config, name string) error { return iwf.DeleteWorkflow(cfg, name) }
+
+func listWorkflows(cfg *Config) ([]*Workflow, error) { return iwf.ListWorkflows(cfg) }
 
 // --- Validation ---
 
-// ValidateWorkflow checks a workflow for structural correctness.
-func validateWorkflow(w *Workflow) []string {
-	var errs []string
-
-	if w.Name == "" {
-		errs = append(errs, "workflow name is required")
-	}
-	if !isValidWorkflowName(w.Name) {
-		errs = append(errs, fmt.Sprintf("invalid workflow name %q: use alphanumeric, hyphens, underscores", w.Name))
-	}
-	if len(w.Steps) == 0 {
-		errs = append(errs, "workflow must have at least one step")
-	}
-	if w.Timeout != "" {
-		if _, err := time.ParseDuration(w.Timeout); err != nil {
-			errs = append(errs, fmt.Sprintf("invalid timeout %q: %v", w.Timeout, err))
-		}
-	}
-
-	// Build step ID set and check uniqueness.
-	ids := make(map[string]bool)
-	for _, s := range w.Steps {
-		if s.ID == "" {
-			errs = append(errs, "step ID is required")
-			continue
-		}
-		if ids[s.ID] {
-			errs = append(errs, fmt.Sprintf("duplicate step ID %q", s.ID))
-		}
-		ids[s.ID] = true
-	}
-
-	// Validate each step.
-	for _, s := range w.Steps {
-		errs = append(errs, validateStep(s, ids)...)
-	}
-
-	// Check for duplicate static callbackKey across external steps.
-	cbKeys := make(map[string]string) // key -> stepID
-	for _, s := range w.Steps {
-		if s.Type == "external" && s.CallbackKey != "" && !strings.Contains(s.CallbackKey, "{{") {
-			if prev, dup := cbKeys[s.CallbackKey]; dup {
-				errs = append(errs, fmt.Sprintf("steps %q and %q share the same callbackKey %q", prev, s.ID, s.CallbackKey))
-			}
-			cbKeys[s.CallbackKey] = s.ID
-		}
-	}
-
-	// DAG cycle detection.
-	if cycle := detectCycle(w.Steps); cycle != "" {
-		errs = append(errs, fmt.Sprintf("dependency cycle detected: %s", cycle))
-	}
-
-	return errs
-}
-
-// validateStep checks a single step for correctness.
+func validateWorkflow(w *Workflow) []string { return iwf.ValidateWorkflow(w) }
 func validateStep(s WorkflowStep, allIDs map[string]bool) []string {
-	var errs []string
-
-	stepType := s.Type
-	if stepType == "" {
-		stepType = "dispatch"
-	}
-
-	switch stepType {
-	case "dispatch":
-		if s.Prompt == "" {
-			errs = append(errs, fmt.Sprintf("step %q: dispatch step requires a prompt", s.ID))
-		}
-	case "skill":
-		if s.Skill == "" {
-			errs = append(errs, fmt.Sprintf("step %q: skill step requires a skill name", s.ID))
-		}
-	case "condition":
-		if s.If == "" {
-			errs = append(errs, fmt.Sprintf("step %q: condition step requires an 'if' expression", s.ID))
-		}
-		if s.Then == "" {
-			errs = append(errs, fmt.Sprintf("step %q: condition step requires a 'then' target", s.ID))
-		}
-		if s.Then != "" && !allIDs[s.Then] {
-			errs = append(errs, fmt.Sprintf("step %q: 'then' references unknown step %q", s.ID, s.Then))
-		}
-		if s.Else != "" && !allIDs[s.Else] {
-			errs = append(errs, fmt.Sprintf("step %q: 'else' references unknown step %q", s.ID, s.Else))
-		}
-	case "handoff":
-		if s.HandoffFrom == "" {
-			errs = append(errs, fmt.Sprintf("step %q: handoff step requires 'handoffFrom' source step", s.ID))
-		} else if !allIDs[s.HandoffFrom] {
-			errs = append(errs, fmt.Sprintf("step %q: handoffFrom references unknown step %q", s.ID, s.HandoffFrom))
-		}
-		if s.Agent == "" {
-			errs = append(errs, fmt.Sprintf("step %q: handoff step requires a target 'agent'", s.ID))
-		}
-	case "parallel":
-		if len(s.Parallel) == 0 {
-			errs = append(errs, fmt.Sprintf("step %q: parallel step requires sub-steps", s.ID))
-		}
-		subIDs := make(map[string]bool)
-		for k := range allIDs {
-			subIDs[k] = true
-		}
-		for _, sub := range s.Parallel {
-			if sub.ID != "" {
-				subIDs[sub.ID] = true
-			}
-		}
-		for _, sub := range s.Parallel {
-			errs = append(errs, validateStep(sub, subIDs)...)
-		}
-	// --- P18.3: Workflow Triggers --- New step types.
-	case "tool_call":
-		if s.ToolName == "" {
-			errs = append(errs, fmt.Sprintf("step %q: tool_call step requires a toolName", s.ID))
-		}
-	case "delay":
-		if s.Delay == "" {
-			errs = append(errs, fmt.Sprintf("step %q: delay step requires a delay duration", s.ID))
-		} else if _, err := time.ParseDuration(s.Delay); err != nil {
-			errs = append(errs, fmt.Sprintf("step %q: invalid delay %q: %v", s.ID, s.Delay, err))
-		}
-	case "notify":
-		if s.NotifyMsg == "" {
-			errs = append(errs, fmt.Sprintf("step %q: notify step requires a notifyMsg", s.ID))
-		}
-	case "external":
-		if s.ExternalBody != nil && s.ExternalRawBody != "" {
-			errs = append(errs, fmt.Sprintf("step %q: externalBody and externalRawBody are mutually exclusive", s.ID))
-		}
-		if s.CallbackMode != "" && s.CallbackMode != "single" && s.CallbackMode != "streaming" {
-			errs = append(errs, fmt.Sprintf("step %q: callbackMode must be \"single\" or \"streaming\"", s.ID))
-		}
-		if s.CallbackAuth != "" && s.CallbackAuth != "bearer" && s.CallbackAuth != "open" && s.CallbackAuth != "signature" {
-			errs = append(errs, fmt.Sprintf("step %q: callbackAuth must be \"bearer\", \"open\", or \"signature\"", s.ID))
-		}
-		if s.OnTimeout != "" && s.OnTimeout != "stop" && s.OnTimeout != "skip" {
-			errs = append(errs, fmt.Sprintf("step %q: onTimeout must be \"stop\" or \"skip\"", s.ID))
-		}
-		if s.CallbackTimeout != "" {
-			if d, err := parseDurationWithDays(s.CallbackTimeout); err != nil {
-				errs = append(errs, fmt.Sprintf("step %q: invalid callbackTimeout %q: %v", s.ID, s.CallbackTimeout, err))
-			} else if d < time.Second {
-				errs = append(errs, fmt.Sprintf("step %q: callbackTimeout must be at least 1s", s.ID))
-			}
-		}
-		if s.CallbackKey != "" && !strings.Contains(s.CallbackKey, "{{") {
-			// Only validate static keys (not template expressions).
-			if !isValidCallbackKey(s.CallbackKey) {
-				errs = append(errs, fmt.Sprintf("step %q: invalid callbackKey format %q", s.ID, s.CallbackKey))
-			}
-		}
-	default:
-		errs = append(errs, fmt.Sprintf("step %q: unknown type %q (use dispatch, skill, condition, parallel, handoff, tool_call, delay, notify, external)", s.ID, stepType))
-	}
-
-	// Validate dependency references.
-	for _, dep := range s.DependsOn {
-		if !allIDs[dep] {
-			errs = append(errs, fmt.Sprintf("step %q: dependsOn references unknown step %q", s.ID, dep))
-		}
-		if dep == s.ID {
-			errs = append(errs, fmt.Sprintf("step %q: step cannot depend on itself", s.ID))
-		}
-	}
-
-	// Validate timeout.
-	if s.Timeout != "" {
-		if _, err := time.ParseDuration(s.Timeout); err != nil {
-			errs = append(errs, fmt.Sprintf("step %q: invalid timeout %q", s.ID, s.Timeout))
-		}
-	}
-	if s.RetryDelay != "" {
-		if _, err := time.ParseDuration(s.RetryDelay); err != nil {
-			errs = append(errs, fmt.Sprintf("step %q: invalid retryDelay %q", s.ID, s.RetryDelay))
-		}
-	}
-
-	// Validate onError.
-	if s.OnError != "" {
-		switch s.OnError {
-		case "stop", "skip", "retry":
-		default:
-			errs = append(errs, fmt.Sprintf("step %q: invalid onError %q (use stop, skip, retry)", s.ID, s.OnError))
-		}
-	}
-
-	return errs
+	return iwf.ValidateStep(s, allIDs)
 }
 
-var workflowNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+// --- DAG helpers ---
 
-func isValidWorkflowName(name string) bool {
-	return workflowNameRe.MatchString(name)
-}
-
-// --- DAG Cycle Detection (Kahn's algorithm) ---
-
-// detectCycle returns a description of any dependency cycle, or "" if none.
-func detectCycle(steps []WorkflowStep) string {
-	// Build adjacency list and in-degree count.
-	adj := make(map[string][]string)
-	inDeg := make(map[string]int)
-	for _, s := range steps {
-		if _, ok := inDeg[s.ID]; !ok {
-			inDeg[s.ID] = 0
-		}
-		for _, dep := range s.DependsOn {
-			adj[dep] = append(adj[dep], s.ID)
-			inDeg[s.ID]++
-		}
-		if _, ok := adj[s.ID]; !ok {
-			adj[s.ID] = nil
-		}
-	}
-
-	// Kahn's algorithm: process nodes with in-degree 0.
-	var queue []string
-	for id, deg := range inDeg {
-		if deg == 0 {
-			queue = append(queue, id)
-		}
-	}
-
-	visited := 0
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-		visited++
-		for _, next := range adj[node] {
-			inDeg[next]--
-			if inDeg[next] == 0 {
-				queue = append(queue, next)
-			}
-		}
-	}
-
-	if visited < len(inDeg) {
-		// Collect cycle participants.
-		var cycleNodes []string
-		for id, deg := range inDeg {
-			if deg > 0 {
-				cycleNodes = append(cycleNodes, id)
-			}
-		}
-		return strings.Join(cycleNodes, " → ")
-	}
-
-	return ""
-}
-
-// topologicalSort returns step IDs in execution order. Assumes no cycles.
-func topologicalSort(steps []WorkflowStep) []string {
-	adj := make(map[string][]string)
-	inDeg := make(map[string]int)
-	for _, s := range steps {
-		if _, ok := inDeg[s.ID]; !ok {
-			inDeg[s.ID] = 0
-		}
-		for _, dep := range s.DependsOn {
-			adj[dep] = append(adj[dep], s.ID)
-			inDeg[s.ID]++
-		}
-		if _, ok := adj[s.ID]; !ok {
-			adj[s.ID] = nil
-		}
-	}
-
-	var queue []string
-	for id, deg := range inDeg {
-		if deg == 0 {
-			queue = append(queue, id)
-		}
-	}
-
-	var order []string
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-		order = append(order, node)
-		for _, next := range adj[node] {
-			inDeg[next]--
-			if inDeg[next] == 0 {
-				queue = append(queue, next)
-			}
-		}
-	}
-
-	return order
-}
+func detectCycle(steps []WorkflowStep) string       { return iwf.DetectCycle(steps) }
+func topologicalSort(steps []WorkflowStep) []string { return iwf.TopologicalSort(steps) }
 
 // --- Variable Template System ---
 
-// WorkflowContext holds runtime state for variable resolution.
-type WorkflowContext struct {
-	Input   map[string]string            // workflow input variables
-	Steps   map[string]*WorkflowStepResult // completed step results
-	Env     map[string]string            // environment snapshot
-}
+// templateVarRe matches {{...}} template expressions — re-exported from internal/workflow.
+var templateVarRe = iwf.TemplateVarRe
 
-// WorkflowStepResult stores the output of a completed step.
-type WorkflowStepResult struct {
-	Output string `json:"output"`
-	Status string `json:"status"` // "success", "error", "skipped", "timeout"
-	Error  string `json:"error,omitempty"`
-}
-
-// newWorkflowContext creates a fresh context with merged variables.
 func newWorkflowContext(w *Workflow, inputOverrides map[string]string) *WorkflowContext {
-	ctx := &WorkflowContext{
-		Input: make(map[string]string),
-		Steps: make(map[string]*WorkflowStepResult),
-		Env:   make(map[string]string),
-	}
-	// Copy workflow defaults.
-	for k, v := range w.Variables {
-		ctx.Input[k] = v
-	}
-	// Apply overrides.
-	for k, v := range inputOverrides {
-		ctx.Input[k] = v
-	}
-	// Snapshot relevant env vars (avoid leaking full env).
-	for _, e := range os.Environ() {
-		if i := strings.IndexByte(e, '='); i >= 0 {
-			ctx.Env[e[:i]] = e[i+1:]
-		}
-	}
-	return ctx
+	return iwf.NewWorkflowContext(w, inputOverrides)
 }
 
-// templateVarRe matches {{...}} template expressions.
-var templateVarRe = regexp.MustCompile(`\{\{([^}]+)\}\}`)
-
-// resolveTemplate replaces {{...}} placeholders in a string using the workflow context.
-// Supported patterns:
-//   - {{input}}                — value of input variable "input" (if only one, treat as shortcut)
-//   - {{varName}}              — workflow input variable
-//   - {{steps.ID.output}}      — step output
-//   - {{steps.ID.status}}      — step status
-//   - {{steps.ID.error}}       — step error
-//   - {{env.KEY}}              — environment variable
 func resolveTemplate(tmpl string, wCtx *WorkflowContext) string {
-	return templateVarRe.ReplaceAllStringFunc(tmpl, func(match string) string {
-		expr := strings.TrimSpace(match[2 : len(match)-2])
-		return resolveExpr(expr, wCtx)
-	})
+	return iwf.ResolveTemplate(tmpl, wCtx)
 }
 
-// resolveExpr resolves a single template expression.
 func resolveExpr(expr string, wCtx *WorkflowContext) string {
-	parts := strings.SplitN(expr, ".", 3)
-
-	switch {
-	case parts[0] == "steps" && len(parts) >= 3:
-		stepID := parts[1]
-		field := parts[2]
-		result, ok := wCtx.Steps[stepID]
-		if !ok {
-			logWarn("workflow template: step not found", "expr", expr)
-			return ""
-		}
-		switch field {
-		case "output":
-			output := result.Output
-			// Truncate to prevent context overflow.
-			const defaultContextMax = 16000
-			if len(output) > defaultContextMax {
-				output = truncateToChars(output, defaultContextMax)
-			}
-			return output
-		case "status":
-			return result.Status
-		case "error":
-			return result.Error
-		default:
-			return ""
-		}
-
-	case parts[0] == "env" && len(parts) >= 2:
-		key := strings.Join(parts[1:], ".")
-		return wCtx.Env[key]
-
-	default:
-		// Simple input variable lookup.
-		if v, ok := wCtx.Input[expr]; ok {
-			return v
-		}
-		return ""
-	}
+	return iwf.ResolveExpr(expr, wCtx)
 }
 
 // --- Condition Evaluation ---
 
-// evalCondition evaluates a simple condition expression.
-// Supported: "expr == 'value'", "expr != 'value'", "expr" (truthy check).
 func evalCondition(expr string, wCtx *WorkflowContext) bool {
-	resolved := resolveTemplate(expr, wCtx)
-
-	// Check for == operator.
-	if i := strings.Index(resolved, "=="); i >= 0 {
-		left := strings.TrimSpace(resolved[:i])
-		right := strings.TrimSpace(resolved[i+2:])
-		right = strings.Trim(right, "'\"")
-		return left == right
-	}
-
-	// Check for != operator.
-	if i := strings.Index(resolved, "!="); i >= 0 {
-		left := strings.TrimSpace(resolved[:i])
-		right := strings.TrimSpace(resolved[i+2:])
-		right = strings.Trim(right, "'\"")
-		return left != right
-	}
-
-	// Truthy check: non-empty and not "false"/"0" means true.
-	resolved = strings.TrimSpace(resolved)
-	return resolved != "" && resolved != "false" && resolved != "0"
+	return iwf.EvalCondition(expr, wCtx)
 }
 
 // --- Utility ---
 
-// getStepByID finds a step in a workflow by ID.
-func getStepByID(w *Workflow, id string) *WorkflowStep {
-	for i := range w.Steps {
-		if w.Steps[i].ID == id {
-			return &w.Steps[i]
-		}
-	}
-	return nil
-}
-
-// stepType returns the effective type of a step (default "dispatch").
-func stepType(s *WorkflowStep) string {
-	if s.Type == "" {
-		return "dispatch"
-	}
-	return s.Type
-}
+func getStepByID(w *Workflow, id string) *WorkflowStep { return iwf.GetStepByID(w, id) }
+func stepType(s *WorkflowStep) string                  { return iwf.StepType(s) }
 
 // --- Template Gallery ---
-
-// TemplateSummary provides a brief summary of a workflow template.
-type TemplateSummary struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	StepCount   int      `json:"stepCount"`
-	Variables   []string `json:"variables"`
-	Category    string   `json:"category"`
-}
 
 // cachedTemplates holds the pre-computed template summaries (static from embed.FS).
 var cachedTemplates []TemplateSummary
@@ -734,7 +2545,6 @@ func installTemplate(cfg *Config, templateName, newName string) error {
 	}
 	if newName != "" {
 		wf.Name = newName
-		// Also update step IDs prefix if it starts with old template name
 	}
 	return saveWorkflow(cfg, wf)
 }
@@ -753,4 +2563,9 @@ func buildStepTask(s *WorkflowStep, wCtx *WorkflowContext, workflowName string) 
 		PermissionMode: resolveTemplate(s.PermissionMode, wCtx),
 		Source:         "workflow:" + workflowName,
 	}
+}
+
+// restoreWorkflowVersion restores a workflow to a saved version.
+func restoreWorkflowVersion(dbPath string, cfg *Config, versionID string) error {
+	return iwf.RestoreWorkflowVersion(dbPath, cfg, versionID)
 }

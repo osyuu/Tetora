@@ -1,0 +1,28 @@
+---
+import Base from './Base.astro';
+import LanguagePicker from '../components/LanguagePicker.astro';
+import DocSidebar from '../components/DocSidebar.astro';
+import Footer from '../components/Footer.astro';
+import type { Lang } from '../i18n/ui';
+import { t } from '../i18n/utils';
+
+interface Props {
+  title: string;
+  lang: Lang;
+  slug: string;
+}
+const { title, lang, slug } = Astro.props;
+---
+<Base title={`${title} — Tetora Docs`} lang={lang}>
+  <LanguagePicker currentLang={lang} basePath={`/docs/${slug}/`} />
+  <nav style="padding:50px 20px 0;max-width:1100px;margin:0 auto;font-size:13px;color:var(--muted)">
+    <a href="/" style="color:var(--muted)">&larr; Tetora</a> / <a href={`/${lang}/docs/`} style="color:var(--muted)">{t(lang, 'nav_docs')}</a> / {title}
+  </nav>
+  <div class="doc-layout">
+    <DocSidebar lang={lang} currentSlug={slug} />
+    <article>
+      <slot />
+    </article>
+  </div>
+  <Footer />
+</Base>

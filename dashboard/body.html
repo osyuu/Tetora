@@ -66,6 +66,11 @@
       <span class="nav-icon">&#x1F4C2;</span> Files
     </button>
     <div class="nav-divider"></div>
+    <div class="nav-label">Teams</div>
+    <button class="nav-item" id="tab-team-builder" onclick="switchTab('team-builder')">
+      <span class="nav-icon">&#x1F465;</span> Team Builder
+    </button>
+    <div class="nav-divider"></div>
     <div class="nav-label">Marketplace</div>
     <button class="nav-item" id="tab-store" onclick="switchTab('store')">
       <span class="nav-icon">&#x1F3EA;</span> Store
@@ -170,6 +175,20 @@
     <div class="decor-palette" id="decor-palette" style="display:none"></div>
   </div>
   </div><!-- /zone-command -->
+
+  <!-- Dashboard Tasks -->
+  <div class="section" id="tasks-section">
+    <div class="section-header">
+      <span class="section-title">Dashboard Tasks</span>
+    </div>
+    <div class="task-stats" id="task-stats"></div>
+  </div>
+
+  <!-- System Health -->
+  <div class="section" id="health-section">
+    <div class="section-header"><span class="section-title">System Health</span></div>
+    <div class="stats" id="health-stats"></div>
+  </div>
 
   <!-- ZONE 2: OPERATIONS -->
   <div class="zone-operations">
@@ -658,20 +677,6 @@
     </div>
   </div>
 
-  <!-- Dashboard Tasks -->
-  <div class="section" id="tasks-section">
-    <div class="section-header">
-      <span class="section-title">Dashboard Tasks</span>
-    </div>
-    <div class="task-stats" id="task-stats"></div>
-  </div>
-
-  <!-- System Health -->
-  <div class="section" id="health-section">
-    <div class="section-header"><span class="section-title">System Health</span></div>
-    <div class="stats" id="health-stats"></div>
-  </div>
-
     </div><!-- /zone-engineering-body -->
   </div><!-- /zone-engineering -->
 
@@ -1099,6 +1104,10 @@
 
   </div><!-- /operations-content -->
 
+  <!-- Team Builder -->
+  <div id="team-builder-content" style="display:none">
+  </div><!-- /team-builder-content -->
+
   <!-- Store -->
   <div id="store-content" style="display:none">
     <div class="section">
@@ -1152,6 +1161,7 @@
         <button data-sub="integrations" onclick="switchSubTab('settings','integrations')">Integrations</button>
         <button data-sub="tools-security" onclick="switchSubTab('settings','tools-security')">Tools & Security</button>
         <button data-sub="notifications" onclick="switchSubTab('settings','notifications')">Notifications</button>
+        <button data-sub="providers" onclick="switchSubTab('settings','providers')">Providers</button>
       </div>
 
       <!-- === Sub: General === -->
@@ -1334,8 +1344,75 @@
         </div>
       </div><!-- /settings-sub-notifications -->
 
+      <!-- === Sub: Providers === -->
+      <div id="settings-sub-providers" style="display:none">
+        <div class="section">
+          <div class="section-header">
+            <span class="section-title">LLM Providers</span>
+            <button class="btn" onclick="openAddProviderModal()" style="padding:4px 14px;font-size:12px">+ Add Provider</button>
+          </div>
+          <div id="providers-list" style="padding:8px 0">
+            <span style="color:var(--muted)">Loading...</span>
+          </div>
+        </div>
+      </div><!-- /settings-sub-providers -->
+
     </div>
   </div><!-- /settings-content -->
+
+  <!-- Provider Add Modal -->
+  <div class="modal-overlay" id="provider-modal" style="display:none" onclick="if(event.target===this)closeProviderModal()">
+    <div class="modal" style="max-width:480px;width:100%">
+      <div class="modal-header">
+        <span class="modal-title">Add Provider</span>
+        <button class="modal-close" onclick="closeProviderModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="provider-modal-body">
+        <!-- Step 1: Choose Preset -->
+        <div id="provider-step-1">
+          <div style="font-weight:600;margin-bottom:12px">Choose a provider preset</div>
+          <div id="provider-preset-list" style="display:flex;flex-direction:column;gap:8px"></div>
+          <div style="text-align:right;margin-top:16px">
+            <button class="btn" onclick="closeProviderModal()">Cancel</button>
+          </div>
+        </div>
+        <!-- Step 2: API Key -->
+        <div id="provider-step-2" style="display:none">
+          <div style="font-weight:600;margin-bottom:12px">Enter API Key</div>
+          <input type="password" id="provider-apikey" class="input" placeholder="sk-..." style="width:100%;margin-bottom:12px">
+          <div style="text-align:right;gap:8px;display:flex;justify-content:flex-end">
+            <button class="btn" onclick="providerStepBack(1)">Back</button>
+            <button class="btn btn-primary" onclick="providerStepNext(3)">Next</button>
+          </div>
+        </div>
+        <!-- Step 3: Model Selection -->
+        <div id="provider-step-3" style="display:none">
+          <div style="font-weight:600;margin-bottom:12px">Select Model</div>
+          <div id="provider-baseurl-row" style="display:none;margin-bottom:12px">
+            <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">Base URL</label>
+            <input type="text" id="provider-baseurl" class="input" placeholder="https://your-api.example.com/v1" style="width:100%">
+          </div>
+          <select id="provider-model-select" class="input" style="width:100%;margin-bottom:8px"></select>
+          <input type="text" id="provider-model-custom" class="input" placeholder="Or type model name..." style="width:100%;margin-bottom:12px">
+          <div style="text-align:right;gap:8px;display:flex;justify-content:flex-end">
+            <button class="btn" onclick="providerStepBackFromModel()">Back</button>
+            <button class="btn btn-primary" onclick="providerStepNext(4)">Next</button>
+          </div>
+        </div>
+        <!-- Step 4: Test & Save -->
+        <div id="provider-step-4" style="display:none">
+          <div style="font-weight:600;margin-bottom:12px">Test Connection</div>
+          <div id="provider-test-summary" style="margin-bottom:12px;font-size:13px;color:var(--muted)"></div>
+          <div id="provider-test-result" style="margin-bottom:12px"></div>
+          <div style="text-align:right;gap:8px;display:flex;justify-content:flex-end">
+            <button class="btn" onclick="providerStepBack(3)">Back</button>
+            <button class="btn" id="provider-test-btn" onclick="testProviderConnection()">Test</button>
+            <button class="btn btn-primary" id="provider-save-btn" onclick="saveProvider()" disabled>Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Agent Create/Edit Modal -->
   <div class="modal-overlay" id="agent-modal" style="display:none" onclick="if(event.target===this)closeAgentModal()">
@@ -1375,6 +1452,19 @@
         <div style="margin-bottom:12px">
           <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">Description</label>
           <input id="af-description" type="text" placeholder="Short description of this agent's role" style="width:100%;padding:7px 10px;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);box-sizing:border-box">
+        </div>
+        <!-- Portrait -->
+        <div style="margin-bottom:12px">
+          <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:6px">Portrait</label>
+          <div class="portrait-upload-area">
+            <img id="af-portrait-preview" class="portrait-preview" src="" alt="portrait" style="display:none" onerror="this.style.display='none'">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <input id="af-portrait-file" type="file" accept="image/png" style="font-size:12px;color:var(--muted)"
+                onchange="var f=this.files[0];if(f){var u=URL.createObjectURL(f);var p=document.getElementById('af-portrait-preview');p.src=u;p.style.display='block';}">
+              <button id="af-portrait-delete" type="button" class="btn" onclick="deleteAgentPortrait(document.getElementById('af-name').value)"
+                style="padding:3px 10px;font-size:11px;color:var(--red);border-color:var(--red);display:none">Delete custom portrait</button>
+            </div>
+          </div>
         </div>
         <!-- SOUL.md -->
         <div style="margin-bottom:16px">
@@ -1464,6 +1554,7 @@
 <div class="modal-overlay" id="task-detail-modal">
   <div class="modal" style="max-width:900px">
     <button class="modal-close" onclick="closeTaskDetail()">&times;</button>
+    <button id="td-cancel-btn" onclick="cancelTaskFromDetail()" style="position:absolute;top:14px;right:120px;background:var(--warning,#d69e2e);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;display:none">Cancel</button>
     <button onclick="deleteTask()" style="position:absolute;top:14px;right:48px;background:var(--danger,#e53e3e);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer">Delete</button>
     <h3 id="task-detail-title" style="margin-bottom:12px">Task Detail</h3>
     <input type="hidden" id="td-id" value="">
@@ -1546,7 +1637,8 @@
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Workflow Progress</span>
         <span id="td-wf-run-status" class="badge" style="font-size:10px"></span>
-        <a id="td-wf-run-link" href="#" onclick="return openWfRunFromTask()" style="font-size:11px;color:var(--accent);margin-left:auto">View Full Run</a>
+        <button id="td-wf-cancel-btn" onclick="cancelWorkflowRun()" style="display:none;font-size:11px;background:var(--warning,#d69e2e);color:#fff;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;margin-left:auto">Cancel Run</button>
+        <a id="td-wf-run-link" href="#" onclick="return openWfRunFromTask()" style="font-size:11px;color:var(--accent)">View Full Run</a>
       </div>
       <div id="td-wf-steps" class="td-wf-steps"></div>
     </div>

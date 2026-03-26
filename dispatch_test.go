@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
-)
 
+	"tetora/internal/classify"
+)
 // --- newUUID tests ---
 
 func TestNewUUID_NonEmpty(t *testing.T) {
@@ -165,140 +167,6 @@ func TestFillDefaults_DefaultWorkdirFromConfig(t *testing.T) {
 
 	if task.Workdir != "/tmp/tetora-test-workdir" {
 		t.Errorf("Workdir = %q, want %q", task.Workdir, "/tmp/tetora-test-workdir")
-	}
-}
-
-// --- parseClaudeOutput tests ---
-
-func TestParseClaudeOutput_SuccessJSON(t *testing.T) {
-	co := claudeOutput{
-		Type:       "result",
-		Result:     "Task completed successfully.",
-		IsError:    false,
-		DurationMs: 5000,
-		CostUSD:    0.12,
-		SessionID:  "sess-abc",
-	}
-	stdout, _ := json.Marshal(co)
-
-	r := parseClaudeOutput(stdout, nil, 0)
-
-	if r.Status != "success" {
-		t.Errorf("Status = %q, want %q", r.Status, "success")
-	}
-	if r.Output != "Task completed successfully." {
-		t.Errorf("Output = %q, want %q", r.Output, "Task completed successfully.")
-	}
-	if r.CostUSD != 0.12 {
-		t.Errorf("CostUSD = %v, want %v", r.CostUSD, 0.12)
-	}
-	if r.SessionID != "sess-abc" {
-		t.Errorf("SessionID = %q, want %q", r.SessionID, "sess-abc")
-	}
-	if r.Error != "" {
-		t.Errorf("Error = %q, want empty", r.Error)
-	}
-	if r.ExitCode != 0 {
-		t.Errorf("ExitCode = %d, want 0", r.ExitCode)
-	}
-}
-
-func TestParseClaudeOutput_ErrorJSON(t *testing.T) {
-	co := claudeOutput{
-		Type:    "result",
-		Subtype: "rate_limit",
-		Result:  "Rate limited",
-		IsError: true,
-		CostUSD: 0.01,
-	}
-	stdout, _ := json.Marshal(co)
-
-	r := parseClaudeOutput(stdout, nil, 0)
-
-	if r.Status != "error" {
-		t.Errorf("Status = %q, want %q", r.Status, "error")
-	}
-	if r.Error != "rate_limit" {
-		t.Errorf("Error = %q, want %q", r.Error, "rate_limit")
-	}
-	if r.Output != "Rate limited" {
-		t.Errorf("Output = %q, want %q", r.Output, "Rate limited")
-	}
-}
-
-func TestParseClaudeOutput_InvalidJSONFallback(t *testing.T) {
-	stdout := []byte("some raw text output")
-
-	r := parseClaudeOutput(stdout, nil, 0)
-
-	if r.Status != "success" {
-		t.Errorf("Status = %q, want %q", r.Status, "success")
-	}
-	if r.Output != "some raw text output" {
-		t.Errorf("Output = %q, want %q", r.Output, "some raw text output")
-	}
-}
-
-func TestParseClaudeOutput_NonZeroExitInvalidJSON(t *testing.T) {
-	stdout := []byte("partial output")
-	stderr := []byte("something went wrong")
-
-	r := parseClaudeOutput(stdout, stderr, 1)
-
-	if r.Status != "error" {
-		t.Errorf("Status = %q, want %q", r.Status, "error")
-	}
-	if r.ExitCode != 1 {
-		t.Errorf("ExitCode = %d, want 1", r.ExitCode)
-	}
-	if r.Output != "partial output" {
-		t.Errorf("Output = %q, want %q", r.Output, "partial output")
-	}
-	if r.Error != "something went wrong" {
-		t.Errorf("Error = %q, want %q", r.Error, "something went wrong")
-	}
-}
-
-func TestParseClaudeOutput_LongStderrTruncated(t *testing.T) {
-	stdout := []byte("out")
-	stderr := []byte(strings.Repeat("x", 600))
-
-	r := parseClaudeOutput(stdout, stderr, 1)
-
-	if len(r.Error) != 500 {
-		t.Errorf("Error length = %d, want 500 (truncated)", len(r.Error))
-	}
-}
-
-func TestParseClaudeOutput_EmptyStdout(t *testing.T) {
-	r := parseClaudeOutput(nil, nil, 0)
-
-	if r.Status != "success" {
-		t.Errorf("Status = %q, want %q", r.Status, "success")
-	}
-	if r.Output != "" {
-		t.Errorf("Output = %q, want empty", r.Output)
-	}
-}
-
-func TestParseClaudeOutput_ValidJSONIgnoresExitCode(t *testing.T) {
-	// When JSON is valid, the parsed status takes precedence.
-	co := claudeOutput{
-		Type:    "result",
-		Result:  "done",
-		IsError: false,
-		CostUSD: 0.05,
-	}
-	stdout, _ := json.Marshal(co)
-
-	r := parseClaudeOutput(stdout, []byte("some stderr"), 1)
-
-	// Valid JSON means we use the JSON-parsed status, which is success.
-	if r.Status != "success" {
-		t.Errorf("Status = %q, want %q", r.Status, "success")
-	}
-	if r.ExitCode != 1 {
-		t.Errorf("ExitCode = %d, want 1", r.ExitCode)
 	}
 }
 
@@ -889,10 +757,10 @@ func TestCitationInjection(t *testing.T) {
 
 func TestListFiltered_NilAllowed(t *testing.T) {
 	cfg := newTestConfig()
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 	// With nil allowed, should return all tools.
-	all := cfg.toolRegistry.List()
-	filtered := cfg.toolRegistry.ListFiltered(nil)
+	all := cfg.Runtime.ToolRegistry.(*ToolRegistry).List()
+	filtered := cfg.Runtime.ToolRegistry.(*ToolRegistry).ListFiltered(nil)
 	if len(filtered) != len(all) {
 		t.Errorf("ListFiltered(nil) returned %d tools, want %d", len(filtered), len(all))
 	}
@@ -900,17 +768,17 @@ func TestListFiltered_NilAllowed(t *testing.T) {
 
 func TestListFiltered_EmptyAllowed(t *testing.T) {
 	cfg := newTestConfig()
-	cfg.toolRegistry = NewToolRegistry(cfg)
+	cfg.Runtime.ToolRegistry = NewToolRegistry(cfg)
 	// With empty map, should return all tools.
-	all := cfg.toolRegistry.List()
-	filtered := cfg.toolRegistry.ListFiltered(map[string]bool{})
+	all := cfg.Runtime.ToolRegistry.(*ToolRegistry).List()
+	filtered := cfg.Runtime.ToolRegistry.(*ToolRegistry).ListFiltered(map[string]bool{})
 	if len(filtered) != len(all) {
 		t.Errorf("ListFiltered(empty) returned %d tools, want %d", len(filtered), len(all))
 	}
 }
 
 func TestListFiltered_PopulatedAllowed(t *testing.T) {
-	reg := &ToolRegistry{tools: make(map[string]*ToolDef)}
+	reg := newEmptyRegistry()
 	reg.Register(&ToolDef{Name: "alpha"})
 	reg.Register(&ToolDef{Name: "beta"})
 	reg.Register(&ToolDef{Name: "gamma"})
@@ -1018,5 +886,1663 @@ func TestTokenAccumulation(t *testing.T) {
 	}
 	if finalResult.ProviderMs != 530 {
 		t.Errorf("ProviderMs = %d, want 530", finalResult.ProviderMs)
+	}
+}
+
+// --- from route_test.go ---
+
+// --- classifyByKeywords ---
+
+func TestClassifyByKeywords_RuleMatch(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Rules: []RoutingRule{
+				{Agent: "黒曜", Keywords: []string{"security", "code review"}},
+				{Agent: "琥珀", Keywords: []string{"寫文", "content"}},
+			},
+		},
+		Agents: map[string]AgentConfig{
+			"黒曜": {Model: "sonnet"},
+			"琥珀": {Model: "opus"},
+		},
+	}
+
+	tests := []struct {
+		prompt   string
+		wantRole string
+		wantNil  bool
+	}{
+		{"Please do a security audit", "黒曜", false},
+		{"Can you do a code review?", "黒曜", false},
+		{"寫文章給 Medium", "琥珀", false},
+		{"Create content for the blog", "琥珀", false},
+		{"SECURITY check please", "黒曜", false}, // case insensitive
+		{"random unmatched prompt", "", true},
+	}
+
+	for _, tt := range tests {
+		result := classifyByKeywords(cfg, tt.prompt)
+		if tt.wantNil {
+			if result != nil {
+				t.Errorf("classifyByKeywords(%q) = %+v, want nil", tt.prompt, result)
+			}
+			continue
+		}
+		if result == nil {
+			t.Errorf("classifyByKeywords(%q) = nil, want role=%q", tt.prompt, tt.wantRole)
+			continue
+		}
+		if result.Agent != tt.wantRole {
+			t.Errorf("classifyByKeywords(%q).Agent = %q, want %q", tt.prompt, result.Agent, tt.wantRole)
+		}
+		if result.Method != "keyword" {
+			t.Errorf("classifyByKeywords(%q).Method = %q, want keyword", tt.prompt, result.Method)
+		}
+	}
+}
+
+func TestClassifyByKeywords_PatternMatch(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Rules: []RoutingRule{
+				{Agent: "翡翠", Patterns: []string{`market\s+research`, `competitor\s+analysis`}},
+			},
+		},
+		Agents: map[string]AgentConfig{
+			"翡翠": {Model: "sonnet"},
+		},
+	}
+
+	tests := []struct {
+		prompt   string
+		wantRole string
+		wantNil  bool
+	}{
+		{"Do market research on AI tools", "翡翠", false},
+		{"Run competitor analysis", "翡翠", false},
+		{"Market Research please", "翡翠", false}, // case insensitive
+		{"marketresearch", "", true},               // no space = no match
+	}
+
+	for _, tt := range tests {
+		result := classifyByKeywords(cfg, tt.prompt)
+		if tt.wantNil {
+			if result != nil {
+				t.Errorf("classifyByKeywords(%q) = %+v, want nil", tt.prompt, result)
+			}
+			continue
+		}
+		if result == nil {
+			t.Errorf("classifyByKeywords(%q) = nil, want role=%q", tt.prompt, tt.wantRole)
+			continue
+		}
+		if result.Agent != tt.wantRole {
+			t.Errorf("classifyByKeywords(%q).Agent = %q, want %q", tt.prompt, result.Agent, tt.wantRole)
+		}
+	}
+}
+
+func TestClassifyByKeywords_RoleKeywords(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Rules: []RoutingRule{}, // no explicit rules
+		},
+		Agents: map[string]AgentConfig{
+			"琉璃": {Model: "sonnet", Keywords: []string{"管理", "status"}},
+			"翡翠": {Model: "sonnet", Keywords: []string{"情報", "research"}},
+		},
+	}
+
+	result := classifyByKeywords(cfg, "show me the system status")
+	if result == nil {
+		t.Fatal("classifyByKeywords returned nil, want role=琉璃")
+	}
+	if result.Agent != "琉璃" {
+		t.Errorf("Role = %q, want 琉璃", result.Agent)
+	}
+	if result.Confidence != "medium" {
+		t.Errorf("Confidence = %q, want medium (role keyword match)", result.Confidence)
+	}
+}
+
+func TestClassifyByKeywords_RulePriorityOverRole(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Rules: []RoutingRule{
+				{Agent: "黒曜", Keywords: []string{"security"}},
+			},
+		},
+		Agents: map[string]AgentConfig{
+			"琉璃": {Model: "sonnet", Keywords: []string{"security"}}, // same keyword on role
+			"黒曜": {Model: "sonnet"},
+		},
+	}
+
+	result := classifyByKeywords(cfg, "run a security audit")
+	if result == nil {
+		t.Fatal("classifyByKeywords returned nil")
+	}
+	// Rule should take priority over role keyword.
+	if result.Agent != "黒曜" {
+		t.Errorf("Role = %q, want 黒曜 (rule priority)", result.Agent)
+	}
+	if result.Confidence != "high" {
+		t.Errorf("Confidence = %q, want high (rule match)", result.Confidence)
+	}
+}
+
+// --- parseLLMRouteResult ---
+
+func TestParseLLMRouteResult_ValidJSON(t *testing.T) {
+	output := `{"agent":"翡翠","confidence":"high","reason":"market analysis task"}`
+	result, err := parseLLMRouteResult(output, "琉璃")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Agent != "翡翠" {
+		t.Errorf("Role = %q, want 翡翠", result.Agent)
+	}
+	if result.Confidence != "high" {
+		t.Errorf("Confidence = %q, want high", result.Confidence)
+	}
+	if result.Method != "llm" {
+		t.Errorf("Method = %q, want llm", result.Method)
+	}
+}
+
+func TestParseLLMRouteResult_WrappedJSON(t *testing.T) {
+	output := `Here's my analysis:
+{"agent":"黒曜","confidence":"medium","reason":"looks like code"}
+That's my recommendation.`
+
+	result, err := parseLLMRouteResult(output, "琉璃")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Agent != "黒曜" {
+		t.Errorf("Role = %q, want 黒曜", result.Agent)
+	}
+}
+
+func TestParseLLMRouteResult_Garbage(t *testing.T) {
+	output := "I think you should use the engineering team"
+	result, err := parseLLMRouteResult(output, "琉璃")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should fall back to default.
+	if result.Agent != "琉璃" {
+		t.Errorf("Role = %q, want 琉璃 (default)", result.Agent)
+	}
+	if result.Confidence != "low" {
+		t.Errorf("Confidence = %q, want low", result.Confidence)
+	}
+}
+
+func TestParseLLMRouteResult_EmptyRole(t *testing.T) {
+	output := `{"role":"","confidence":"medium","reason":"unclear"}`
+	result, err := parseLLMRouteResult(output, "琉璃")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Agent != "琉璃" {
+		t.Errorf("Role = %q, want 琉璃 (default when empty)", result.Agent)
+	}
+}
+
+func TestParseLLMRouteResult_InvalidJSON(t *testing.T) {
+	output := `{role: broken json}`
+	result, err := parseLLMRouteResult(output, "琉璃")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Agent != "琉璃" {
+		t.Errorf("Role = %q, want 琉璃 (default on parse error)", result.Agent)
+	}
+	if result.Confidence != "low" {
+		t.Errorf("Confidence = %q, want low", result.Confidence)
+	}
+}
+
+func TestParseLLMRouteResult_MissingConfidence(t *testing.T) {
+	output := `{"role":"翡翠","reason":"research task"}`
+	result, err := parseLLMRouteResult(output, "琉璃")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Confidence != "medium" {
+		t.Errorf("Confidence = %q, want medium (default)", result.Confidence)
+	}
+}
+
+// --- checkBindings ---
+
+func TestCheckBindings_UserIDMatch(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Bindings: []RoutingBinding{
+				{Channel: "telegram", UserID: "12345", Agent: "黒曜"},
+				{Channel: "slack", UserID: "U999", Agent: "翡翠"},
+			},
+		},
+	}
+
+	tests := []struct {
+		req      RouteRequest
+		wantRole string
+		wantNil  bool
+	}{
+		{RouteRequest{Source: "telegram", UserID: "12345"}, "黒曜", false},
+		{RouteRequest{Source: "slack", UserID: "U999"}, "翡翠", false},
+		{RouteRequest{Source: "telegram", UserID: "99999"}, "", true}, // no match
+		{RouteRequest{Source: "discord", UserID: "12345"}, "", true},  // wrong channel
+	}
+
+	for _, tt := range tests {
+		result := checkBindings(cfg, tt.req)
+		if tt.wantNil {
+			if result != nil {
+				t.Errorf("checkBindings(%+v) = %+v, want nil", tt.req, result)
+			}
+			continue
+		}
+		if result == nil {
+			t.Errorf("checkBindings(%+v) = nil, want role=%q", tt.req, tt.wantRole)
+			continue
+		}
+		if result.Agent != tt.wantRole {
+			t.Errorf("checkBindings(%+v).Agent = %q, want %q", tt.req, result.Agent, tt.wantRole)
+		}
+		if result.Method != "binding" {
+			t.Errorf("checkBindings(%+v).Method = %q, want binding", tt.req, result.Method)
+		}
+		if result.Confidence != "high" {
+			t.Errorf("checkBindings(%+v).Confidence = %q, want high", tt.req, result.Confidence)
+		}
+	}
+}
+
+func TestCheckBindings_ChannelIDMatch(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Bindings: []RoutingBinding{
+				{Channel: "slack", ChannelID: "C123", Agent: "翡翠"},
+				{Channel: "telegram", ChannelID: "-1001234567890", Agent: "琥珀"},
+			},
+		},
+	}
+
+	tests := []struct {
+		req      RouteRequest
+		wantRole string
+		wantNil  bool
+	}{
+		{RouteRequest{Source: "slack", ChannelID: "C123"}, "翡翠", false},
+		{RouteRequest{Source: "telegram", ChannelID: "-1001234567890"}, "琥珀", false},
+		{RouteRequest{Source: "slack", ChannelID: "C999"}, "", true},
+	}
+
+	for _, tt := range tests {
+		result := checkBindings(cfg, tt.req)
+		if tt.wantNil {
+			if result != nil {
+				t.Errorf("checkBindings(%+v) = %+v, want nil", tt.req, result)
+			}
+			continue
+		}
+		if result == nil {
+			t.Errorf("checkBindings(%+v) = nil, want role=%q", tt.req, tt.wantRole)
+			continue
+		}
+		if result.Agent != tt.wantRole {
+			t.Errorf("checkBindings(%+v).Agent = %q, want %q", tt.req, result.Agent, tt.wantRole)
+		}
+	}
+}
+
+func TestCheckBindings_GuildIDMatch(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Bindings: []RoutingBinding{
+				{Channel: "discord", GuildID: "G456", Agent: "琥珀"},
+			},
+		},
+	}
+
+	result := checkBindings(cfg, RouteRequest{Source: "discord", GuildID: "G456"})
+	if result == nil {
+		t.Fatal("checkBindings returned nil, want role=琥珀")
+	}
+	if result.Agent != "琥珀" {
+		t.Errorf("Role = %q, want 琥珀", result.Agent)
+	}
+}
+
+func TestCheckBindings_MultipleIDFields(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Bindings: []RoutingBinding{
+				{Channel: "telegram", UserID: "12345", ChannelID: "-100999", Agent: "黒曜"},
+			},
+		},
+	}
+
+	// Should match if ANY of the ID fields match.
+	result1 := checkBindings(cfg, RouteRequest{Source: "telegram", UserID: "12345"})
+	if result1 == nil || result1.Agent != "黒曜" {
+		t.Errorf("checkBindings with UserID match failed")
+	}
+
+	result2 := checkBindings(cfg, RouteRequest{Source: "telegram", ChannelID: "-100999"})
+	if result2 == nil || result2.Agent != "黒曜" {
+		t.Errorf("checkBindings with ChannelID match failed")
+	}
+
+	result3 := checkBindings(cfg, RouteRequest{Source: "telegram", UserID: "12345", ChannelID: "-100999"})
+	if result3 == nil || result3.Agent != "黒曜" {
+		t.Errorf("checkBindings with both IDs match failed")
+	}
+}
+
+func TestCheckBindings_NoMatch(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			Bindings: []RoutingBinding{
+				{Channel: "telegram", UserID: "12345", Agent: "黒曜"},
+			},
+		},
+	}
+
+	result := checkBindings(cfg, RouteRequest{Source: "slack", UserID: "12345"})
+	if result != nil {
+		t.Errorf("checkBindings returned %+v, want nil (channel mismatch)", result)
+	}
+}
+
+// --- routeTask with bindings ---
+
+func TestRouteTask_BindingPriority(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			DefaultAgent: "琉璃",
+			Coordinator: "琉璃",
+			Bindings: []RoutingBinding{
+				{Channel: "telegram", UserID: "12345", Agent: "黒曜"},
+			},
+			Rules: []RoutingRule{
+				{Agent: "翡翠", Keywords: []string{"research"}}, // this keyword will be in prompt
+			},
+		},
+		Agents: map[string]AgentConfig{
+			"琉璃": {Model: "sonnet"},
+			"黒曜": {Model: "opus"},
+			"翡翠": {Model: "sonnet"},
+		},
+	}
+
+	// Even though prompt contains "research" keyword, binding should take priority.
+	ctx := context.Background()
+	req := RouteRequest{
+		Prompt: "do some research please",
+		Source: "telegram",
+		UserID: "12345",
+	}
+
+	result := routeTask(ctx, cfg, req)
+	if result.Agent != "黒曜" {
+		t.Errorf("Role = %q, want 黒曜 (binding should override keyword)", result.Agent)
+	}
+	if result.Method != "binding" {
+		t.Errorf("Method = %q, want binding", result.Method)
+	}
+}
+
+func TestRouteTask_FallbackCoordinator(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			DefaultAgent: "琉璃",
+			Coordinator: "琉璃",
+			Fallback:    "coordinator", // bypass LLM routing
+		},
+		Agents: map[string]AgentConfig{
+			"琉璃": {Model: "sonnet"},
+		},
+	}
+
+	ctx := context.Background()
+	req := RouteRequest{
+		Prompt: "random task with no keywords or bindings",
+		Source: "http",
+	}
+
+	result := routeTask(ctx, cfg, req)
+	if result.Agent != "琉璃" {
+		t.Errorf("Role = %q, want 琉璃 (fallback coordinator)", result.Agent)
+	}
+	if result.Method != "coordinator" {
+		t.Errorf("Method = %q, want coordinator", result.Method)
+	}
+	if result.Confidence != "high" {
+		t.Errorf("Confidence = %q, want high (coordinator fallback)", result.Confidence)
+	}
+}
+
+func TestRouteTask_FallbackSmartWithKeyword(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			DefaultAgent: "琉璃",
+			Coordinator: "琉璃",
+			Fallback:    "smart",
+			Rules: []RoutingRule{
+				{Agent: "翡翠", Keywords: []string{"research"}},
+			},
+		},
+		Agents: map[string]AgentConfig{
+			"琉璃": {Model: "sonnet"},
+			"翡翠": {Model: "sonnet"},
+		},
+	}
+
+	ctx := context.Background()
+	req := RouteRequest{
+		Prompt: "do research please",
+		Source: "http",
+	}
+
+	// With fallback="smart", keyword matching should still work.
+	result := routeTask(ctx, cfg, req)
+	if result.Agent != "翡翠" {
+		t.Errorf("Role = %q, want 翡翠 (keyword should work with smart fallback)", result.Agent)
+	}
+	if result.Method != "keyword" {
+		t.Errorf("Method = %q, want keyword", result.Method)
+	}
+}
+
+func TestRouteTask_NoBindingsUsesKeywords(t *testing.T) {
+	cfg := &Config{
+		SmartDispatch: SmartDispatchConfig{
+			DefaultAgent: "琉璃",
+			Rules: []RoutingRule{
+				{Agent: "黒曜", Keywords: []string{"security"}},
+			},
+		},
+		Agents: map[string]AgentConfig{
+			"琉璃": {Model: "sonnet"},
+			"黒曜": {Model: "opus"},
+		},
+	}
+
+	ctx := context.Background()
+	req := RouteRequest{
+		Prompt: "run a security check",
+		Source: "telegram",
+		// No bindings defined, so should fall through to keyword matching.
+	}
+
+	result := routeTask(ctx, cfg, req)
+	if result.Agent != "黒曜" {
+		t.Errorf("Role = %q, want 黒曜 (keyword match)", result.Agent)
+	}
+	if result.Method != "keyword" {
+		t.Errorf("Method = %q, want keyword", result.Method)
+	}
+}
+
+// --- from sandbox_test.go ---
+// NOTE: buildDockerCmd, dockerEnvFilter, rewriteDockerArgs were extracted to internal/sandbox.
+// Tests for those functions now live in the internal package.
+
+// --- from sandbox_plugin_test.go ---
+// NOTE: SandboxManager, sandboxPolicyForAgent, sandboxImageForAgent, shouldUseSandbox
+// were extracted to internal/sandbox. Tests now live in the internal package.
+// Keeping only tests for types that remain in root (SandboxConfig, AgentToolPolicy JSON).
+
+func TestSandboxConfig_DefaultImage(t *testing.T) {
+	sc := SandboxConfig{}
+	if sc.DefaultImageOrDefault() != "ubuntu:22.04" {
+		t.Errorf("expected ubuntu:22.04, got %s", sc.DefaultImageOrDefault())
+	}
+}
+
+func TestSandboxConfig_CustomImage(t *testing.T) {
+	sc := SandboxConfig{DefaultImage: "alpine:3.19"}
+	if sc.DefaultImageOrDefault() != "alpine:3.19" {
+		t.Errorf("expected alpine:3.19, got %s", sc.DefaultImageOrDefault())
+	}
+}
+
+func TestSandboxConfig_DefaultNetwork(t *testing.T) {
+	sc := SandboxConfig{}
+	if sc.NetworkOrDefault() != "none" {
+		t.Errorf("expected none, got %s", sc.NetworkOrDefault())
+	}
+}
+
+func TestSandboxConfig_CustomNetwork(t *testing.T) {
+	sc := SandboxConfig{Network: "bridge"}
+	if sc.NetworkOrDefault() != "bridge" {
+		t.Errorf("expected bridge, got %s", sc.NetworkOrDefault())
+	}
+}
+
+// --- AgentToolPolicy JSON serialization ---
+
+func TestAgentToolPolicy_SandboxJSON(t *testing.T) {
+	policy := AgentToolPolicy{
+		Profile:      "standard",
+		Sandbox:      "required",
+		SandboxImage: "node:20",
+	}
+	data, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var decoded AgentToolPolicy
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if decoded.Sandbox != "required" {
+		t.Errorf("expected sandbox=required, got %s", decoded.Sandbox)
+	}
+	if decoded.SandboxImage != "node:20" {
+		t.Errorf("expected sandboxImage=node:20, got %s", decoded.SandboxImage)
+	}
+}
+
+// --- SandboxConfig JSON serialization ---
+
+func TestSandboxConfig_JSON(t *testing.T) {
+	sc := SandboxConfig{
+		Plugin:       "docker-sandbox",
+		DefaultImage: "alpine:3.19",
+		MemLimit:     "512m",
+		CPULimit:     "1.0",
+		Network:      "bridge",
+	}
+	data, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var decoded SandboxConfig
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if decoded.Plugin != "docker-sandbox" {
+		t.Errorf("expected docker-sandbox, got %s", decoded.Plugin)
+	}
+	if decoded.DefaultImage != "alpine:3.19" {
+		t.Errorf("expected alpine:3.19, got %s", decoded.DefaultImage)
+	}
+	if decoded.MemLimit != "512m" {
+		t.Errorf("expected 512m, got %s", decoded.MemLimit)
+	}
+	if decoded.CPULimit != "1.0" {
+		t.Errorf("expected 1.0, got %s", decoded.CPULimit)
+	}
+	if decoded.Network != "bridge" {
+		t.Errorf("expected bridge, got %s", decoded.Network)
+	}
+}
+
+// --- from circuit_test.go ---
+
+// Circuit breaker tests are in internal/circuit/circuit_test.go.
+// This file tests provider helpers that remain in package main.
+
+// --- Provider Helpers ---
+
+func TestIsTransientError(t *testing.T) {
+	tests := []struct {
+		errMsg string
+		want   bool
+	}{
+		// Transient errors.
+		{"connection refused", true},
+		{"Connection Refused on port 443", true},
+		{"request timed out", true},
+		{"context deadline exceeded", true},
+		{"unexpected EOF while reading response", true},
+		{"broken pipe", true},
+		{"connection reset by peer", true},
+		{"HTTP 502 Bad Gateway", true},
+		{"http 503 service unavailable", true},
+		{"status 500: internal server error", true},
+		{"temporarily unavailable, try again later", true},
+		{"service unavailable", true},
+		{"too many requests", true},
+		{"rate limit exceeded", true},
+		{"timeout waiting for response", true},
+
+		// Non-transient errors (should NOT trigger failover).
+		{"invalid API key", false},
+		{"model not found", false},
+		{"permission denied", false},
+		{"bad request: prompt too long", false},
+		{"authentication failed", false},
+		{"", false},
+		{"unknown error occurred", false},
+		{"content policy violation", false},
+	}
+
+	for _, tc := range tests {
+		got := isTransientError(tc.errMsg)
+		if got != tc.want {
+			t.Errorf("isTransientError(%q) = %v, want %v", tc.errMsg, got, tc.want)
+		}
+	}
+}
+
+func TestBuildProviderCandidates(t *testing.T) {
+	t.Run("primary only", func(t *testing.T) {
+		cfg := &Config{
+			DefaultProvider: "claude",
+			Agents:          map[string]AgentConfig{},
+		}
+		task := Task{Provider: ""}
+		candidates := buildProviderCandidates(cfg, task, "")
+		if len(candidates) != 1 {
+			t.Fatalf("expected 1 candidate, got %d: %v", len(candidates), candidates)
+		}
+		if candidates[0] != "claude" {
+			t.Errorf("expected primary 'claude', got %q", candidates[0])
+		}
+	})
+
+	t.Run("task provider overrides default", func(t *testing.T) {
+		cfg := &Config{
+			DefaultProvider: "claude",
+			Agents:          map[string]AgentConfig{},
+		}
+		task := Task{Provider: "openai"}
+		candidates := buildProviderCandidates(cfg, task, "")
+		if candidates[0] != "openai" {
+			t.Errorf("expected primary 'openai', got %q", candidates[0])
+		}
+	})
+
+	t.Run("role provider overrides config default", func(t *testing.T) {
+		cfg := &Config{
+			DefaultProvider: "claude",
+			Agents: map[string]AgentConfig{
+				"dev": {Provider: "gemini"},
+			},
+		}
+		task := Task{}
+		candidates := buildProviderCandidates(cfg, task, "dev")
+		if candidates[0] != "gemini" {
+			t.Errorf("expected primary 'gemini' from role, got %q", candidates[0])
+		}
+	})
+
+	t.Run("role fallbacks appended", func(t *testing.T) {
+		cfg := &Config{
+			DefaultProvider: "claude",
+			Agents: map[string]AgentConfig{
+				"dev": {
+					Provider:          "openai",
+					FallbackProviders: []string{"gemini", "local"},
+				},
+			},
+		}
+		task := Task{}
+		candidates := buildProviderCandidates(cfg, task, "dev")
+		expected := []string{"openai", "gemini", "local"}
+		if len(candidates) != len(expected) {
+			t.Fatalf("expected %v, got %v", expected, candidates)
+		}
+		for i, want := range expected {
+			if candidates[i] != want {
+				t.Errorf("candidates[%d] = %q, want %q", i, candidates[i], want)
+			}
+		}
+	})
+
+	t.Run("config fallbacks appended", func(t *testing.T) {
+		cfg := &Config{
+			DefaultProvider:   "claude",
+			FallbackProviders: []string{"openai", "gemini"},
+			Agents:            map[string]AgentConfig{},
+		}
+		task := Task{}
+		candidates := buildProviderCandidates(cfg, task, "")
+		expected := []string{"claude", "openai", "gemini"}
+		if len(candidates) != len(expected) {
+			t.Fatalf("expected %v, got %v", expected, candidates)
+		}
+		for i, want := range expected {
+			if candidates[i] != want {
+				t.Errorf("candidates[%d] = %q, want %q", i, candidates[i], want)
+			}
+		}
+	})
+
+	t.Run("dedup across role and config fallbacks", func(t *testing.T) {
+		cfg := &Config{
+			DefaultProvider:   "claude",
+			FallbackProviders: []string{"openai", "gemini", "claude"},
+			Agents: map[string]AgentConfig{
+				"dev": {
+					Provider:          "openai",
+					FallbackProviders: []string{"gemini", "local"},
+				},
+			},
+		}
+		task := Task{}
+		candidates := buildProviderCandidates(cfg, task, "dev")
+		expected := []string{"openai", "gemini", "local", "claude"}
+		if len(candidates) != len(expected) {
+			t.Fatalf("expected %v, got %v", expected, candidates)
+		}
+		for i, want := range expected {
+			if candidates[i] != want {
+				t.Errorf("candidates[%d] = %q, want %q", i, candidates[i], want)
+			}
+		}
+	})
+
+	t.Run("empty fallbacks", func(t *testing.T) {
+		cfg := &Config{
+			DefaultProvider:   "claude",
+			FallbackProviders: []string{},
+			Agents: map[string]AgentConfig{
+				"dev": {
+					FallbackProviders: []string{},
+				},
+			},
+		}
+		task := Task{}
+		candidates := buildProviderCandidates(cfg, task, "dev")
+		if len(candidates) != 1 || candidates[0] != "claude" {
+			t.Errorf("expected [claude], got %v", candidates)
+		}
+	})
+}
+
+// --- from classify_test.go ---
+
+// --- String method ---
+
+func TestRequestComplexityString(t *testing.T) {
+	tests := []struct {
+		c    classify.Complexity
+		want string
+	}{
+		{classify.Simple, "simple"},
+		{classify.Standard, "standard"},
+		{classify.Complex, "complex"},
+		{classify.Complexity(99), "standard"}, // unknown falls back
+	}
+	for _, tt := range tests {
+		if got := tt.c.String(); got != tt.want {
+			t.Errorf("classify.Complexity(%d).String() = %q, want %q", int(tt.c), got, tt.want)
+		}
+	}
+}
+
+// --- Simple greeting detection ---
+
+func TestClassifySimpleGreeting(t *testing.T) {
+	cases := []struct {
+		prompt string
+		source string
+	}{
+		{"hello", "discord"},
+		{"hi there!", "telegram"},
+		{"おはよう", "line"},
+		{"hey", "slack"},
+		{"good morning", "whatsapp"},
+		{"yo", "matrix"},
+		{"sup", "teams"},
+		{"hi", "signal"},
+		{"hey there", "gchat"},
+		{"hello!", "imessage"},
+		{"How are you?", "chat"},
+	}
+	for _, tc := range cases {
+		got := classify.Classify(tc.prompt, tc.source)
+		if got != classify.Simple {
+			t.Errorf("classify.Classify(%q, %q) = %v, want simple", tc.prompt, tc.source, got)
+		}
+	}
+}
+
+// --- Complex code task detection ---
+
+func TestClassifyComplexCodingKeywords(t *testing.T) {
+	cases := []struct {
+		prompt string
+	}{
+		{"Please implement a new feature"},
+		{"Debug the login endpoint"},
+		{"Refactor the database schema"},
+		{"Build an API for user management"},
+		{"Write a function to sort the list"},
+		{"Deploy the application to production"},
+		{"Optimize the algorithm for speed"},
+		{"Fix the SQL query performance"},
+		{"Set up authentication and authorization"},
+		{"Create a migration for the new table"},
+		{"CODE review this pull request"},          // case-insensitive
+		{"The DATABASE needs a new index"},         // case-insensitive
+		{"please compile this project"},            // lowercase keyword
+		{"Run the benchmark for concurrency test"}, // multiple keywords
+	}
+	for _, tc := range cases {
+		got := classify.Classify(tc.prompt, "discord")
+		if got != classify.Complex {
+			t.Errorf("classify.Classify(%q, discord) = %v, want complex", tc.prompt, got)
+		}
+	}
+}
+
+func TestClassifyComplexJapaneseKeywords(t *testing.T) {
+	cases := []struct {
+		prompt string
+	}{
+		{"この関数を実装してください"},
+		{"デバッグをお願いします"},
+		{"リファクタリングが必要です"},  // contains リファクタ
+		{"データベースのスキーマを更新して"},
+		{"アルゴリズムを最適化して"},
+		{"認証の仕組みを設計して"},
+		{"コードレビューして"},
+		{"パイプラインを構築して"},
+	}
+	for _, tc := range cases {
+		got := classify.Classify(tc.prompt, "discord")
+		if got != classify.Complex {
+			t.Errorf("classify.Classify(%q, discord) = %v, want complex", tc.prompt, got)
+		}
+	}
+}
+
+// --- Standard middle-ground ---
+
+func TestClassifyStandard(t *testing.T) {
+	cases := []struct {
+		prompt string
+		source string
+	}{
+		// > 100 runes from a chat source, no coding keywords → standard
+		{"Tell me about the weather in Tokyo tomorrow and what I should wear for the upcoming outdoor occasion this weekend", "discord"},
+		{"Can you summarize the latest news about climate change?", "http"},
+		{"What is the capital of France?", "http"},
+		// Long-ish prompt from chat source but no keywords, > 100 runes
+		{"I was wondering if you could help me understand the general process of how things work around here in more detail please", "discord"},
+	}
+	for _, tc := range cases {
+		got := classify.Classify(tc.prompt, tc.source)
+		if got != classify.Standard {
+			t.Errorf("classify.Classify(%q, %q) = %v, want standard", tc.prompt, tc.source, got)
+		}
+	}
+}
+
+// --- CJK character length handling ---
+
+func TestClassifyCJKLength(t *testing.T) {
+	// 99 CJK characters should be < 100 rune threshold → simple from chat source
+	short := strings.Repeat("あ", 99)
+	if got := classify.Classify(short, "discord"); got != classify.Simple {
+		t.Errorf("99 CJK runes from discord = %v, want simple", got)
+	}
+
+	// 100 CJK characters should be >= 100 → standard (no keywords, chat source)
+	exact100 := strings.Repeat("あ", 100)
+	if got := classify.Classify(exact100, "discord"); got != classify.Standard {
+		t.Errorf("100 CJK runes from discord = %v, want standard", got)
+	}
+
+	// 2001 CJK characters should be > 2000 → complex
+	long := strings.Repeat("漢", 2001)
+	if got := classify.Classify(long, "discord"); got != classify.Complex {
+		t.Errorf("2001 CJK runes from discord = %v, want complex", got)
+	}
+}
+
+// --- Source-based overrides ---
+
+func TestClassifySourceCronKeywordBased(t *testing.T) {
+	// Short cron prompt → Simple (keyword-based, not auto-Complex).
+	got := classify.Classify("hello", "cron")
+	if got != classify.Simple {
+		t.Errorf("classify.Classify(hello, cron) = %v, want simple", got)
+	}
+}
+
+func TestClassifySourceWorkflowKeywordBased(t *testing.T) {
+	// Short workflow prompt → Simple (keyword-based, not auto-Complex).
+	got := classify.Classify("check status", "workflow")
+	if got != classify.Simple {
+		t.Errorf("classify.Classify(check status, workflow) = %v, want simple", got)
+	}
+}
+
+func TestClassifySourceOverrideAgentComm(t *testing.T) {
+	got := classify.Classify("ping", "agent-comm")
+	if got != classify.Complex {
+		t.Errorf("classify.Classify(ping, agent-comm) = %v, want complex", got)
+	}
+}
+
+func TestClassifySourceCaseInsensitive(t *testing.T) {
+	// Source matching should be case-insensitive.
+	got := classify.Classify("hi", "Discord")
+	if got != classify.Simple {
+		t.Errorf("classify.Classify(hi, Discord) = %v, want simple", got)
+	}
+
+	// Short cron prompt → Simple (keyword-based, not auto-Complex).
+	got2 := classify.Classify("hi", "CRON")
+	if got2 != classify.Simple {
+		t.Errorf("classify.Classify(hi, CRON) = %v, want simple", got2)
+	}
+}
+
+// --- Edge cases ---
+
+func TestClassifyEmptyString(t *testing.T) {
+	// Empty prompt from chat source: length 0 < 100 → simple
+	got := classify.Classify("", "discord")
+	if got != classify.Simple {
+		t.Errorf("classify.Classify(empty, discord) = %v, want simple", got)
+	}
+
+	// Empty prompt from unknown source: no keywords, length 0 < 100, but source not in ChatSources
+	got2 := classify.Classify("", "http")
+	if got2 != classify.Standard {
+		t.Errorf("classify.Classify(empty, http) = %v, want standard", got2)
+	}
+
+	// Empty prompt and empty source
+	got3 := classify.Classify("", "")
+	if got3 != classify.Standard {
+		t.Errorf("classify.Classify(empty, empty) = %v, want standard", got3)
+	}
+}
+
+func TestClassifyExactly100Chars(t *testing.T) {
+	// Exactly 100 ASCII characters, no keywords, chat source → standard (not simple; threshold is < 100)
+	prompt := strings.Repeat("a", 100)
+	got := classify.Classify(prompt, "discord")
+	if got != classify.Standard {
+		t.Errorf("100 ascii chars from discord = %v, want standard", got)
+	}
+
+	// 99 ASCII characters, no keywords, chat source → simple
+	prompt99 := strings.Repeat("a", 99)
+	got2 := classify.Classify(prompt99, "discord")
+	if got2 != classify.Simple {
+		t.Errorf("99 ascii chars from discord = %v, want simple", got2)
+	}
+}
+
+func TestClassifyExactly2000Chars(t *testing.T) {
+	// Exactly 2000 characters → not > 2000, so not auto-complex
+	prompt := strings.Repeat("x", 2000)
+	got := classify.Classify(prompt, "discord")
+	if got != classify.Standard {
+		t.Errorf("2000 chars from discord = %v, want standard", got)
+	}
+
+	// 2001 characters → complex
+	prompt2001 := strings.Repeat("x", 2001)
+	got2 := classify.Classify(prompt2001, "discord")
+	if got2 != classify.Complex {
+		t.Errorf("2001 chars from discord = %v, want complex", got2)
+	}
+}
+
+// --- Helper functions ---
+
+func TestComplexityMaxSessionMessages(t *testing.T) {
+	tests := []struct {
+		c    classify.Complexity
+		want int
+	}{
+		{classify.Simple, 5},
+		{classify.Standard, 10},
+		{classify.Complex, 20},
+		{classify.Complexity(99), 10}, // unknown falls back
+	}
+	for _, tt := range tests {
+		if got := classify.MaxSessionMessages(tt.c); got != tt.want {
+			t.Errorf("classify.MaxSessionMessages(%v) = %d, want %d", tt.c, got, tt.want)
+		}
+	}
+}
+
+func TestComplexityMaxSessionChars(t *testing.T) {
+	tests := []struct {
+		c    classify.Complexity
+		want int
+	}{
+		{classify.Simple, 4000},
+		{classify.Standard, 8000},
+		{classify.Complex, 16000},
+		{classify.Complexity(99), 8000}, // unknown falls back
+	}
+	for _, tt := range tests {
+		if got := classify.MaxSessionChars(tt.c); got != tt.want {
+			t.Errorf("classify.MaxSessionChars(%v) = %d, want %d", tt.c, got, tt.want)
+		}
+	}
+}
+
+// --- Keyword case insensitivity ---
+
+func TestClassifyKeywordCaseInsensitive(t *testing.T) {
+	cases := []string{
+		"Please IMPLEMENT this",
+		"DEBUG the issue",
+		"The Api is broken",
+		"Fix the DATABASE",
+		"SQL injection vulnerability",
+		"ALGORITHM complexity",
+	}
+	for _, prompt := range cases {
+		got := classify.Classify(prompt, "discord")
+		if got != classify.Complex {
+			t.Errorf("classify.Classify(%q, discord) = %v, want complex", prompt, got)
+		}
+	}
+}
+
+// --- Mixed scenarios ---
+
+func TestClassifyShortWithKeyword(t *testing.T) {
+	// Short prompt but contains a keyword → complex wins over simple.
+	got := classify.Classify("fix the code", "discord")
+	if got != classify.Complex {
+		t.Errorf("classify.Classify(fix the code, discord) = %v, want complex", got)
+	}
+}
+
+func TestClassifyLongFromChatNoKeywords(t *testing.T) {
+	// >100 runes from a chat source, no keywords → standard.
+	prompt := "I would really appreciate it if you could tell me what the weather forecast looks like for the next few days because I am planning a trip"
+	got := classify.Classify(prompt, "discord")
+	if got != classify.Standard {
+		t.Errorf("classify.Classify(long no-keyword, discord) = %v, want standard", got)
+	}
+}
+
+// ============================================================
+// Merged from taskboard_test.go
+// ============================================================
+
+
+func TestTaskBoardCRUD(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, MaxRetries: 3}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create task.
+	task, err := tb.CreateTask(TaskBoard{
+		Title:       "Test Task",
+		Description: "Test description",
+		Priority:    "high",
+		Assignee:    "琉璃",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.ID == "" {
+		t.Fatal("task ID should be generated")
+	}
+	if task.Status != "backlog" {
+		t.Fatalf("expected status backlog, got %s", task.Status)
+	}
+
+	// Update task.
+	updated, err := tb.UpdateTask(task.ID, map[string]any{
+		"title": "Updated Task",
+		"priority": "urgent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Title != "Updated Task" {
+		t.Fatalf("expected Updated Task, got %s", updated.Title)
+	}
+	if updated.Priority != "urgent" {
+		t.Fatalf("expected urgent, got %s", updated.Priority)
+	}
+
+	// List tasks.
+	tasks, err := tb.ListTasks("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+
+	// Get task by ID.
+	fetched, err := tb.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.ID != task.ID {
+		t.Fatalf("expected %s, got %s", task.ID, fetched.ID)
+	}
+}
+
+func TestTaskBoardStatusTransitions(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := tb.CreateTask(TaskBoard{
+		Title: "Status Test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Move backlog → todo.
+	task, err = tb.MoveTask(task.ID, "todo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "todo" {
+		t.Fatalf("expected todo, got %s", task.Status)
+	}
+
+	// Move todo → doing.
+	task, err = tb.MoveTask(task.ID, "doing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "doing" {
+		t.Fatalf("expected doing, got %s", task.Status)
+	}
+
+	// Move doing → done.
+	task, err = tb.MoveTask(task.ID, "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "done" {
+		t.Fatalf("expected done, got %s", task.Status)
+	}
+	if task.CompletedAt == "" {
+		t.Fatal("completedAt should be set when status is done")
+	}
+}
+
+func TestTaskBoardDependencyEnforcement(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create task A (dependency).
+	taskA, err := tb.CreateTask(TaskBoard{
+		Title: "Task A",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create task B that depends on A.
+	taskB, err := tb.CreateTask(TaskBoard{
+		Title:     "Task B",
+		DependsOn: []string{taskA.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to move task B to doing while A is still in backlog → should fail.
+	taskB, _ = tb.MoveTask(taskB.ID, "todo")
+	_, err = tb.MoveTask(taskB.ID, "doing")
+	if err == nil {
+		t.Fatal("expected error when moving task with incomplete dependencies")
+	}
+
+	// Complete task A.
+	taskA, _ = tb.MoveTask(taskA.ID, "todo")
+	taskA, _ = tb.MoveTask(taskA.ID, "doing")
+	taskA, err = tb.MoveTask(taskA.ID, "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now task B should be able to move to doing.
+	taskB, err = tb.MoveTask(taskB.ID, "doing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskB.Status != "doing" {
+		t.Fatalf("expected doing, got %s", taskB.Status)
+	}
+}
+
+func TestTaskBoardAssignment(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := tb.CreateTask(TaskBoard{
+		Title: "Assign Test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Assign to 翡翠.
+	task, err = tb.AssignTask(task.ID, "翡翠")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Assignee != "翡翠" {
+		t.Fatalf("expected 翡翠, got %s", task.Assignee)
+	}
+
+	// List tasks by assignee.
+	tasks, err := tb.ListTasks("", "翡翠", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+}
+
+func TestTaskBoardComments(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := tb.CreateTask(TaskBoard{
+		Title: "Comment Test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add comment.
+	comment, err := tb.AddComment(task.ID, "琉璃", "This is a test comment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comment.ID == "" {
+		t.Fatal("comment ID should be generated")
+	}
+
+	// Get thread.
+	comments, err := tb.GetThread(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(comments))
+	}
+	if comments[0].Content != "This is a test comment" {
+		t.Fatalf("expected 'This is a test comment', got %s", comments[0].Content)
+	}
+}
+
+func TestTaskBoardAutoRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, MaxRetries: 3}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := tb.CreateTask(TaskBoard{
+		Title: "Retry Test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Move to failed.
+	task, _ = tb.MoveTask(task.ID, "todo")
+	task, _ = tb.MoveTask(task.ID, "doing")
+	task, err = tb.MoveTask(task.ID, "failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Auto retry should move it back to todo.
+	if err := tb.AutoRetryFailed(); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err = tb.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "todo" {
+		t.Fatalf("expected todo after retry, got %s", task.Status)
+	}
+	if task.RetryCount != 1 {
+		t.Fatalf("expected retryCount 1, got %d", task.RetryCount)
+	}
+
+	// Retry again.
+	task, _ = tb.MoveTask(task.ID, "doing")
+	task, _ = tb.MoveTask(task.ID, "failed")
+	tb.AutoRetryFailed()
+
+	task, _ = tb.GetTask(task.ID)
+	if task.RetryCount != 2 {
+		t.Fatalf("expected retryCount 2, got %d", task.RetryCount)
+	}
+}
+
+func TestTaskBoardQualityGate(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, RequireReview: true}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := tb.CreateTask(TaskBoard{
+		Title: "Review Gate Test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	task, _ = tb.MoveTask(task.ID, "todo")
+	task, _ = tb.MoveTask(task.ID, "doing")
+
+	// Try to move directly to done → should fail.
+	_, err = tb.MoveTask(task.ID, "done")
+	if err == nil {
+		t.Fatal("expected error when moving to done without review")
+	}
+
+	// Move to review first.
+	task, err = tb.MoveTask(task.ID, "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now move to done → should succeed.
+	task, err = tb.MoveTask(task.ID, "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "done" {
+		t.Fatalf("expected done, got %s", task.Status)
+	}
+}
+
+func TestTaskBoardInvalidStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := tb.CreateTask(TaskBoard{
+		Title: "Invalid Status Test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to move to invalid status.
+	_, err = tb.MoveTask(task.ID, "invalid")
+	if err == nil {
+		t.Fatal("expected error when moving to invalid status")
+	}
+}
+
+func TestTaskBoardPriorityOrdering(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_tasks.db")
+
+	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
+	if err := tb.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create tasks with different priorities.
+	tb.CreateTask(TaskBoard{Title: "Low Priority", Priority: "low"})
+	tb.CreateTask(TaskBoard{Title: "Urgent Priority", Priority: "urgent"})
+	tb.CreateTask(TaskBoard{Title: "Normal Priority", Priority: "normal"})
+	tb.CreateTask(TaskBoard{Title: "High Priority", Priority: "high"})
+
+	tasks, err := tb.ListTasks("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check priority ordering: urgent → high → normal → low.
+	expectedOrder := []string{"urgent", "high", "normal", "low"}
+	for i, expected := range expectedOrder {
+		if tasks[i].Priority != expected {
+			t.Fatalf("expected priority %s at index %d, got %s", expected, i, tasks[i].Priority)
+		}
+	}
+}
+
+// --- from worktree_test.go ---
+
+func TestBuildBranchName_Default(t *testing.T) {
+	cfg := GitWorkflowConfig{}
+	task := TaskBoard{
+		Type:     "feat",
+		Assignee: "kokuyou",
+		Title:    "Codex CLI Provider",
+		ID:       "task-123",
+	}
+	got := buildBranchName(cfg, task)
+	if got != "feat/kokuyou-codex-cli-provider" {
+		t.Errorf("expected feat/kokuyou-codex-cli-provider, got %s", got)
+	}
+}
+
+func TestBuildBranchName_CustomConvention(t *testing.T) {
+	cfg := GitWorkflowConfig{
+		BranchConvention: "{type}/{description}",
+	}
+	task := TaskBoard{
+		Type:     "fix",
+		Assignee: "kokuyou",
+		Title:    "Cron timezone bug",
+	}
+	got := buildBranchName(cfg, task)
+	if got != "fix/cron-timezone-bug" {
+		t.Errorf("expected fix/cron-timezone-bug, got %s", got)
+	}
+}
+
+func TestBuildBranchName_WithTaskId(t *testing.T) {
+	cfg := GitWorkflowConfig{
+		BranchConvention: "{type}/{taskId}-{description}",
+	}
+	task := TaskBoard{
+		Type:  "refactor",
+		Title: "Dispatch cleanup",
+		ID:    "task-456",
+	}
+	got := buildBranchName(cfg, task)
+	if got != "refactor/task-456-dispatch-cleanup" {
+		t.Errorf("expected refactor/task-456-dispatch-cleanup, got %s", got)
+	}
+}
+
+func TestBuildBranchName_DefaultType(t *testing.T) {
+	cfg := GitWorkflowConfig{
+		DefaultType: "chore",
+	}
+	task := TaskBoard{
+		Assignee: "ruri",
+		Title:    "Update dependencies",
+	}
+	got := buildBranchName(cfg, task)
+	if got != "chore/ruri-update-dependencies" {
+		t.Errorf("expected chore/ruri-update-dependencies, got %s", got)
+	}
+}
+
+func TestBuildBranchName_FallbackType(t *testing.T) {
+	cfg := GitWorkflowConfig{}
+	task := TaskBoard{
+		Assignee: "hisui",
+		Title:    "Add feature",
+	}
+	got := buildBranchName(cfg, task)
+	if got != "feat/hisui-add-feature" {
+		t.Errorf("expected feat/hisui-add-feature, got %s", got)
+	}
+}
+
+func TestBuildBranchName_NoAssignee(t *testing.T) {
+	cfg := GitWorkflowConfig{}
+	task := TaskBoard{
+		Type:  "fix",
+		Title: "Fix something",
+	}
+	got := buildBranchName(cfg, task)
+	if got != "fix/anon-fix-something" {
+		t.Errorf("expected fix/anon-fix-something, got %s", got)
+	}
+}
+
+func TestSlugifyBranch_Basic(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Codex CLI Provider", "codex-cli-provider"},
+		{"Fix cron timezone", "fix-cron-timezone"},
+		{"Hello World!", "hello-world"},
+		{"multiple   spaces", "multiple-spaces"},
+		{"CamelCase Test", "camelcase-test"},
+		{"", ""},
+		{"feat: add new thing", "feat-add-new-thing"},
+	}
+	for _, tt := range tests {
+		got := slugifyBranch(tt.input)
+		if got != tt.want {
+			t.Errorf("slugifyBranch(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestSlugifyBranch_LongTitle(t *testing.T) {
+	input := "This is a very long title that should be truncated to forty characters maximum"
+	got := slugifyBranch(input)
+	if len(got) > 40 {
+		t.Errorf("slugifyBranch produced %d chars (>40): %s", len(got), got)
+	}
+	if got == "" {
+		t.Error("slugifyBranch should produce non-empty result for long title")
+	}
+}
+
+// --- parseCompletionStatus tests ---
+
+func TestParseCompletionStatus_NoMarker(t *testing.T) {
+	status, concerns, blocked := parseCompletionStatus("just some regular output without markers")
+	if status != StatusDone {
+		t.Errorf("expected StatusDone, got %q", status)
+	}
+	if concerns != "" || blocked != "" {
+		t.Errorf("expected empty concerns/blocked, got %q / %q", concerns, blocked)
+	}
+}
+
+func TestParseCompletionStatus_Done(t *testing.T) {
+	output := "task completed successfully\n<!-- COMPLETION_STATUS: DONE -->"
+	status, concerns, blocked := parseCompletionStatus(output)
+	if status != StatusDone {
+		t.Errorf("expected StatusDone, got %q", status)
+	}
+	if concerns != "" || blocked != "" {
+		t.Errorf("expected empty concerns/blocked, got %q / %q", concerns, blocked)
+	}
+}
+
+func TestParseCompletionStatus_DoneWithConcerns(t *testing.T) {
+	output := `implemented the feature
+<!-- COMPLETION_STATUS: DONE_WITH_CONCERNS -->
+<!-- CONCERNS: test coverage is only 40%, no edge case tests -->`
+	status, concerns, blocked := parseCompletionStatus(output)
+	if status != StatusDoneWithConcerns {
+		t.Errorf("expected StatusDoneWithConcerns, got %q", status)
+	}
+	if concerns != "test coverage is only 40%, no edge case tests" {
+		t.Errorf("unexpected concerns: %q", concerns)
+	}
+	if blocked != "" {
+		t.Errorf("expected empty blockedReason, got %q", blocked)
+	}
+}
+
+func TestParseCompletionStatus_Blocked(t *testing.T) {
+	output := `cannot proceed
+<!-- COMPLETION_STATUS: BLOCKED -->
+<!-- BLOCKED_REASON: need API key for external service -->`
+	status, concerns, blocked := parseCompletionStatus(output)
+	if status != StatusBlocked {
+		t.Errorf("expected StatusBlocked, got %q", status)
+	}
+	if concerns != "" {
+		t.Errorf("expected empty concerns, got %q", concerns)
+	}
+	if blocked != "need API key for external service" {
+		t.Errorf("unexpected blockedReason: %q", blocked)
+	}
+}
+
+func TestParseCompletionStatus_NeedsContext(t *testing.T) {
+	output := `unclear requirements
+<!-- COMPLETION_STATUS: NEEDS_CONTEXT -->
+<!-- BLOCKED_REASON: spec doesn't specify error handling behavior -->`
+	status, concerns, blocked := parseCompletionStatus(output)
+	if status != StatusNeedsContext {
+		t.Errorf("expected StatusNeedsContext, got %q", status)
+	}
+	if concerns != "" {
+		t.Errorf("expected empty concerns, got %q", concerns)
+	}
+	if blocked != "spec doesn't specify error handling behavior" {
+		t.Errorf("unexpected blockedReason: %q", blocked)
+	}
+}
+
+func TestParseCompletionStatus_WhitespaceVariants(t *testing.T) {
+	// Extra whitespace around the marker.
+	output := "done\n<!--  COMPLETION_STATUS:  DONE_WITH_CONCERNS  -->\n<!--  CONCERNS:  minor issue  -->"
+	status, concerns, _ := parseCompletionStatus(output)
+	if status != StatusDoneWithConcerns {
+		t.Errorf("expected StatusDoneWithConcerns, got %q", status)
+	}
+	if concerns != "minor issue" {
+		t.Errorf("unexpected concerns: %q", concerns)
 	}
 }

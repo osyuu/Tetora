@@ -1,0 +1,11 @@
+/install.sh https://raw.githubusercontent.com/TakumaLee/Tetora/main/install.sh 302
+
+# Blog backward compatibility
+/blog/v2-1-0-release.html /en/blog/v2-1-0-release/ 301
+/blog/tax-accountant-case-study.html /en/blog/tax-accountant-case-study/ 301
+/blog/ /en/blog/ 301
+
+# Docs default lang redirect
+/docs/ /en/docs/ 301
+/docs/:slug/ /en/docs/:slug/ 301
+/tips/ /en/tips/ 301

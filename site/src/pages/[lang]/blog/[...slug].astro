@@ -1,0 +1,33 @@
+---
+import PostLayout from '../../../layouts/PostLayout.astro';
+import { languages } from '../../../i18n/ui';
+import { getCollection, render } from 'astro:content';
+
+export async function getStaticPaths() {
+  const posts = await getCollection('blog');
+  return posts.map(post => {
+    const lang = post.data.lang;
+    const slug = post.id.split('/').slice(1).join('/');
+    return {
+      params: { lang, slug },
+      props: { post },
+    };
+  });
+}
+
+const { post } = Astro.props;
+const { Content } = await render(post);
+const lang = post.data.lang;
+const slug = post.id.split('/').slice(1).join('/');
+---
+<PostLayout
+  title={post.data.title}
+  lang={lang}
+  date={post.data.date}
+  tag={post.data.tag}
+  slug={slug}
+>
+  <h1><Fragment set:html={post.data.title} /></h1>
+  <div class="article-meta">{post.data.date} &middot; {post.data.tag}</div>
+  <Content />
+</PostLayout>

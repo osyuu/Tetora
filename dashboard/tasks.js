@@ -500,6 +500,10 @@ async function openTaskDetail(taskId) {
     datesEl.textContent = 'Created: ' + (task.createdAt || '').substring(0, 10);
     if (task.completedAt) datesEl.textContent += ' | Done: ' + task.completedAt.substring(0, 10);
 
+    // Show/hide cancel button based on status.
+    var cancelBtn = document.getElementById('td-cancel-btn');
+    if (cancelBtn) cancelBtn.style.display = task.status === 'doing' ? '' : 'none';
+
     // Load workflow step progress.
     loadTaskWfProgress(task);
 
@@ -610,6 +614,9 @@ async function updateTaskField(field) {
 
   if (field === 'status') {
     var newStatus = document.getElementById('td-status').value;
+    // Toggle cancel button visibility.
+    var cb = document.getElementById('td-cancel-btn');
+    if (cb) cb.style.display = newStatus === 'doing' ? '' : 'none';
     try {
       await fetchJSON('/api/tasks/' + taskId + '/move', {
         method: 'POST',
@@ -1350,6 +1357,10 @@ function renderTaskWfProgress(run) {
   statusEl.textContent = run.status;
   statusEl.className = 'badge ' + statusCls;
 
+  // Show/hide workflow cancel button.
+  var wfCancelBtn = document.getElementById('td-wf-cancel-btn');
+  if (wfCancelBtn) wfCancelBtn.style.display = run.status === 'running' ? '' : 'none';
+
   var stepResults = run.stepResults || {};
   var steps = Object.values(stepResults);
   steps.sort(function(a, b) { return (a.startedAt || '').localeCompare(b.startedAt || ''); });
@@ -1414,6 +1425,11 @@ function subscribeTaskWfSSE(runId) {
       }
       if (ev.type === 'workflow_completed') {
         if (taskWfSSE) { taskWfSSE.close(); taskWfSSE = null; }
+        // Hide cancel buttons immediately.
+        var wfCb = document.getElementById('td-wf-cancel-btn');
+        if (wfCb) wfCb.style.display = 'none';
+        var tdCb = document.getElementById('td-cancel-btn');
+        if (tdCb) tdCb.style.display = 'none';
         // Refresh to get final state.
         var taskId = document.getElementById('td-id').value;
         if (taskId) {

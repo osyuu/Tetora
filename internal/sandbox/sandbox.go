@@ -1,0 +1,507 @@
+// Package sandbox provides Docker-based sandboxing helpers and the SandboxManager
+// which bridges the core dispatch system with the sandbox plugin.
+package sandbox
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"tetora/internal/config"
+	"tetora/internal/log"
+	"tetora/internal/plugin"
+)
+
+// BuildDockerCmd wraps a claude CLI invocation in `docker run`.
+// The workdir is mounted at /workspace inside the container.
+// addDirs get unique mount points under /mnt/.
+// MCPPath is mounted at /tmp/mcp.json if set.
+func BuildDockerCmd(ctx context.Context, dcfg config.DockerConfig, workdir string, claudePath string, claudeArgs []string, addDirs []string, mcpPath string, envVars []string) *exec.Cmd {
+	args := []string{"run", "--rm", "-i"}
+
+	// Resource limits.
+	network := dcfg.Network
+	if network == "" {
+		network = "none"
+	}
+	args = append(args, "--network", network)
+
+	if dcfg.Memory != "" {
+		args = append(args, "--memory", dcfg.Memory)
+	}
+	if dcfg.CPUs != "" {
+		args = append(args, "--cpus", dcfg.CPUs)
+	}
+	if dcfg.ReadOnly {
+		args = append(args, "--read-only")
+	}
+
+	// Mount workdir.
+	if workdir != "" {
+		args = append(args, "--workdir", "/workspace")
+		args = append(args, "-v", workdir+":/workspace")
+	}
+
+	// Mount addDirs (each gets /mnt/<basename>).
+	for _, dir := range addDirs {
+		base := filepath.Base(dir)
+		mountPoint := "/mnt/" + base
+		args = append(args, "-v", dir+":"+mountPoint)
+	}
+
+	// Mount MCP config if set.
+	if mcpPath != "" {
+		args = append(args, "-v", mcpPath+":/tmp/mcp.json:ro")
+	}
+
+	// Pass whitelisted environment variables.
+	for _, env := range envVars {
+		args = append(args, "-e", env)
+	}
+
+	// Image.
+	args = append(args, dcfg.Image)
+
+	// Claude command + args inside container.
+	args = append(args, claudePath)
+	args = append(args, claudeArgs...)
+
+	return exec.CommandContext(ctx, "docker", args...)
+}
+
+// DockerEnvFilter returns KEY=VALUE pairs for whitelisted environment variables.
+// Default whitelist: ANTHROPIC_API_KEY, HOME, PATH.
+// Additional vars from DockerConfig.EnvPass are included.
+func DockerEnvFilter(dcfg config.DockerConfig) []string {
+	whitelist := map[string]bool{
+		"ANTHROPIC_API_KEY": true,
+		"HOME":              true,
+		"PATH":              true,
+	}
+	for _, key := range dcfg.EnvPass {
+		whitelist[key] = true
+	}
+
+	var result []string
+	for _, env := range os.Environ() {
+		key, _, ok := strings.Cut(env, "=")
+		if ok && whitelist[key] {
+			result = append(result, env)
+		}
+	}
+	return result
+}
+
+// RewriteDockerArgs adjusts claude CLI arguments for Docker context.
+// - Rewrites --add-dir paths to /mnt/<basename>
+// - Rewrites --mcp-config path to /tmp/mcp.json
+// - Rewrites workdir-relative references
+func RewriteDockerArgs(claudeArgs []string, addDirs []string, mcpPath string) []string {
+	rewritten := make([]string, len(claudeArgs))
+	copy(rewritten, claudeArgs)
+
+	// Build mapping of host addDir → container path.
+	dirMap := make(map[string]string)
+	for _, dir := range addDirs {
+		base := filepath.Base(dir)
+		dirMap[dir] = "/mnt/" + base
+	}
+
+	for i := 0; i < len(rewritten); i++ {
+		if rewritten[i] == "--add-dir" && i+1 < len(rewritten) {
+			if mapped, ok := dirMap[rewritten[i+1]]; ok {
+				rewritten[i+1] = mapped
+			}
+		}
+		if rewritten[i] == "--mcp-config" && i+1 < len(rewritten) && mcpPath != "" {
+			rewritten[i+1] = "/tmp/mcp.json"
+		}
+	}
+
+	return rewritten
+}
+
+// CheckDockerAvailable verifies that docker CLI is in PATH and the daemon is accessible.
+func CheckDockerAvailable() error {
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		return fmt.Errorf("docker not found in PATH")
+	}
+
+	out, err := exec.Command(dockerPath, "version", "--format", "{{.Server.Version}}").Output()
+	if err != nil {
+		return fmt.Errorf("docker daemon not accessible: %v", err)
+	}
+
+	version := strings.TrimSpace(string(out))
+	if version == "" {
+		return fmt.Errorf("docker daemon returned empty version")
+	}
+
+	return nil
+}
+
+// CheckDockerImage verifies that a Docker image exists locally.
+func CheckDockerImage(image string) error {
+	err := exec.Command("docker", "image", "inspect", image).Run()
+	if err != nil {
+		return fmt.Errorf("image %q not found locally (docker pull %s)", image, image)
+	}
+	return nil
+}
+
+// --- Sandbox Manager ---
+
+// SandboxManager bridges the core dispatch system with the sandbox plugin.
+// It manages per-session sandboxes via JSON-RPC calls to the plugin.
+type SandboxManager struct {
+	host   *plugin.Host
+	cfg    *config.Config
+	plugin string            // resolved plugin name
+	active map[string]string // sessionID -> sandboxID
+	mu     sync.RWMutex
+}
+
+// NewSandboxManager creates a SandboxManager. It resolves the sandbox plugin
+// name from config or auto-discovers the first "sandbox" type plugin.
+func NewSandboxManager(cfg *config.Config, host *plugin.Host) *SandboxManager {
+	sm := &SandboxManager{
+		host:   host,
+		cfg:    cfg,
+		active: make(map[string]string),
+	}
+
+	// Resolve plugin name.
+	if cfg.Sandbox.Plugin != "" {
+		sm.plugin = cfg.Sandbox.Plugin
+	} else {
+		// Auto-discover first sandbox-type plugin.
+		for name, pcfg := range cfg.Plugins {
+			if pcfg.Type == "sandbox" {
+				sm.plugin = name
+				break
+			}
+		}
+	}
+
+	return sm
+}
+
+// Available returns true if the sandbox plugin is configured and responsive.
+func (sm *SandboxManager) Available() bool {
+	if sm == nil || sm.host == nil || sm.plugin == "" {
+		return false
+	}
+
+	health := sm.host.Health(sm.plugin)
+	if healthy, ok := health["healthy"].(bool); ok {
+		return healthy
+	}
+	return false
+}
+
+// PluginName returns the resolved sandbox plugin name.
+func (sm *SandboxManager) PluginName() string {
+	if sm == nil {
+		return ""
+	}
+	return sm.plugin
+}
+
+// EnsureSandbox creates or returns an existing sandbox for the given session.
+// workspace is the host directory to mount inside the sandbox.
+func (sm *SandboxManager) EnsureSandbox(sessionID, workspace string) (string, error) {
+	if sm == nil || sm.host == nil {
+		return "", fmt.Errorf("sandbox manager not initialized")
+	}
+	if sm.plugin == "" {
+		return "", fmt.Errorf("no sandbox plugin configured")
+	}
+
+	// Check if we already have a sandbox for this session.
+	sm.mu.RLock()
+	if sandboxID, ok := sm.active[sessionID]; ok {
+		sm.mu.RUnlock()
+		return sandboxID, nil
+	}
+	sm.mu.RUnlock()
+
+	// Build create params from config defaults.
+	params := map[string]any{
+		"sessionId": sessionID,
+		"workspace": workspace,
+		"image":     sm.cfg.Sandbox.DefaultImageOrDefault(),
+		"network":   sm.cfg.Sandbox.NetworkOrDefault(),
+	}
+	if sm.cfg.Sandbox.MemLimit != "" {
+		params["memLimit"] = sm.cfg.Sandbox.MemLimit
+	}
+	if sm.cfg.Sandbox.CPULimit != "" {
+		params["cpuLimit"] = sm.cfg.Sandbox.CPULimit
+	}
+
+	result, err := sm.host.Call(sm.plugin, "sandbox/create", params)
+	if err != nil {
+		return "", fmt.Errorf("sandbox/create failed: %w", err)
+	}
+
+	// Parse response.
+	var resp struct {
+		SandboxID string `json:"sandboxId"`
+		IsError   bool   `json:"isError"`
+		Error     string `json:"error"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", fmt.Errorf("parse sandbox/create response: %w", err)
+	}
+	if resp.IsError {
+		return "", fmt.Errorf("sandbox/create error: %s", resp.Error)
+	}
+	if resp.SandboxID == "" {
+		return "", fmt.Errorf("sandbox/create returned empty sandboxId")
+	}
+
+	sm.mu.Lock()
+	sm.active[sessionID] = resp.SandboxID
+	sm.mu.Unlock()
+
+	log.Info("sandbox created", "sessionId", sessionID, "sandboxId", resp.SandboxID)
+	return resp.SandboxID, nil
+}
+
+// EnsureSandboxWithImage creates a sandbox with a custom image override.
+func (sm *SandboxManager) EnsureSandboxWithImage(sessionID, workspace, image string) (string, error) {
+	if sm == nil || sm.host == nil {
+		return "", fmt.Errorf("sandbox manager not initialized")
+	}
+	if sm.plugin == "" {
+		return "", fmt.Errorf("no sandbox plugin configured")
+	}
+
+	// Check if we already have a sandbox for this session.
+	sm.mu.RLock()
+	if sandboxID, ok := sm.active[sessionID]; ok {
+		sm.mu.RUnlock()
+		return sandboxID, nil
+	}
+	sm.mu.RUnlock()
+
+	if image == "" {
+		image = sm.cfg.Sandbox.DefaultImageOrDefault()
+	}
+
+	params := map[string]any{
+		"sessionId": sessionID,
+		"workspace": workspace,
+		"image":     image,
+		"network":   sm.cfg.Sandbox.NetworkOrDefault(),
+	}
+	if sm.cfg.Sandbox.MemLimit != "" {
+		params["memLimit"] = sm.cfg.Sandbox.MemLimit
+	}
+	if sm.cfg.Sandbox.CPULimit != "" {
+		params["cpuLimit"] = sm.cfg.Sandbox.CPULimit
+	}
+
+	result, err := sm.host.Call(sm.plugin, "sandbox/create", params)
+	if err != nil {
+		return "", fmt.Errorf("sandbox/create failed: %w", err)
+	}
+
+	var resp struct {
+		SandboxID string `json:"sandboxId"`
+		IsError   bool   `json:"isError"`
+		Error     string `json:"error"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", fmt.Errorf("parse sandbox/create response: %w", err)
+	}
+	if resp.IsError {
+		return "", fmt.Errorf("sandbox/create error: %s", resp.Error)
+	}
+	if resp.SandboxID == "" {
+		return "", fmt.Errorf("sandbox/create returned empty sandboxId")
+	}
+
+	sm.mu.Lock()
+	sm.active[sessionID] = resp.SandboxID
+	sm.mu.Unlock()
+
+	log.Info("sandbox created", "sessionId", sessionID, "sandboxId", resp.SandboxID, "image", image)
+	return resp.SandboxID, nil
+}
+
+// ExecInSandbox executes a command inside a sandbox container.
+func (sm *SandboxManager) ExecInSandbox(sandboxID, command string) (string, error) {
+	if sm == nil || sm.host == nil {
+		return "", fmt.Errorf("sandbox manager not initialized")
+	}
+	if sm.plugin == "" {
+		return "", fmt.Errorf("no sandbox plugin configured")
+	}
+
+	result, err := sm.host.Call(sm.plugin, "sandbox/exec", map[string]any{
+		"sandboxId": sandboxID,
+		"command":   command,
+		"timeout":   120, // default 2 minute timeout
+	})
+	if err != nil {
+		return "", fmt.Errorf("sandbox/exec failed: %w", err)
+	}
+
+	var resp struct {
+		Stdout   string `json:"stdout"`
+		Stderr   string `json:"stderr"`
+		ExitCode int    `json:"exitCode"`
+		IsError  bool   `json:"isError"`
+		Error    string `json:"error"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", fmt.Errorf("parse sandbox/exec response: %w", err)
+	}
+	if resp.IsError {
+		return "", fmt.Errorf("sandbox/exec error: %s", resp.Error)
+	}
+
+	output := resp.Stdout
+	if resp.Stderr != "" {
+		output += "\n[stderr]\n" + resp.Stderr
+	}
+	if resp.ExitCode != 0 {
+		return output, fmt.Errorf("exit code %d", resp.ExitCode)
+	}
+
+	return output, nil
+}
+
+// DestroySandbox removes a sandbox container and cleans up the session mapping.
+func (sm *SandboxManager) DestroySandbox(sandboxID string) error {
+	if sm == nil || sm.host == nil {
+		return fmt.Errorf("sandbox manager not initialized")
+	}
+	if sm.plugin == "" {
+		return fmt.Errorf("no sandbox plugin configured")
+	}
+
+	_, err := sm.host.Call(sm.plugin, "sandbox/destroy", map[string]any{
+		"sandboxId": sandboxID,
+	})
+
+	// Remove from active map regardless of error (container may already be gone).
+	sm.mu.Lock()
+	for sid, sbid := range sm.active {
+		if sbid == sandboxID {
+			delete(sm.active, sid)
+			break
+		}
+	}
+	sm.mu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("sandbox/destroy failed: %w", err)
+	}
+
+	log.Info("sandbox destroyed", "sandboxId", sandboxID)
+	return nil
+}
+
+// DestroyBySession destroys the sandbox associated with a session ID.
+func (sm *SandboxManager) DestroyBySession(sessionID string) error {
+	sm.mu.RLock()
+	sandboxID, ok := sm.active[sessionID]
+	sm.mu.RUnlock()
+
+	if !ok {
+		return nil // no sandbox for this session
+	}
+
+	return sm.DestroySandbox(sandboxID)
+}
+
+// ActiveSandboxes returns a copy of the active session-to-sandbox mapping.
+func (sm *SandboxManager) ActiveSandboxes() map[string]string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	result := make(map[string]string, len(sm.active))
+	for k, v := range sm.active {
+		result[k] = v
+	}
+	return result
+}
+
+// DestroyAll destroys all active sandboxes (used during shutdown).
+func (sm *SandboxManager) DestroyAll() {
+	sm.mu.RLock()
+	sandboxIDs := make([]string, 0, len(sm.active))
+	for _, sbid := range sm.active {
+		sandboxIDs = append(sandboxIDs, sbid)
+	}
+	sm.mu.RUnlock()
+
+	for _, sbid := range sandboxIDs {
+		if err := sm.DestroySandbox(sbid); err != nil {
+			log.Warn("destroy sandbox failed during shutdown", "sandboxId", sbid, "error", err)
+		}
+	}
+}
+
+// --- Sandbox Dispatch Helpers ---
+
+// PolicyForAgent returns the sandbox policy setting for an agent.
+// Returns "required", "optional", or "never" (default).
+func PolicyForAgent(cfg *config.Config, agentName string) string {
+	if agentName == "" {
+		return "never"
+	}
+	rc, ok := cfg.Agents[agentName]
+	if !ok {
+		return "never"
+	}
+	switch rc.ToolPolicy.Sandbox {
+	case "required", "optional":
+		return rc.ToolPolicy.Sandbox
+	default:
+		return "never"
+	}
+}
+
+// ImageForAgent returns the sandbox image for an agent.
+// Priority: agent SandboxImage -> config Sandbox.DefaultImage -> "ubuntu:22.04"
+func ImageForAgent(cfg *config.Config, agentName string) string {
+	if agentName != "" {
+		if rc, ok := cfg.Agents[agentName]; ok {
+			if rc.ToolPolicy.SandboxImage != "" {
+				return rc.ToolPolicy.SandboxImage
+			}
+		}
+	}
+	return cfg.Sandbox.DefaultImageOrDefault()
+}
+
+// ShouldUseSandbox determines whether a task should use a sandbox,
+// given the agent policy and sandbox availability.
+// Returns (useSandbox bool, err error).
+// err is non-nil only when sandbox is required but unavailable.
+func ShouldUseSandbox(cfg *config.Config, agentName string, sm *SandboxManager) (bool, error) {
+	policy := PolicyForAgent(cfg, agentName)
+
+	switch policy {
+	case "required":
+		if sm == nil || !sm.Available() {
+			return false, fmt.Errorf("sandbox required for agent %q but sandbox plugin is unavailable", agentName)
+		}
+		return true, nil
+	case "optional":
+		if sm != nil && sm.Available() {
+			return true, nil
+		}
+		return false, nil // fallback to local execution
+	default:
+		return false, nil
+	}
+}
