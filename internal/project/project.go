@@ -74,6 +74,16 @@ func migrateDB(dbPath string) {
 	for _, ddl := range cols {
 		db.Exec(dbPath, ddl)
 	}
+
+	// Enforce non-empty workdir on INSERT. RAISE(ABORT, ...) rolls back the
+	// statement and returns an error to the caller. IF NOT EXISTS makes this
+	// migration idempotent — safe to run multiple times.
+	db.Exec(dbPath, `CREATE TRIGGER IF NOT EXISTS trg_projects_require_workdir
+BEFORE INSERT ON projects
+WHEN NEW.workdir = '' OR NEW.workdir IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'workdir must not be empty');
+END`)
 }
 
 // --- CRUD ---
@@ -121,6 +131,9 @@ func Get(dbPath, id string) (*Project, error) {
 }
 
 func Create(dbPath string, p Project) error {
+	if p.Workdir == "" {
+		return fmt.Errorf("workdir is required")
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if p.CreatedAt == "" {
 		p.CreatedAt = now

@@ -3,6 +3,7 @@ package project
 import (
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,12 +98,29 @@ func TestProjectGet_NotFound(t *testing.T) {
 	}
 }
 
+func TestProjectCreate_EmptyWorkdir(t *testing.T) {
+	dbPath := tempProjectsDB(t)
+
+	p := Project{
+		ID:   "proj-no-workdir",
+		Name: "No Workdir Project",
+	}
+	err := Create(dbPath, p)
+	if err == nil {
+		t.Fatal("expected error when workdir is empty, got nil")
+	}
+	if !strings.Contains(err.Error(), "workdir") {
+		t.Errorf("expected workdir error, got %q", err.Error())
+	}
+}
+
 func TestProjectCreate_DefaultStatus(t *testing.T) {
 	dbPath := tempProjectsDB(t)
 
 	p := Project{
-		ID:   "proj-defaults",
-		Name: "Defaults Project",
+		ID:      "proj-defaults",
+		Name:    "Defaults Project",
+		Workdir: "/tmp/defaults",
 	}
 	if err := Create(dbPath, p); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -124,9 +142,9 @@ func TestProjectList(t *testing.T) {
 	dbPath := tempProjectsDB(t)
 
 	projects := []Project{
-		{ID: "p1", Name: "Alpha", Status: "active"},
-		{ID: "p2", Name: "Beta", Status: "active"},
-		{ID: "p3", Name: "Gamma", Status: "archived"},
+		{ID: "p1", Name: "Alpha", Status: "active", Workdir: "/tmp/p1"},
+		{ID: "p2", Name: "Beta", Status: "active", Workdir: "/tmp/p2"},
+		{ID: "p3", Name: "Gamma", Status: "archived", Workdir: "/tmp/p3"},
 	}
 	for _, p := range projects {
 		if err := Create(dbPath, p); err != nil {
@@ -186,6 +204,7 @@ func TestProjectUpdate(t *testing.T) {
 		Name:        "Before Update",
 		Description: "Original description",
 		Status:      "active",
+		Workdir:     "/tmp/update",
 	}
 	if err := Create(dbPath, p); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -220,8 +239,9 @@ func TestProjectDelete(t *testing.T) {
 	dbPath := tempProjectsDB(t)
 
 	p := Project{
-		ID:   "proj-delete",
-		Name: "To Delete",
+		ID:      "proj-delete",
+		Name:    "To Delete",
+		Workdir: "/tmp/delete",
 	}
 	if err := Create(dbPath, p); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -248,6 +268,7 @@ func TestProjectCreate_SpecialChars(t *testing.T) {
 		Name:        "It's a project",
 		Description: `She said "hello" and it's fine`,
 		Status:      "active",
+		Workdir:     "/tmp/special",
 	}
 	if err := Create(dbPath, p); err != nil {
 		t.Fatalf("Create with special chars: %v", err)
@@ -306,10 +327,10 @@ func TestProjectListOrder(t *testing.T) {
 	dbPath := tempProjectsDB(t)
 
 	projects := []Project{
-		{ID: "p1", Name: "Zebra", Priority: 1},
-		{ID: "p2", Name: "Alpha", Priority: 5},
-		{ID: "p3", Name: "Beta", Priority: 5},
-		{ID: "p4", Name: "Delta", Priority: 0},
+		{ID: "p1", Name: "Zebra", Priority: 1, Workdir: "/tmp/zebra"},
+		{ID: "p2", Name: "Alpha", Priority: 5, Workdir: "/tmp/alpha"},
+		{ID: "p3", Name: "Beta", Priority: 5, Workdir: "/tmp/beta"},
+		{ID: "p4", Name: "Delta", Priority: 0, Workdir: "/tmp/delta"},
 	}
 	for _, p := range projects {
 		if err := Create(dbPath, p); err != nil {
@@ -342,6 +363,7 @@ func TestProjectUpdateNewFields(t *testing.T) {
 		RepoURL:  "https://github.com/old/repo",
 		Category: "Old Category",
 		Priority: 1,
+		Workdir:  "/tmp/upd-new",
 	}
 	if err := Create(dbPath, p); err != nil {
 		t.Fatalf("Create: %v", err)
