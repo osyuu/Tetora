@@ -135,7 +135,9 @@ func scriptFilename(command string) string {
 }
 
 // LoadFileSkills scans the skills directory and returns all file-based skills.
-// Only approved skills are returned as usable SkillConfigs.
+// Skills with metadata.json (approved=true) are loaded first. Skills that only
+// have a SKILL.md with YAML frontmatter are also loaded as doc-only skills.
+// metadata.json takes priority: if a directory has both, metadata.json wins.
 func LoadFileSkills(cfg *AppConfig) []SkillConfig {
 	dir := SkillsDir(cfg)
 	entries, err := os.ReadDir(dir)
@@ -148,44 +150,150 @@ func LoadFileSkills(cfg *AppConfig) []SkillConfig {
 		if !entry.IsDir() {
 			continue
 		}
-		metaPath := filepath.Join(dir, entry.Name(), "metadata.json")
-		data, err := os.ReadFile(metaPath)
-		if err != nil {
-			continue
-		}
-
-		var meta SkillMetadata
-		if json.Unmarshal(data, &meta) != nil {
-			continue
-		}
-
-		// Only include approved skills.
-		if !meta.Approved {
-			continue
-		}
-
 		skillDir := filepath.Join(dir, entry.Name())
-		sc := SkillConfig{
-			Name:        meta.Name,
-			Description: meta.Description,
-			Command:     meta.Command,
-			Args:        meta.Args,
-			Env:         meta.Env,
-			Matcher:     meta.Matcher,
-			Example:     meta.Example,
-			Workdir:     skillDir,
+
+		// --- metadata.json path (existing behaviour, takes priority) ---
+		metaPath := filepath.Join(skillDir, "metadata.json")
+		if data, err := os.ReadFile(metaPath); err == nil {
+			var meta SkillMetadata
+			if json.Unmarshal(data, &meta) != nil {
+				continue
+			}
+			// Only include approved skills.
+			if !meta.Approved {
+				continue
+			}
+			sc := SkillConfig{
+				Name:        meta.Name,
+				Description: meta.Description,
+				Command:     meta.Command,
+				Args:        meta.Args,
+				Env:         meta.Env,
+				Matcher:     meta.Matcher,
+				Example:     meta.Example,
+				Workdir:     skillDir,
+			}
+			// Detect SKILL.md for Tier 2 doc injection.
+			skillMDPath := filepath.Join(skillDir, "SKILL.md")
+			if info, err := os.Stat(skillMDPath); err == nil {
+				sc.DocPath = skillMDPath
+				sc.DocSize = int(info.Size())
+			}
+			skills = append(skills, sc)
+			continue
 		}
 
-		// Detect SKILL.md for Tier 2 doc injection.
-		skillMDPath := filepath.Join(skillDir, "SKILL.md")
-		if info, err := os.Stat(skillMDPath); err == nil {
-			sc.DocPath = skillMDPath
-			sc.DocSize = int(info.Size())
+		// --- SKILL.md-only path (doc-only skill from frontmatter) ---
+		if sc := loadSkillFromFrontmatter(skillDir); sc != nil {
+			skills = append(skills, *sc)
 		}
-
-		skills = append(skills, sc)
 	}
 	return skills
+}
+
+// loadSkillFromFrontmatter reads a SKILL.md file and parses its YAML frontmatter
+// to produce a doc-only SkillConfig. Returns nil if no valid frontmatter is found.
+// Parsing is manual (no yaml import) to preserve zero-dependency constraint.
+func loadSkillFromFrontmatter(skillDir string) *SkillConfig {
+	skillMDPath := filepath.Join(skillDir, "SKILL.md")
+	data, err := os.ReadFile(skillMDPath)
+	if err != nil {
+		return nil
+	}
+
+	content := string(data)
+
+	// Frontmatter must start at the very beginning with "---".
+	if !strings.HasPrefix(content, "---") {
+		return nil
+	}
+
+	// Find the closing "---" delimiter.
+	rest := content[3:]
+	end := strings.Index(rest, "\n---")
+	if end == -1 {
+		return nil
+	}
+	frontmatter := rest[:end]
+
+	// Parse key: value lines. Multi-line values and anchors are not supported —
+	// SKILL.md frontmatter is intentionally simple.
+	parsed := parseFrontmatterKV(frontmatter)
+
+	name := strings.TrimSpace(parsed["name"])
+	if name == "" {
+		// Fall back to directory name so the skill is still registered.
+		name = filepath.Base(skillDir)
+	}
+
+	description := strings.TrimSpace(parsed["description"])
+
+	// Parse triggers array: [a, b, c] or multiline list.
+	var keywords []string
+	if raw, ok := parsed["triggers"]; ok {
+		keywords = parseFrontmatterList(raw)
+	}
+
+	var matcher *SkillMatcher
+	if len(keywords) > 0 {
+		matcher = &SkillMatcher{Keywords: keywords}
+	}
+
+	info, err := os.Stat(skillMDPath)
+	if err != nil {
+		return nil
+	}
+
+	return &SkillConfig{
+		Name:        name,
+		Description: description,
+		Matcher:     matcher,
+		// No Command — doc-only skill; agent reads SKILL.md directly.
+		DocPath: skillMDPath,
+		DocSize: int(info.Size()),
+	}
+}
+
+// parseFrontmatterKV parses a simple YAML block into a string map.
+// Supports single-line scalar values only (sufficient for SKILL.md frontmatter).
+func parseFrontmatterKV(block string) map[string]string {
+	result := make(map[string]string)
+	for _, line := range strings.Split(block, "\n") {
+		idx := strings.Index(line, ":")
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		if key != "" {
+			result[key] = val
+		}
+	}
+	return result
+}
+
+// parseFrontmatterList parses a YAML inline sequence "[a, b, c]" or a bare
+// comma-separated string into a slice of trimmed strings.
+func parseFrontmatterList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	// Strip surrounding brackets if present.
+	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		raw = raw[1 : len(raw)-1]
+	}
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		// Strip surrounding quotes if any.
+		p = strings.Trim(p, `"'`)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // LoadAllFileSkillMetas scans the skills directory and returns all metadata (including unapproved).

@@ -150,7 +150,7 @@ func TestBuildSkillsPrompt(t *testing.T) {
 		t.Fatal("BuildSkillsPrompt returned empty string")
 	}
 
-	if !skillStringContains(prompt, "Available Skills") {
+	if !skillStringContains(prompt, "Active Skills") {
 		t.Error("prompt missing header")
 	}
 	if !skillStringContains(prompt, "test") {
