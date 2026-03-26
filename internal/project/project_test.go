@@ -235,6 +235,37 @@ func TestProjectUpdate(t *testing.T) {
 	}
 }
 
+func TestProjectUpdate_EmptyWorkdir(t *testing.T) {
+	dbPath := tempProjectsDB(t)
+
+	p := Project{
+		ID:      "proj-upd-workdir",
+		Name:    "Update Workdir Test",
+		Workdir: "/tmp/orig",
+	}
+	if err := Create(dbPath, p); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	p.Workdir = ""
+	err := Update(dbPath, p)
+	if err == nil {
+		t.Fatal("expected error when updating with empty workdir, got nil")
+	}
+	if !strings.Contains(err.Error(), "workdir") {
+		t.Errorf("expected workdir error, got %q", err.Error())
+	}
+
+	// Verify workdir was not cleared.
+	got, err2 := Get(dbPath, "proj-upd-workdir")
+	if err2 != nil {
+		t.Fatalf("Get: %v", err2)
+	}
+	if got.Workdir != "/tmp/orig" {
+		t.Errorf("workdir should be preserved, got %q", got.Workdir)
+	}
+}
+
 func TestProjectDelete(t *testing.T) {
 	dbPath := tempProjectsDB(t)
 

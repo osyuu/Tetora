@@ -166,6 +166,9 @@ func Create(dbPath string, p Project) error {
 }
 
 func Update(dbPath string, p Project) error {
+	if p.Workdir == "" {
+		return fmt.Errorf("workdir is required")
+	}
 	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	sql := fmt.Sprintf(
 		`UPDATE projects SET name='%s', description='%s', status='%s', workdir='%s', tags='%s', repo_url='%s', category='%s', priority=%d, updated_at='%s'
