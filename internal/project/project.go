@@ -84,6 +84,15 @@ WHEN NEW.workdir = '' OR NEW.workdir IS NULL
 BEGIN
   SELECT RAISE(ABORT, 'workdir must not be empty');
 END`)
+
+	// Enforce non-empty workdir on UPDATE as well — guards against direct SQL
+	// updates that bypass the app-layer check in Update().
+	db.Exec(dbPath, `CREATE TRIGGER IF NOT EXISTS trg_projects_require_workdir_update
+BEFORE UPDATE ON projects
+WHEN NEW.workdir = '' OR NEW.workdir IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'workdir must not be empty');
+END`)
 }
 
 // --- CRUD ---

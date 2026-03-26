@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"tetora/internal/db"
 )
 
 // tempProjectsDB creates a temp DB with the projects table initialized.
@@ -422,6 +424,43 @@ func TestProjectUpdateNewFields(t *testing.T) {
 	}
 	if got.Priority != 99 {
 		t.Errorf("Priority = %d, want %d", got.Priority, 99)
+	}
+}
+
+// TestProjectUpdateTrigger_EmptyWorkdir verifies that the BEFORE UPDATE trigger
+// rejects a direct SQL UPDATE that would set workdir to empty, even when the
+// app-layer Update() check is bypassed.
+func TestProjectUpdateTrigger_EmptyWorkdir(t *testing.T) {
+	dbPath := tempProjectsDB(t)
+
+	p := Project{
+		ID:      "proj-trigger-test",
+		Name:    "Trigger Test",
+		Workdir: "/tmp/trigger",
+	}
+	if err := Create(dbPath, p); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Bypass app layer — execute raw SQL directly.
+	err := db.Exec(dbPath, `UPDATE projects SET workdir = '' WHERE id = 'proj-trigger-test'`)
+	if err == nil {
+		t.Fatal("expected trigger to reject UPDATE with empty workdir, got nil error")
+	}
+	if !strings.Contains(err.Error(), "workdir") {
+		t.Errorf("expected workdir error from trigger, got %q", err.Error())
+	}
+
+	// Workdir must still be intact.
+	got, err2 := Get(dbPath, "proj-trigger-test")
+	if err2 != nil {
+		t.Fatalf("Get: %v", err2)
+	}
+	if got == nil {
+		t.Fatal("Get returned nil")
+	}
+	if got.Workdir != "/tmp/trigger" {
+		t.Errorf("workdir should be preserved, got %q", got.Workdir)
 	}
 }
 
