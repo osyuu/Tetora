@@ -325,7 +325,7 @@ func (tb *Engine) GetTask(id string) (TaskBoard, error) {
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
 		       depends_on, type, workflow, discord_thread_id, created_at, updated_at, completed_at, retry_count,
-		       cost_usd, duration_ms, session_id, model, parent_id, workflow_run_id, workdirs, workdirs
+		       cost_usd, duration_ms, session_id, model, parent_id, workflow_run_id, workdirs
 		FROM tasks WHERE id = '%s'
 	`, db.Escape(id))
 
@@ -351,7 +351,7 @@ func (tb *Engine) SuggestTasks(id string) []TaskBoard {
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
 		       depends_on, type, workflow, discord_thread_id, created_at, updated_at, completed_at, retry_count,
-		       cost_usd, duration_ms, session_id, model, parent_id, workflow_run_id, workdirs, workdirs
+		       cost_usd, duration_ms, session_id, model, parent_id, workflow_run_id, workdirs
 		FROM tasks WHERE id LIKE '%s%%'
 		ORDER BY created_at DESC
 		LIMIT 3
