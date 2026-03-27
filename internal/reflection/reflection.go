@@ -241,10 +241,9 @@ func ExtractJSON(s string) string {
 // Store persists a reflection result to the database.
 func Store(dbPath string, ref *Result) error {
 	sql := fmt.Sprintf(
-		`INSERT INTO reflections (task_id, role, agent, score, feedback, improvement, cost_usd, created_at, estimated_manual_duration_sec, ai_duration_sec)
-		 VALUES ('%s','%s','%s',%d,'%s','%s',%f,'%s',%d,%d)`,
+		`INSERT INTO reflections (task_id, agent, score, feedback, improvement, cost_usd, created_at, estimated_manual_duration_sec, ai_duration_sec)
+		 VALUES ('%s','%s',%d,'%s','%s',%f,'%s',%d,%d)`,
 		db.Escape(ref.TaskID),
-		db.Escape(ref.Agent),
 		db.Escape(ref.Agent),
 		ref.Score,
 		db.Escape(ref.Feedback),

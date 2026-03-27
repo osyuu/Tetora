@@ -31,6 +31,10 @@ func (d *Dispatcher) postTaskWorkspaceGit(t TaskBoard) {
 		return
 	}
 
+	// Serialize workspace git operations across all agents.
+	d.wsGitMu.Lock()
+	defer d.wsGitMu.Unlock()
+
 	d.cleanStaleLock(wsDir, t.ID)
 
 	statusOut, err := exec.Command("git", "-C", wsDir, "status", "--porcelain").Output()
@@ -43,14 +47,27 @@ func (d *Dispatcher) postTaskWorkspaceGit(t TaskBoard) {
 		return
 	}
 
-	if out, err := exec.Command("git", "-C", wsDir, "add", "-A").CombinedOutput(); err != nil {
-		msg := fmt.Sprintf("[WARNING] workspace git add failed: %s", strings.TrimSpace(string(out)))
-		log.Warn("postTaskWorkspaceGit: git add failed", "task", t.ID, "error", string(out))
-		d.engine.AddComment(t.ID, "system", msg)
-		if _, moveErr := d.engine.MoveTask(t.ID, "partial-done"); moveErr != nil {
-			log.Warn("postTaskWorkspaceGit: failed to move to partial-done", "task", t.ID, "error", moveErr)
+	// Retry git add+commit up to 3 times with short backoff to handle
+	// transient index.lock from concurrent git processes (e.g. agent sessions).
+	const maxRetries = 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if out, err := exec.Command("git", "-C", wsDir, "add", "-A").CombinedOutput(); err != nil {
+			if attempt < maxRetries && strings.Contains(string(out), "index.lock") {
+				log.Warn("postTaskWorkspaceGit: git add hit index.lock, retrying",
+					"task", t.ID, "attempt", attempt)
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+				d.cleanStaleLock(wsDir, t.ID)
+				continue
+			}
+			msg := fmt.Sprintf("[WARNING] workspace git add failed: %s", strings.TrimSpace(string(out)))
+			log.Warn("postTaskWorkspaceGit: git add failed", "task", t.ID, "error", string(out))
+			d.engine.AddComment(t.ID, "system", msg)
+			if _, moveErr := d.engine.MoveTask(t.ID, "partial-done"); moveErr != nil {
+				log.Warn("postTaskWorkspaceGit: failed to move to partial-done", "task", t.ID, "error", moveErr)
+			}
+			return
 		}
-		return
+		break
 	}
 
 	commitMsg := fmt.Sprintf("[%s] %s", t.ID, t.Title)
@@ -496,7 +513,8 @@ func DetectDefaultBranch(workdir string) string {
 	return "master"
 }
 
-// cleanStaleLock removes stale .git/index.lock files that are older than 1 hour.
+// cleanStaleLock removes stale .git/index.lock files that are older than 30 seconds.
+// In multi-agent context, normal git operations complete in <5s; anything older is stale.
 func (d *Dispatcher) cleanStaleLock(repoDir, taskID string) {
 	lockPath := filepath.Join(repoDir, ".git", "index.lock")
 	info, err := os.Stat(lockPath)
@@ -505,11 +523,9 @@ func (d *Dispatcher) cleanStaleLock(repoDir, taskID string) {
 	}
 
 	age := time.Since(info.ModTime())
-	if age < time.Hour {
+	if age < 30*time.Second {
 		log.Warn("cleanStaleLock: index.lock exists but is recent, skipping",
 			"task", taskID, "path", lockPath, "age", age.Round(time.Second))
-		d.engine.AddComment(taskID, "system",
-			fmt.Sprintf("[WARNING] git index.lock exists (age: %s). Waiting for other git operation to finish.", age.Round(time.Second)))
 		return
 	}
 

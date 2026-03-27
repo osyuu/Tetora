@@ -22,10 +22,19 @@ type TemplateInfo struct {
 	Variables   []string
 }
 
+// SkillInfo represents a skill entry for Browse.
+type SkillInfo struct {
+	Name         string
+	Description  string
+	Type         string // "workflow" | "command" | etc.
+	WorkflowName string // only for Type=="workflow"
+}
+
 // Deps holds the data-access functions Browse depends on.
 type Deps struct {
-	ListWorkflows func() ([]WorkflowInfo, error)
-	ListTemplates func() []TemplateInfo
+	ListWorkflows      func() ([]WorkflowInfo, error)
+	ListTemplates      func() []TemplateInfo
+	ListWorkflowSkills func() []SkillInfo
 }
 
 // Item represents a template in the store browse view.
@@ -36,7 +45,8 @@ type Item struct {
 	Tags        []string `json:"tags"`
 	StepCount   int      `json:"stepCount"`
 	Variables   []string `json:"variables,omitempty"`
-	Source      string   `json:"source"` // "builtin" | "installed" | "registry"
+	Source      string   `json:"source"` // "builtin" | "installed" | "skill-workflow" | "registry"
+	Type        string   `json:"type,omitempty"`
 	Installed   bool     `json:"installed"`
 }
 
@@ -101,6 +111,35 @@ func Browse(deps Deps) ([]Item, []Category) {
 				Source:      "installed",
 				Installed:   true,
 			})
+			categoryCount[cat]++
+		}
+	}
+
+	// 3. Workflow-backed skills (Type=="workflow" only).
+	if deps.ListWorkflowSkills != nil {
+		listedNames := map[string]bool{}
+		for _, item := range items {
+			listedNames[item.Name] = true
+		}
+		for _, skill := range deps.ListWorkflowSkills() {
+			if skill.Type != "workflow" {
+				continue
+			}
+			if listedNames[skill.Name] {
+				continue
+			}
+			cat := DeriveCategory(skill.Name)
+			tags := DeriveTags(skill.Name, skill.Description, cat)
+			items = append(items, Item{
+				Name:        skill.Name,
+				Description: skill.Description,
+				Category:    cat,
+				Tags:        tags,
+				Source:      "skill-workflow",
+				Type:        "skill-workflow",
+				Installed:   true,
+			})
+			listedNames[skill.Name] = true
 			categoryCount[cat]++
 		}
 	}

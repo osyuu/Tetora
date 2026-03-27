@@ -203,6 +203,10 @@ type Dispatcher struct {
 
 	scanCount      atomic.Int64
 	lastHealthAt   time.Time
+
+	// wsGitMu serializes workspace git operations to prevent index.lock races
+	// when multiple agents complete tasks concurrently.
+	wsGitMu sync.Mutex
 }
 
 // NewDispatcher creates a new Dispatcher.
@@ -1004,7 +1008,25 @@ func (d *Dispatcher) scanReviews() {
 	sem := make(chan struct{}, maxConcurrentReviews)
 
 	for _, t := range reviews {
+		// Handle escalated-to-user tasks: auto-approve if stuck too long.
 		if t.Assignee == escalateUser || t.Assignee == "" {
+			if t.Assignee == "" {
+				continue
+			}
+			// Check how long this task has been in review.
+			if t.UpdatedAt != "" {
+				if updated, err := time.Parse(time.RFC3339, t.UpdatedAt); err == nil {
+					const escalateStaleThreshold = 4 * time.Hour
+					if time.Since(updated) > escalateStaleThreshold {
+						log.Info("scanReviews: escalated review stale, auto-approving",
+							"id", t.ID, "assignee", t.Assignee,
+							"age", time.Since(updated).Round(time.Minute))
+						d.engine.AddComment(t.ID, "system",
+							fmt.Sprintf("[auto-review] Escalated review unhandled for >%s. Auto-approved to unblock pipeline.", escalateStaleThreshold))
+						d.approveReviewTask(t, reviewer, 0)
+					}
+				}
+			}
 			continue
 		}
 		if _, isAgent := d.cfg.Agents[t.Assignee]; !isAgent && t.Assignee != reviewer {
