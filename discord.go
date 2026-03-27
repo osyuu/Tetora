@@ -55,6 +55,10 @@ type DiscordBot struct {
 	dedupMu    sync.Mutex
 	dedupRing  [128]string
 	dedupIdx   int
+
+	// !chat lock: channel → locked agent name.
+	chatLock   map[string]string
+	chatLockMu sync.RWMutex
 }
 
 func newDiscordBot(cfg *Config, state *dispatchState, sem, childSem chan struct{}, cron *CronEngine) *DiscordBot {
@@ -717,6 +721,38 @@ func (db *DiscordBot) cmdAsk(msg discord.Message, prompt string) {
 	})
 }
 
+func (db *DiscordBot) getChatLock(channelID string) string {
+	db.chatLockMu.RLock()
+	defer db.chatLockMu.RUnlock()
+	return db.chatLock[channelID]
+}
+
+func (db *DiscordBot) cmdChat(msg discord.Message, agentName string) {
+	if _, ok := db.cfg.Agents[agentName]; !ok {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Agent `%s` not found.", agentName))
+		return
+	}
+	db.chatLockMu.Lock()
+	if db.chatLock == nil {
+		db.chatLock = make(map[string]string)
+	}
+	db.chatLock[msg.ChannelID] = agentName
+	db.chatLockMu.Unlock()
+	db.sendMessage(msg.ChannelID, fmt.Sprintf("Locked to **%s**. All messages route directly to this agent. Use `!end` to unlock.", agentName))
+}
+
+func (db *DiscordBot) cmdEnd(msg discord.Message) {
+	db.chatLockMu.Lock()
+	agent := db.chatLock[msg.ChannelID]
+	delete(db.chatLock, msg.ChannelID)
+	db.chatLockMu.Unlock()
+	if agent == "" {
+		db.sendMessage(msg.ChannelID, "No active chat lock.")
+		return
+	}
+	db.sendMessage(msg.ChannelID, fmt.Sprintf("Unlocked from **%s**. Smart dispatch resumed.", agent))
+}
+
 func (db *DiscordBot) cmdNewSession(msg discord.Message) {
 	dbPath := db.cfg.HistoryDB
 	if dbPath == "" {
@@ -954,6 +990,27 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 	// Wire up SSE streaming so dashboard can show live output.
 	if db.state != nil && db.state.broker != nil {
 		task.SSEBroker = db.state.broker
+	}
+
+	// Create cancellable context so Escape button and !cancel can interrupt.
+	taskCtx, taskCancel := context.WithCancel(ctx)
+	defer taskCancel()
+
+	// Register task in dispatch state so !cancel can find it.
+	if db.state != nil {
+		db.state.mu.Lock()
+		db.state.running[task.ID] = &taskState{
+			task:         task,
+			startAt:      time.Now(),
+			lastActivity: time.Now(),
+			cancelFn:     taskCancel,
+		}
+		db.state.mu.Unlock()
+		defer func() {
+			db.state.mu.Lock()
+			delete(db.state.running, task.ID)
+			db.state.mu.Unlock()
+		}()
 	}
 
 	// Start progress message for live Discord updates.
