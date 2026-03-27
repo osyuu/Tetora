@@ -1,19 +1,49 @@
 ## [Unreleased]
 
+---
+
+## [v2.2.2] - 2026-03-27
+
 ### Added
-- **Dashboard File Browser**: Full directory browsing with lazy-load expansion, Markdown rendering with View/Edit toggle, 260px sidebar with folder tree
-- **Provider Preset management**: GET/DELETE `/api/config/providers` endpoints, dashboard displays configured providers with masked API keys and Remove buttons, Groq preset added
-- **DangerousOpsConfig**: Pattern-based blocking engine for destructive commands (rm -rf, DROP TABLE, force-push, etc.) in dispatch — configurable allowlist per agent
-- **Self-liveness watchdog**: Supervisor-managed automatic restart when the process becomes unresponsive
-- **Memory temporal decay**: Knowledge entries now have time-based relevance decay, improving retrieval quality for recent context
-- **Multi-tenant dispatch**: `--client` flag for per-client output path isolation; team builder CLI for managing agent configurations
+- **Coord region granularity**: Directory-level coordination (was workspace-level), with dispatch serialization on region conflict
+- **Project workdir required**: DB trigger + app layer enforcement for non-empty workdir on project creation/update
+- **Provider preset UI**: Custom baseUrl input, Anthropic native provider type with `x-api-key` auth, connection test endpoint
+- **DangerousOpsConfig**: Pattern-based blocking engine for destructive commands (rm -rf, DROP TABLE, force-push, etc.) — configurable allowlist per agent
+- **Pipeline overhaul**: Async scanReviews with semaphore (max 3), pipeline health check monitor (30 min), process group kill on timeout, zombie detection (ResetStuckDoing)
+- **Skill auto-load**: SKILL.md-only skills + always-on catalog, frontmatter compatibility aliases
+- **Site**: Astro migration, pnpm, GA4 defer, WebP logo, dynamic sidebar, i18n docs
+- **Multi-tenant dispatch**: `--client` flag for per-client output path isolation; team builder CLI
+- **Memory temporal decay**: Knowledge entries now have time-based relevance decay
+- **Self-liveness watchdog**: Supervisor-managed automatic restart when process becomes unresponsive
+- **Dashboard File Browser**: Full directory browsing with lazy-load expansion, Markdown rendering with View/Edit toggle
 - **Dashboard Team Builder redesign**: Completely rebuilt UI for team configuration page
+- **Discord `!chat`/`!end` agent locking**: Per-channel agent lock with cancellable task context
+- **History CLI diagnostics**: `tetora history fails`, `streak`, `trace` subcommands for failure analysis and job tracing
+- **Store**: Skill-workflow items in browse results
+- **Worktree isolation**: Now applies to default-project tasks; gate coverage for all 4 conditions
 
 ### Fixed
+- **Reflection**: NOT NULL constraint on role column fix; duplicate `role` column in INSERT fix; wiring to taskboard + cron executors
+- **Blank error messages**: Provider + runSingleTask final guards, never empty error message
+- **Workspace git**: index.lock retry with backoff, serialization mutex (`wsGitMu`), stale lock threshold 1h→30s
+- **Escalated review auto-approve**: After 4h stale, auto-approve escalated reviews
+- **SSRF fix**: `/api/provider-test` endpoint hardened
+- **XSS fix**: Provider preset UI input sanitization
+- **Coord JSON truncation**: Rune-aware string slicing
+- **Concurrent limit noise**: Fix skipped_concurrent_limit noise from 30s tick
 - **Stale hook worker cleanup**: Periodic garbage collection of zombie hook worker processes
-- **Discord proactive delivery**: Implemented Discord channel delivery for proactive notifications; fixed heartbeat and cooldown timer bugs
+- **Discord proactive delivery**: Channel delivery for proactive notifications; heartbeat and cooldown timer fixes
 - **MCP mock server type mismatch**: Corrected InputSchema type in test fixtures
 - **Budget pause + nil-registry guard**: `cost.SetBudgetPaused` API fix; dispatch no longer panics on nil registry
+- **Task ID normalization**: Normalize task ID in all mutating Engine methods
+- **Skill completion tracking**: Fallback to role+time window matching
+- **Worktree data-loss**: Conditional cleanup with stale index.lock detection
+- **Dispatch workdir fallback**: Warn when project workdir is empty and fallback is used
+
+### Changed
+- **Anthropic version constant**: Extracted shared `anthropic-version` into provider package constant
+- **Site**: Replaced legacy PNG logo with WebP (909KB → 3KB)
+- **CI**: pages.yml self-trigger path filter
 
 ---
 
