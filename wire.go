@@ -6738,6 +6738,9 @@ var dangerousOpsPatterns = []struct {
 	{"make reload", regexp.MustCompile(`(?i)\bmake\s+reload\b`)},
 	{"kill daemon", regexp.MustCompile(`(?i)\bkill\s+.*tetora\b`)},
 	{"launchctl bootout tetora", regexp.MustCompile(`(?i)\blaunchctl\s+(bootout|unload).*tetora`)},
+	// Broad filesystem scans — agents must not scan entire home or root.
+	{"find home directory", regexp.MustCompile(`\bfind\s+(~|/Users/\w+|\$HOME)\s`)},
+	{"find root", regexp.MustCompile(`\bfind\s+/\s`)},
 }
 
 // checkDangerousOps scans prompt text for destructive operation patterns.

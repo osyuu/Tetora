@@ -191,21 +191,37 @@ func BuildTieredPrompt(cfg *config.Config, task *dispatch.Task, agentName string
 
 	// --- 10. AddDirs control ---
 	// Simple: clear AddDirs, only keep baseDir.
-	// Standard: keep workspace dir only (+ baseDir).
-	// Complex: keep all.
+	// Standard/Complex: keep baseDir, workspace dir, and task workdir.
+	// Never include the bare home directory — agents scanning $HOME causes
+	// extreme I/O load (find over millions of files).
+	home, _ := os.UserHomeDir()
 	if complexity == classify.Simple {
 		task.AddDirs = []string{cfg.BaseDir}
-	} else if complexity == classify.Standard {
+	} else {
 		var kept []string
 		ws := deps.ResolveWorkspace(cfg, agentName)
+		seen := map[string]bool{}
 		for _, d := range task.AddDirs {
-			if d == cfg.BaseDir || d == ws.Dir {
+			// Block bare home directory — too broad for any task.
+			if d == home {
+				continue
+			}
+			if !seen[d] && (d == cfg.BaseDir || d == ws.Dir || d == task.Workdir) {
+				seen[d] = true
 				kept = append(kept, d)
+			}
+		}
+		// For complex tasks, also keep project-specific dirs (not home).
+		if complexity == classify.Complex {
+			for _, d := range task.AddDirs {
+				if d != home && !seen[d] {
+					seen[d] = true
+					kept = append(kept, d)
+				}
 			}
 		}
 		task.AddDirs = kept
 	}
-	// Complex: keep all (no filtering).
 
 	// --- 12. Enforce total budget ---
 	totalMax := cfg.PromptBudget.TotalMaxOrDefault()
